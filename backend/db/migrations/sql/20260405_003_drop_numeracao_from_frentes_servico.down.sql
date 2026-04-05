@@ -1,0 +1,2 @@
+ALTER TABLE frentes_servico
+ADD COLUMN IF NOT EXISTS numeracao INT NOT NULL DEFAULT 0;
