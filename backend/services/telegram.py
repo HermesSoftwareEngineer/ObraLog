@@ -54,6 +54,12 @@ def send_message(chat_id: int | str, text: str) -> None:
 	_telegram_api_call("sendMessage", {"chat_id": chat_id, "text": text})
 
 
+def set_webhook(base_url: str) -> None:
+	webhook_url = f"{base_url.rstrip('/')}/telegram/webhook"
+	print(f"Configurando webhook do Telegram para: {webhook_url}")
+	_telegram_api_call("setWebhook", {"url": webhook_url})
+
+
 def _extract_text_content(content) -> str:
 	if isinstance(content, str):
 		return content

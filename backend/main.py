@@ -9,26 +9,20 @@ try:
     from .api.routes.crud import api_blueprint
     from .api.routes.reports import router as reports_blueprint
     from .api.routes.auth import auth_blueprint
-    from .services.telegram import start_polling
+    from .services.telegram import start_polling, set_webhook
 except ImportError:
     from api.routes.webhook import telegram_blueprint
     from api.routes.crud import api_blueprint
     from api.routes.reports import router as reports_blueprint
     from api.routes.auth import auth_blueprint
-    from services.telegram import start_polling
+    from services.telegram import start_polling, set_webhook
 
 
 app = Flask(__name__)
 
-
-def _get_cors_origins():
-    raw = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
-
-
 CORS(
     app,
-    resources={r"/api/*": {"origins": _get_cors_origins()}},
+    resources={r"/api/*": {"origins": os.environ.get("CORS_ORIGINS")}},
     supports_credentials=True,
 )
 
@@ -62,6 +56,16 @@ if _should_start_polling_in_dev():
     polling_thread = threading.Thread(target=start_polling, name="telegram-polling", daemon=True)
     polling_thread.start()
     app.logger.info("Telegram polling iniciado automaticamente em modo desenvolvimento.")
+elif os.environ.get("TELEGRAM_POLLING_IN_DEV", "true").lower() not in {"1", "true", "yes", "on"}:
+    public_url = os.environ.get("PUBLIC_BASE_URL")
+    if public_url:
+        try:
+            set_webhook(public_url)
+            app.logger.info(f"Telegram webhook configurado automaticamente para a URL: {public_url}")
+        except Exception as e:
+            app.logger.error(f"Erro ao configurar webhook automaticamente: {e}")
+    else:
+        app.logger.warning("TELEGRAM_POLLING_IN_DEV desativado, mas PUBLIC_BASE_URL não está configurada. Webhook automático ignorado.")
 
 
 @app.get("/health")
