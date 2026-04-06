@@ -176,6 +176,7 @@ def link_telegram():
             db,
             g.current_user.id,
             telegram_chat_id=str(telegram_chat_id),
+            telegram_thread_id=str(telegram_chat_id),
         )
 
     return jsonify({"ok": True, "user": _user_payload(updated)})

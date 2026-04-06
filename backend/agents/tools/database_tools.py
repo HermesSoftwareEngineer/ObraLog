@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+import unicodedata
 
 from langchain_core.tools import tool
 
@@ -38,13 +39,74 @@ def _assert_permission(actor_level: str, operation: str, resource: str):
         NivelAcesso.ENCARREGADO.value: {
             "usuarios": {"read"},
             "frentes_servico": {"read"},
-            "registros": {"create", "read", "update"},
+            "registros": {"create", "read", "update", "delete"},
         },
     }
 
     allowed = rules.get(actor_level, {}).get(resource, set())
     if operation not in allowed:
         raise PermissionError(f"Acesso negado para {operation} em {resource} no nível {actor_level}.")
+
+
+def _normalize_text(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return " ".join(text.strip().lower().split())
+
+
+def _parse_lado_pista(value: str | None) -> LadoPista | None:
+    if not value:
+        return None
+    normalized = _normalize_text(value)
+    aliases = {
+        "direita": LadoPista.DIREITA,
+        "lado direita": LadoPista.DIREITA,
+        "lado direito": LadoPista.DIREITA,
+        "dir": LadoPista.DIREITA,
+        "esquerda": LadoPista.ESQUERDA,
+        "lado esquerda": LadoPista.ESQUERDA,
+        "lado esquerdo": LadoPista.ESQUERDA,
+        "esq": LadoPista.ESQUERDA,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError("lado_pista inválido. Valores aceitos: direita, esquerda.")
+    return parsed
+
+
+def _parse_clima(value: str | None, field_name: str) -> Clima | None:
+    if not value:
+        return None
+    normalized = _normalize_text(value)
+    aliases = {
+        "limpo": Clima.LIMPO,
+        "sol": Clima.LIMPO,
+        "ensolarado": Clima.LIMPO,
+        "nublado": Clima.NUBLADO,
+        "chuva": Clima.NUBLADO,
+        "chuvoso": Clima.NUBLADO,
+        "impraticavel": Clima.IMPRATICAVEL,
+        "impraticavel total": Clima.IMPRATICAVEL,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError(f"{field_name} inválido. Valores aceitos: limpo, nublado, impraticavel.")
+    return parsed
+
+
+def _parse_nivel_acesso(value: str | None) -> NivelAcesso | None:
+    if not value:
+        return None
+    normalized = _normalize_text(value)
+    aliases = {
+        "administrador": NivelAcesso.ADMINISTRADOR,
+        "admin": NivelAcesso.ADMINISTRADOR,
+        "gerente": NivelAcesso.GERENTE,
+        "encarregado": NivelAcesso.ENCARREGADO,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError("nivel_acesso inválido. Valores aceitos: administrador, gerente, encarregado.")
+    return parsed
 
 
 def _build_tools(actor_user_id: int, actor_level: str):
@@ -54,10 +116,12 @@ def _build_tools(actor_user_id: int, actor_level: str):
         email: str,
         senha: str,
         nivel_acesso: str = "encarregado",
+        telefone: str | None = None,
         telegram_chat_id: str | None = None,
     ) -> dict:
         """Cria um usuário. Apenas administrador."""
         _assert_permission(actor_level, "create", "usuarios")
+        nivel = _parse_nivel_acesso(nivel_acesso) or NivelAcesso.ENCARREGADO
         with SessionLocal() as db:
             if telegram_chat_id:
                 usuario = Repository.usuarios.criar_com_telegram(
@@ -66,7 +130,8 @@ def _build_tools(actor_user_id: int, actor_level: str):
                     email=email,
                     senha=senha,
                     telegram_chat_id=telegram_chat_id,
-                    nivel_acesso=NivelAcesso(nivel_acesso),
+                    nivel_acesso=nivel,
+                    telefone=telefone,
                 )
             else:
                 usuario = Repository.usuarios.criar(
@@ -74,13 +139,14 @@ def _build_tools(actor_user_id: int, actor_level: str):
                     nome=nome,
                     email=email,
                     senha=senha,
-                    nivel_acesso=NivelAcesso(nivel_acesso),
+                    nivel_acesso=nivel,
+                    telefone=telefone,
                 )
             return _to_dict(usuario)
 
     @tool
     def listar_usuarios() -> list[dict]:
-        """Lista usuários. Administrador e gerente."""
+        """Lista usuários. Administrador e gerente; encarregado vê apenas si próprio."""
         _assert_permission(actor_level, "read", "usuarios")
         with SessionLocal() as db:
             if actor_level == NivelAcesso.ENCARREGADO.value:
@@ -96,6 +162,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
         email: str | None = None,
         senha: str | None = None,
         nivel_acesso: str | None = None,
+        telefone: str | None = None,
         telegram_chat_id: str | None = None,
     ) -> dict:
         """Atualiza um usuário. Apenas administrador."""
@@ -104,10 +171,11 @@ def _build_tools(actor_user_id: int, actor_level: str):
             "nome": nome,
             "email": email,
             "senha": senha,
+            "telefone": telefone,
             "telegram_chat_id": telegram_chat_id,
         }
         if nivel_acesso:
-            payload["nivel_acesso"] = NivelAcesso(nivel_acesso)
+            payload["nivel_acesso"] = _parse_nivel_acesso(nivel_acesso)
         with SessionLocal() as db:
             usuario = Repository.usuarios.atualizar(db, usuario_id, **payload)
             if not usuario:
@@ -193,10 +261,10 @@ def _build_tools(actor_user_id: int, actor_level: str):
                 estaca_inicial=estaca_inicial,
                 estaca_final=estaca_final,
                 resultado=resultado,
-                tempo_manha=Clima(tempo_manha) if tempo_manha else None,
-                tempo_tarde=Clima(tempo_tarde) if tempo_tarde else None,
-                pista=LadoPista(pista) if pista else None,
-                lado_pista=LadoPista(lado_pista) if lado_pista else None,
+                tempo_manha=_parse_clima(tempo_manha, "tempo_manha"),
+                tempo_tarde=_parse_clima(tempo_tarde, "tempo_tarde"),
+                pista=_parse_lado_pista(pista),
+                lado_pista=_parse_lado_pista(lado_pista),
                 observacao=observacao,
             )
             return _to_dict(registro)
@@ -221,26 +289,36 @@ def _build_tools(actor_user_id: int, actor_level: str):
     @tool
     def atualizar_registro(
         registro_id: int,
+        data_iso: str | None = None,
         frente_servico_id: int | None = None,
+        usuario_registrador_id: int | None = None,
         estaca_inicial: float | None = None,
         estaca_final: float | None = None,
+        resultado: float | None = None,
         tempo_manha: str | None = None,
         tempo_tarde: str | None = None,
         pista: str | None = None,
         lado_pista: str | None = None,
+        observacao: str | None = None,
     ) -> dict:
         """Atualiza registro do diário."""
         _assert_permission(actor_level, "update", "registros")
         payload = {
             "frente_servico_id": frente_servico_id,
+            "usuario_registrador_id": usuario_registrador_id,
             "estaca_inicial": estaca_inicial,
             "estaca_final": estaca_final,
-            "tempo_manha": Clima(tempo_manha) if tempo_manha else None,
-            "tempo_tarde": Clima(tempo_tarde) if tempo_tarde else None,
-            "pista": LadoPista(pista) if pista else None,
-            "lado_pista": LadoPista(lado_pista) if lado_pista else None,
+            "resultado": resultado,
+            "tempo_manha": _parse_clima(tempo_manha, "tempo_manha"),
+            "tempo_tarde": _parse_clima(tempo_tarde, "tempo_tarde"),
+            "pista": _parse_lado_pista(pista),
+            "lado_pista": _parse_lado_pista(lado_pista),
+            "observacao": observacao,
         }
-        if estaca_inicial is not None and estaca_final is not None:
+        if data_iso:
+            payload["data"] = date.fromisoformat(data_iso)
+
+        if estaca_inicial is not None and estaca_final is not None and resultado is None:
             payload["resultado"] = estaca_final - estaca_inicial
 
         with SessionLocal() as db:

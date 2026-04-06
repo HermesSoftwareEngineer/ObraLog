@@ -1,6 +1,7 @@
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
+import unicodedata
 
 from flask import Blueprint, jsonify, request
 
@@ -43,6 +44,47 @@ def _to_dict(model_instance):
 
 def _json_error(message: str, status_code: int = 400):
     return jsonify({"ok": False, "error": message}), status_code
+
+
+def _normalize_text(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return " ".join(text.strip().lower().split())
+
+
+def _parse_lado_pista(value: str, field_name: str) -> LadoPista:
+    normalized = _normalize_text(value)
+    aliases = {
+        "direita": LadoPista.DIREITA,
+        "lado direita": LadoPista.DIREITA,
+        "lado direito": LadoPista.DIREITA,
+        "dir": LadoPista.DIREITA,
+        "esquerda": LadoPista.ESQUERDA,
+        "lado esquerda": LadoPista.ESQUERDA,
+        "lado esquerdo": LadoPista.ESQUERDA,
+        "esq": LadoPista.ESQUERDA,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError(f"{field_name} inválido. Valores válidos: direita, esquerda")
+    return parsed
+
+
+def _parse_clima(value: str, field_name: str) -> Clima:
+    normalized = _normalize_text(value)
+    aliases = {
+        "limpo": Clima.LIMPO,
+        "sol": Clima.LIMPO,
+        "ensolarado": Clima.LIMPO,
+        "nublado": Clima.NUBLADO,
+        "chuva": Clima.NUBLADO,
+        "chuvoso": Clima.NUBLADO,
+        "impraticavel": Clima.IMPRATICAVEL,
+        "impraticavel total": Clima.IMPRATICAVEL,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError(f"{field_name} inválido. Valores válidos: limpo, nublado, impraticavel")
+    return parsed
 
 
 def _is_admin(user) -> bool:
@@ -301,25 +343,25 @@ def _parse_registro_payload(data: dict):
     
     if data.get("tempo_manha"):
         try:
-            parsed["tempo_manha"] = Clima(data["tempo_manha"])
+            parsed["tempo_manha"] = _parse_clima(data["tempo_manha"], "tempo_manha")
         except ValueError:
             raise ValueError(f"tempo_manha inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
     
     if data.get("tempo_tarde"):
         try:
-            parsed["tempo_tarde"] = Clima(data["tempo_tarde"])
+            parsed["tempo_tarde"] = _parse_clima(data["tempo_tarde"], "tempo_tarde")
         except ValueError:
             raise ValueError(f"tempo_tarde inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
     
     if data.get("pista"):
         try:
-            parsed["pista"] = LadoPista(data["pista"])
+            parsed["pista"] = _parse_lado_pista(data["pista"], "pista")
         except ValueError:
             raise ValueError(f"pista inválido. Valores válidos: {', '.join([p.value for p in LadoPista])}")
     
     if data.get("lado_pista"):
         try:
-            parsed["lado_pista"] = LadoPista(data["lado_pista"])
+            parsed["lado_pista"] = _parse_lado_pista(data["lado_pista"], "lado_pista")
         except ValueError:
             raise ValueError(f"lado_pista inválido. Valores válidos: {', '.join([p.value for p in LadoPista])}")
     
@@ -387,25 +429,25 @@ def atualizar_registro(registro_id: int):
 
     if data.get("tempo_manha"):
         try:
-            payload["tempo_manha"] = Clima(data["tempo_manha"])
+            payload["tempo_manha"] = _parse_clima(data["tempo_manha"], "tempo_manha")
         except ValueError:
             return _json_error(f"tempo_manha inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
     
     if data.get("tempo_tarde"):
         try:
-            payload["tempo_tarde"] = Clima(data["tempo_tarde"])
+            payload["tempo_tarde"] = _parse_clima(data["tempo_tarde"], "tempo_tarde")
         except ValueError:
             return _json_error(f"tempo_tarde inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
     
     if data.get("pista"):
         try:
-            payload["pista"] = LadoPista(data["pista"])
+            payload["pista"] = _parse_lado_pista(data["pista"], "pista")
         except ValueError:
             return _json_error(f"pista inválido. Valores válidos: {', '.join([p.value for p in LadoPista])}")
     
     if data.get("lado_pista"):
         try:
-            payload["lado_pista"] = LadoPista(data["lado_pista"])
+            payload["lado_pista"] = _parse_lado_pista(data["lado_pista"], "lado_pista")
         except ValueError:
             return _json_error(f"lado_pista inválido. Valores válidos: {', '.join([p.value for p in LadoPista])}")
 

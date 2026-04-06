@@ -24,11 +24,17 @@ llm_main = ChatGoogleGenerativeAI(
 
 
 def _build_embeddings_client() -> Optional[GoogleGenerativeAIEmbeddings]:
-    preferred_model = os.environ.get("GOOGLE_EMBEDDING_MODEL", "").strip()
+    preferred_model = os.environ.get(
+        "GOOGLE_EMBEDDING_MODEL",
+        "models/text-multilingual-embedding-002",
+    ).strip()
     candidates = [
         preferred_model,
-        "models/embedding-001",
+        "models/text-multilingual-embedding-002",
         "models/text-embedding-004",
+        "models/gemini-embedding-2-preview",
+        "models/gemini-embedding-001",
+        "models/embedding-001",
     ]
     seen = set()
 
@@ -45,11 +51,15 @@ def _build_embeddings_client() -> Optional[GoogleGenerativeAIEmbeddings]:
             logger.info("Embeddings habilitado com modelo: %s", model_name)
             return client
         except Exception as exc:
-            logger.warning(
-                "Falha ao inicializar embedding model '%s': %s",
-                model_name,
-                str(exc),
-            )
+            msg = str(exc)
+            if "NOT_FOUND" in msg or "404" in msg:
+                logger.debug("Modelo '%s' indisponivel na API atual (404).", model_name)
+            else:
+                logger.warning(
+                    "Falha ao inicializar embedding model '%s': %s",
+                    model_name,
+                    msg,
+                )
             continue
 
     logger.error(
