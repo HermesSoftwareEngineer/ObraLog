@@ -61,10 +61,12 @@ def _parse_lado_pista(value: str | None) -> LadoPista | None:
         "direita": LadoPista.DIREITA,
         "lado direita": LadoPista.DIREITA,
         "lado direito": LadoPista.DIREITA,
+        "direito": LadoPista.DIREITA,
         "dir": LadoPista.DIREITA,
         "esquerda": LadoPista.ESQUERDA,
         "lado esquerda": LadoPista.ESQUERDA,
         "lado esquerdo": LadoPista.ESQUERDA,
+        "esquerdo": LadoPista.ESQUERDA,
         "esq": LadoPista.ESQUERDA,
     }
     parsed = aliases.get(normalized)
@@ -107,6 +109,52 @@ def _parse_nivel_acesso(value: str | None) -> NivelAcesso | None:
     if parsed is None:
         raise ValueError("nivel_acesso inválido. Valores aceitos: administrador, gerente, encarregado.")
     return parsed
+
+
+def _resolve_frente_servico_id(
+    db,
+    frente_servico_id: int | None = None,
+    frente_servico_nome: str | None = None,
+) -> int:
+    if frente_servico_id is not None:
+        frente = Repository.frentes_servico.obter_por_id(db, frente_servico_id)
+        if not frente:
+            raise ValueError(f"Frente de serviço com ID {frente_servico_id} não encontrada.")
+        return frente_servico_id
+
+    frentes = Repository.frentes_servico.listar(db)
+    if not frentes:
+        raise ValueError("Nenhuma frente de serviço cadastrada no momento.")
+
+    if not frente_servico_nome:
+        opcoes = ", ".join(f"{item.nome} (id={item.id})" for item in frentes[:8])
+        raise ValueError(
+            "Informe o nome da frente de serviço. "
+            f"Opções disponíveis: {opcoes}"
+        )
+
+    alvo = _normalize_text(frente_servico_nome)
+    exatos = [item for item in frentes if _normalize_text(item.nome) == alvo]
+    if len(exatos) == 1:
+        return exatos[0].id
+
+    parciais = [item for item in frentes if alvo in _normalize_text(item.nome)]
+    candidatos = exatos or parciais
+    if len(candidatos) == 1:
+        return candidatos[0].id
+
+    if len(candidatos) > 1:
+        opcoes = ", ".join(f"{item.nome} (id={item.id})" for item in candidatos[:8])
+        raise ValueError(
+            "Encontrei mais de uma frente compatível com esse nome. "
+            f"Seja mais específico. Opções: {opcoes}"
+        )
+
+    opcoes = ", ".join(f"{item.nome} (id={item.id})" for item in frentes[:8])
+    raise ValueError(
+        f"Não encontrei frente de serviço para '{frente_servico_nome}'. "
+        f"Opções disponíveis: {opcoes}"
+    )
 
 
 def _build_tools(actor_user_id: int, actor_level: str):
@@ -200,7 +248,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
 
     @tool
     def listar_frentes_servico() -> list[dict]:
-        """Lista frentes de serviço."""
+        """Lista frentes de serviço para apoiar decisões e preencher cadastro de registros sem pedir ID ao usuário."""
         _assert_permission(actor_level, "read", "frentes_servico")
         with SessionLocal() as db:
             frentes = Repository.frentes_servico.listar(db)
@@ -232,8 +280,9 @@ def _build_tools(actor_user_id: int, actor_level: str):
 
     @tool
     def criar_registro(
-        frente_servico_id: int,
-        data_iso: str | None = None,
+        frente_servico_id: int | None = None,
+        frente_servico_nome: str | None = None,
+        data: str | None = None,
         estaca_inicial: float | None = None,
         estaca_final: float | None = None,
         tempo_manha: str | None = None,
@@ -242,21 +291,26 @@ def _build_tools(actor_user_id: int, actor_level: str):
         lado_pista: str | None = None,
         observacao: str | None = None,
     ) -> dict:
-        """Cria registro no diário de obra. Todos os níveis."""
+        """Cria registro no diário. Use campo data (YYYY-MM-DD); se omitido, assume a data de hoje."""
         _assert_permission(actor_level, "create", "registros")
-        data = None
-        if data_iso:
-            data = date.fromisoformat(data_iso)
+        parsed_data = date.today()
+        if data:
+            parsed_data = date.fromisoformat(data)
         
         resultado = None
         if estaca_inicial is not None and estaca_final is not None:
             resultado = estaca_final - estaca_inicial
 
         with SessionLocal() as db:
+            resolved_frente_id = _resolve_frente_servico_id(
+                db,
+                frente_servico_id=frente_servico_id,
+                frente_servico_nome=frente_servico_nome,
+            )
             registro = Repository.registros.criar(
                 db=db,
-                data=data,
-                frente_servico_id=frente_servico_id,
+                data=parsed_data,
+                frente_servico_id=resolved_frente_id,
                 usuario_registrador_id=actor_user_id,
                 estaca_inicial=estaca_inicial,
                 estaca_final=estaca_final,
@@ -270,16 +324,26 @@ def _build_tools(actor_user_id: int, actor_level: str):
             return _to_dict(registro)
 
     @tool
-    def listar_registros(data_iso: str | None = None, frente_servico_id: int | None = None, usuario_id: int | None = None) -> list[dict]:
-        """Lista registros com filtros opcionais."""
+    def listar_registros(
+        data: str | None = None,
+        frente_servico_id: int | None = None,
+        frente_servico_nome: str | None = None,
+        usuario_id: int | None = None,
+    ) -> list[dict]:
+        """Lista registros. Pode filtrar por nome da frente para evitar depender de ID técnico."""
         _assert_permission(actor_level, "read", "registros")
         with SessionLocal() as db:
             if actor_level == NivelAcesso.ENCARREGADO.value:
                 registros = Repository.registros.listar_por_usuario(db, actor_user_id)
-            elif data_iso:
-                registros = Repository.registros.listar_por_data(db, date.fromisoformat(data_iso))
-            elif frente_servico_id:
-                registros = Repository.registros.listar_por_frente(db, frente_servico_id)
+            elif data:
+                registros = Repository.registros.listar_por_data(db, date.fromisoformat(data))
+            elif frente_servico_id is not None or frente_servico_nome:
+                resolved_frente_id = _resolve_frente_servico_id(
+                    db,
+                    frente_servico_id=frente_servico_id,
+                    frente_servico_nome=frente_servico_nome,
+                )
+                registros = Repository.registros.listar_por_frente(db, resolved_frente_id)
             elif usuario_id:
                 registros = Repository.registros.listar_por_usuario(db, usuario_id)
             else:
@@ -289,8 +353,9 @@ def _build_tools(actor_user_id: int, actor_level: str):
     @tool
     def atualizar_registro(
         registro_id: int,
-        data_iso: str | None = None,
+        data: str | None = None,
         frente_servico_id: int | None = None,
+        frente_servico_nome: str | None = None,
         usuario_registrador_id: int | None = None,
         estaca_inicial: float | None = None,
         estaca_final: float | None = None,
@@ -301,7 +366,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
         lado_pista: str | None = None,
         observacao: str | None = None,
     ) -> dict:
-        """Atualiza registro do diário."""
+        """Atualiza registro. Pode resolver frente por nome quando o usuário não souber o ID."""
         _assert_permission(actor_level, "update", "registros")
         payload = {
             "frente_servico_id": frente_servico_id,
@@ -315,13 +380,20 @@ def _build_tools(actor_user_id: int, actor_level: str):
             "lado_pista": _parse_lado_pista(lado_pista),
             "observacao": observacao,
         }
-        if data_iso:
-            payload["data"] = date.fromisoformat(data_iso)
+        if data:
+            payload["data"] = date.fromisoformat(data)
 
         if estaca_inicial is not None and estaca_final is not None and resultado is None:
             payload["resultado"] = estaca_final - estaca_inicial
 
         with SessionLocal() as db:
+            if frente_servico_id is not None or frente_servico_nome:
+                payload["frente_servico_id"] = _resolve_frente_servico_id(
+                    db,
+                    frente_servico_id=frente_servico_id,
+                    frente_servico_nome=frente_servico_nome,
+                )
+
             registro = Repository.registros.obter_por_id(db, registro_id)
             if not registro:
                 return {"ok": False, "message": "Registro não encontrado."}

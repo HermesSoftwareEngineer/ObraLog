@@ -79,7 +79,7 @@ class Registro(Base):
     __tablename__ = "registros"
 
     id = Column(Integer, primary_key=True, index=True)
-    data = Column(Date, nullable=True, index=True)
+    data = Column(Date, nullable=True, default=date.today, index=True)
     frente_servico_id = Column(Integer, ForeignKey("frentes_servico.id", ondelete="CASCADE"), nullable=False, index=True)
     usuario_registrador_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
     estaca_inicial = Column(DECIMAL(10, 2), nullable=True)

@@ -180,8 +180,9 @@ class RegistroRepository:
         lado_pista: LadoPista | None = None,
         observacao: str | None = None,
     ) -> Registro:
+        resolved_data = data or date.today()
         registro = Registro(
-            data=data,
+            data=resolved_data,
             frente_servico_id=frente_servico_id,
             usuario_registrador_id=usuario_registrador_id,
             estaca_inicial=estaca_inicial,

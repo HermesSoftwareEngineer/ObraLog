@@ -57,10 +57,12 @@ def _parse_lado_pista(value: str, field_name: str) -> LadoPista:
         "direita": LadoPista.DIREITA,
         "lado direita": LadoPista.DIREITA,
         "lado direito": LadoPista.DIREITA,
+        "direito": LadoPista.DIREITA,
         "dir": LadoPista.DIREITA,
         "esquerda": LadoPista.ESQUERDA,
         "lado esquerda": LadoPista.ESQUERDA,
         "lado esquerdo": LadoPista.ESQUERDA,
+        "esquerdo": LadoPista.ESQUERDA,
         "esq": LadoPista.ESQUERDA,
     }
     parsed = aliases.get(normalized)
@@ -302,14 +304,17 @@ def _parse_registro_payload(data: dict):
 
     parsed = {
         "frente_servico_id": frente_id,
+        "data": date.today(),
     }
     
-    # Campos opcionais
+    # Campo data (opcional no payload; por padrao usa o dia atual)
     if data.get("data"):
         try:
             parsed["data"] = date.fromisoformat(data["data"])
         except Exception:
             raise ValueError("Formato inválido em data. Use YYYY-MM-DD.")
+
+    # Campos opcionais
     
     if data.get("usuario_registrador_id"):
         try:
