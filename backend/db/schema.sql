@@ -49,7 +49,7 @@ CREATE TABLE registros (
   tempo_tarde clima NOT NULL,
   pista lado_pista_enum,
   lado_pista lado_pista_enum,
-  observacao TEXT NOT NULL,
+  observacao TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

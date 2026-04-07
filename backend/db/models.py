@@ -89,7 +89,7 @@ class Registro(Base):
     tempo_tarde = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=False)
     pista = Column(SQLEnum(LadoPista, values_callable=_enum_values, name="lado_pista_enum"), nullable=True)
     lado_pista = Column(SQLEnum(LadoPista, values_callable=_enum_values, name="lado_pista_enum"), nullable=True)
-    observacao = Column(String, nullable=False)
+    observacao = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     frente_servico = relationship("FrenteServico", back_populates="registros")

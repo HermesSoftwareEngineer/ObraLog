@@ -179,10 +179,9 @@ class RegistroRepository:
         tempo_tarde: Clima,
         pista: LadoPista | None = None,
         lado_pista: LadoPista | None = None,
-        observacao: str = "",
+        observacao: str | None = None,
     ) -> Registro:
-        if not observacao.strip():
-            raise ValueError("observacao é obrigatória para criar registro.")
+        observacao_normalizada = (observacao or "").strip() or None
 
         registro = Registro(
             data=data,
@@ -195,7 +194,7 @@ class RegistroRepository:
             tempo_tarde=tempo_tarde,
             pista=pista,
             lado_pista=lado_pista,
-            observacao=observacao,
+            observacao=observacao_normalizada,
         )
         db.add(registro)
         db.commit()

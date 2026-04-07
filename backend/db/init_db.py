@@ -30,6 +30,7 @@ def init_db():
         Base.metadata.create_all(bind=engine)
 
         with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE registros ALTER COLUMN observacao DROP NOT NULL"))
             connection.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telefone VARCHAR"))
             connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_telefone_unique ON usuarios(telefone) WHERE telefone IS NOT NULL"))
             connection.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR"))

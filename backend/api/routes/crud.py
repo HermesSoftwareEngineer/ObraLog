@@ -344,7 +344,6 @@ def _parse_registro_payload(data: dict):
         "estaca_final",
         "tempo_manha",
         "tempo_tarde",
-        "observacao",
     ]
     missing = [field for field in required_fields if data.get(field) in (None, "")]
     if missing:
@@ -414,9 +413,11 @@ def _parse_registro_payload(data: dict):
         except ValueError:
             raise ValueError(f"lado_pista inválido. Valores válidos: {', '.join([p.value for p in LadoPista])}")
     
-    parsed["observacao"] = str(data["observacao"]).strip()
-    if not parsed["observacao"]:
-        raise ValueError("observacao é obrigatória.")
+    if "observacao" in data:
+        observacao = str(data.get("observacao") or "").strip()
+        parsed["observacao"] = observacao or None
+    else:
+        parsed["observacao"] = None
     
     return parsed
 

@@ -86,7 +86,6 @@ def _ensure_required_fields(tool_name: str, tool_args: dict) -> str | None:
         "estaca_final",
         "tempo_manha",
         "tempo_tarde",
-        "observacao",
     ]
     missing = [field for field in required if tool_args.get(field) in (None, "")]
     if not tool_args.get("frente_servico_id") and not tool_args.get("frente_servico_nome"):

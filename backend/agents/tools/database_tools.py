@@ -291,18 +291,16 @@ def _build_tools(actor_user_id: int, actor_level: str):
         estaca_final: float,
         tempo_manha: str,
         tempo_tarde: str,
-        observacao: str,
+        observacao: str | None = None,
         frente_servico_id: int | None = None,
         frente_servico_nome: str | None = None,
         pista: str | None = None,
         lado_pista: str | None = None,
     ) -> dict:
-        """Cria registro no diário com campos obrigatórios; apenas pista e lado_pista são opcionais."""
+        """Cria registro no diário; observacao, pista e lado_pista são opcionais."""
         _assert_permission(actor_level, "create", "registros")
         parsed_data = date.fromisoformat(data)
-        observacao = observacao.strip()
-        if not observacao:
-            raise ValueError("observacao é obrigatória.")
+        observacao_normalizada = (observacao or "").strip() or None
 
         resultado = estaca_final - estaca_inicial
 
@@ -324,7 +322,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
                 tempo_tarde=_parse_clima(tempo_tarde, "tempo_tarde"),
                 pista=_parse_lado_pista(pista),
                 lado_pista=_parse_lado_pista(lado_pista),
-                observacao=observacao,
+                observacao=observacao_normalizada,
             )
             return _registro_to_dict_with_images(db, registro)
 
