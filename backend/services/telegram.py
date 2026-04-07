@@ -128,6 +128,32 @@ def _extract_message_text_or_transcription(message: dict, chat_id: int | str) ->
 	if text:
 		return text
 
+	photos = message.get("photo") or []
+	if photos:
+		token = os.environ.get("TELEGRAM_TOKEN")
+		if not token:
+			raise RuntimeError("TELEGRAM_TOKEN não configurado.")
+
+		biggest_photo = photos[-1]
+		file_id = biggest_photo.get("file_id")
+		if not file_id:
+			raise RuntimeError("Imagem recebida sem file_id.")
+
+		file_result = _telegram_api_call("getFile", {"file_id": file_id})
+		file_info = file_result.get("result") or {}
+		file_path = file_info.get("file_path")
+		if not file_path:
+			raise RuntimeError("Não foi possível obter file_path da imagem no Telegram.")
+
+		image_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+		caption = (message.get("caption") or "").strip()
+		if caption:
+			return (
+				f"Recebi uma imagem para registro. URL da imagem: {image_url}. "
+				f"Descrição enviada pelo usuário: {caption}"
+			)
+		return f"Recebi uma imagem para registro. URL da imagem: {image_url}"
+
 	voice = message.get("voice")
 	audio = message.get("audio")
 	audio_payload = voice or audio

@@ -1,9 +1,12 @@
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
+import os
 import unicodedata
+from uuid import uuid4
 
 from flask import Blueprint, jsonify, request
+from werkzeug.utils import secure_filename
 
 from backend.db.models import Clima, LadoPista, NivelAcesso
 from backend.db.repository import Repository
@@ -17,6 +20,17 @@ from backend.agents.instructions_store import (
 )
 
 api_blueprint = Blueprint("api_v1", __name__, url_prefix="/api/v1")
+
+
+UPLOAD_DIR = Path(os.environ.get("REGISTRO_IMAGENS_DIR", str(Path("backend") / "uploads" / "registros")))
+MAX_IMAGENS_POR_REGISTRO = 30
+ALLOWED_IMAGE_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+}
 
 
 def _to_json_value(value):
@@ -46,6 +60,33 @@ def _json_error(message: str, status_code: int = 400):
     return jsonify({"ok": False, "error": message}), status_code
 
 
+def _to_imagem_dict(item):
+    return {
+        "id": item.id,
+        "registro_id": item.registro_id,
+        "storage_path": item.storage_path,
+        "external_url": item.external_url,
+        "mime_type": item.mime_type,
+        "file_size": item.file_size,
+        "origem": item.origem,
+        "created_at": _to_json_value(item.created_at),
+    }
+
+
+def _guess_extension(filename: str, mime_type: str | None) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}:
+        return suffix
+    by_mime = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/heic": ".heic",
+        "image/heif": ".heif",
+    }
+    return by_mime.get(mime_type or "", ".bin")
+
+
 def _normalize_text(value: str) -> str:
     text = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     return " ".join(text.strip().lower().split())
@@ -54,20 +95,20 @@ def _normalize_text(value: str) -> str:
 def _parse_lado_pista(value: str, field_name: str) -> LadoPista:
     normalized = _normalize_text(value)
     aliases = {
-        "direita": LadoPista.DIREITA,
-        "lado direita": LadoPista.DIREITA,
-        "lado direito": LadoPista.DIREITA,
-        "direito": LadoPista.DIREITA,
-        "dir": LadoPista.DIREITA,
-        "esquerda": LadoPista.ESQUERDA,
-        "lado esquerda": LadoPista.ESQUERDA,
-        "lado esquerdo": LadoPista.ESQUERDA,
-        "esquerdo": LadoPista.ESQUERDA,
-        "esq": LadoPista.ESQUERDA,
+        "direito": LadoPista.DIREITO,
+        "lado direito": LadoPista.DIREITO,
+        "direita": LadoPista.DIREITO,
+        "lado direita": LadoPista.DIREITO,
+        "dir": LadoPista.DIREITO,
+        "esquerdo": LadoPista.ESQUERDO,
+        "lado esquerdo": LadoPista.ESQUERDO,
+        "esquerda": LadoPista.ESQUERDO,
+        "lado esquerda": LadoPista.ESQUERDO,
+        "esq": LadoPista.ESQUERDO,
     }
     parsed = aliases.get(normalized)
     if parsed is None:
-        raise ValueError(f"{field_name} inválido. Valores válidos: direita, esquerda")
+        raise ValueError(f"{field_name} inválido. Valores válidos: direito, esquerdo")
     return parsed
 
 
@@ -295,6 +336,20 @@ def deletar_frente_servico(frente_id: int):
 
 
 def _parse_registro_payload(data: dict):
+    required_fields = [
+        "frente_servico_id",
+        "data",
+        "usuario_registrador_id",
+        "estaca_inicial",
+        "estaca_final",
+        "tempo_manha",
+        "tempo_tarde",
+        "observacao",
+    ]
+    missing = [field for field in required_fields if data.get(field) in (None, "")]
+    if missing:
+        raise ValueError(f"Campos obrigatórios ausentes: {', '.join(missing)}")
+
     try:
         frente_id = int(data["frente_servico_id"])
     except KeyError as exc:
@@ -304,59 +359,48 @@ def _parse_registro_payload(data: dict):
 
     parsed = {
         "frente_servico_id": frente_id,
-        "data": date.today(),
     }
-    
-    # Campo data (opcional no payload; por padrao usa o dia atual)
-    if data.get("data"):
-        try:
-            parsed["data"] = date.fromisoformat(data["data"])
-        except Exception:
-            raise ValueError("Formato inválido em data. Use YYYY-MM-DD.")
+    try:
+        parsed["data"] = date.fromisoformat(data["data"])
+    except Exception:
+        raise ValueError("Formato inválido em data. Use YYYY-MM-DD.")
 
-    # Campos opcionais
-    
-    if data.get("usuario_registrador_id"):
-        try:
-            parsed["usuario_registrador_id"] = int(data["usuario_registrador_id"])
-        except (ValueError, TypeError):
-            raise ValueError("usuario_registrador_id deve ser um número inteiro válido.")
+    try:
+        parsed["usuario_registrador_id"] = int(data["usuario_registrador_id"])
+    except (ValueError, TypeError):
+        raise ValueError("usuario_registrador_id deve ser um número inteiro válido.")
     
     estaca_inicial = data.get("estaca_inicial")
     estaca_final = data.get("estaca_final")
     resultado = data.get("resultado")
 
-    if estaca_inicial is not None:
-        try:
-            parsed["estaca_inicial"] = float(estaca_inicial)
-        except (ValueError, TypeError):
-            raise ValueError("estaca_inicial deve ser um número válido.")
-    
-    if estaca_final is not None:
-        try:
-            parsed["estaca_final"] = float(estaca_final)
-        except (ValueError, TypeError):
-            raise ValueError("estaca_final deve ser um número válido.")
-    
-    if resultado is None and parsed.get("estaca_inicial") is not None and parsed.get("estaca_final") is not None:
+    try:
+        parsed["estaca_inicial"] = float(estaca_inicial)
+    except (ValueError, TypeError):
+        raise ValueError("estaca_inicial deve ser um número válido.")
+
+    try:
+        parsed["estaca_final"] = float(estaca_final)
+    except (ValueError, TypeError):
+        raise ValueError("estaca_final deve ser um número válido.")
+
+    if resultado is None:
         parsed["resultado"] = float(parsed["estaca_final"]) - float(parsed["estaca_inicial"])
-    elif resultado is not None:
+    else:
         try:
             parsed["resultado"] = float(resultado)
         except (ValueError, TypeError):
             raise ValueError("resultado deve ser um número válido.")
-    
-    if data.get("tempo_manha"):
-        try:
-            parsed["tempo_manha"] = _parse_clima(data["tempo_manha"], "tempo_manha")
-        except ValueError:
-            raise ValueError(f"tempo_manha inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
-    
-    if data.get("tempo_tarde"):
-        try:
-            parsed["tempo_tarde"] = _parse_clima(data["tempo_tarde"], "tempo_tarde")
-        except ValueError:
-            raise ValueError(f"tempo_tarde inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
+
+    try:
+        parsed["tempo_manha"] = _parse_clima(data["tempo_manha"], "tempo_manha")
+    except ValueError:
+        raise ValueError(f"tempo_manha inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
+
+    try:
+        parsed["tempo_tarde"] = _parse_clima(data["tempo_tarde"], "tempo_tarde")
+    except ValueError:
+        raise ValueError(f"tempo_tarde inválido. Valores válidos: {', '.join([c.value for c in Clima])}")
     
     if data.get("pista"):
         try:
@@ -370,8 +414,9 @@ def _parse_registro_payload(data: dict):
         except ValueError:
             raise ValueError(f"lado_pista inválido. Valores válidos: {', '.join([p.value for p in LadoPista])}")
     
-    if data.get("observacao"):
-        parsed["observacao"] = data["observacao"]
+    parsed["observacao"] = str(data["observacao"]).strip()
+    if not parsed["observacao"]:
+        raise ValueError("observacao é obrigatória.")
     
     return parsed
 
@@ -481,4 +526,80 @@ def deletar_registro(registro_id: int):
         ok = Repository.registros.deletar(db, registro_id)
         if not ok:
             return _json_error("Registro não encontrado.", 404)
+        return jsonify({"ok": True})
+
+
+@api_blueprint.route("/registros/<int:registro_id>/imagens", methods=["GET"])
+def listar_imagens_registro(registro_id: int):
+    with SessionLocal() as db:
+        registro = Repository.registros.obter_por_id(db, registro_id)
+        if not registro:
+            return _json_error("Registro não encontrado.", 404)
+        imagens = Repository.registro_imagens.listar_por_registro(db, registro_id)
+        return jsonify([_to_imagem_dict(item) for item in imagens])
+
+
+@api_blueprint.route("/registros/<int:registro_id>/imagens", methods=["POST"])
+def upload_imagem_registro(registro_id: int):
+    uploaded = request.files.get("imagem")
+    if not uploaded:
+        return _json_error("Arquivo obrigatório ausente: imagem")
+
+    mime_type = (uploaded.mimetype or "").lower().strip()
+    if mime_type not in ALLOWED_IMAGE_MIME_TYPES:
+        return _json_error("Tipo de imagem não suportado. Use JPEG, PNG, WEBP, HEIC ou HEIF.")
+
+    with SessionLocal() as db:
+        registro = Repository.registros.obter_por_id(db, registro_id)
+        if not registro:
+            return _json_error("Registro não encontrado.", 404)
+
+        total = Repository.registro_imagens.contar_por_registro(db, registro_id)
+        if total >= MAX_IMAGENS_POR_REGISTRO:
+            return _json_error("Limite de 30 imagens por registro atingido.", 409)
+
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        original_name = secure_filename(uploaded.filename or "imagem")
+        extension = _guess_extension(original_name, mime_type)
+        file_name = f"registro_{registro_id}_{uuid4().hex}{extension}"
+        full_path = UPLOAD_DIR / file_name
+        uploaded.save(full_path)
+
+        file_size = full_path.stat().st_size if full_path.exists() else None
+        relative_path = str(full_path).replace("\\", "/")
+        imagem = Repository.registro_imagens.criar(
+            db,
+            registro_id=registro_id,
+            storage_path=relative_path,
+            mime_type=mime_type,
+            file_size=file_size,
+            origem="api",
+        )
+        return jsonify(_to_imagem_dict(imagem)), 201
+
+
+@api_blueprint.route("/registros/<int:registro_id>/imagens/<int:imagem_id>", methods=["DELETE"])
+def deletar_imagem_registro(registro_id: int, imagem_id: int):
+    with SessionLocal() as db:
+        registro = Repository.registros.obter_por_id(db, registro_id)
+        if not registro:
+            return _json_error("Registro não encontrado.", 404)
+
+        imagem = Repository.registro_imagens.obter_por_id(db, imagem_id)
+        if not imagem or imagem.registro_id != registro_id:
+            return _json_error("Imagem não encontrada para este registro.", 404)
+
+        storage_path = imagem.storage_path
+        ok = Repository.registro_imagens.deletar(db, imagem_id)
+        if not ok:
+            return _json_error("Imagem não encontrada.", 404)
+
+        if storage_path:
+            try:
+                saved_file = Path(storage_path)
+                if saved_file.exists():
+                    saved_file.unlink()
+            except OSError:
+                pass
+
         return jsonify({"ok": True})

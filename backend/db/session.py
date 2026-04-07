@@ -62,6 +62,71 @@ def ensure_runtime_migrations() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_telegram_link_codes_user ON telegram_link_codes(user_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_telegram_link_codes_expires_at ON telegram_link_codes(expires_at)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_telegram_link_codes_used_at ON telegram_link_codes(used_at)"))
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM pg_type t
+                        JOIN pg_enum e ON e.enumtypid = t.oid
+                        WHERE t.typname = 'lado_pista_enum'
+                          AND e.enumlabel = 'direita'
+                    ) THEN
+                        ALTER TYPE lado_pista_enum RENAME VALUE 'direita' TO 'direito';
+                    END IF;
+
+                    IF EXISTS (
+                        SELECT 1
+                        FROM pg_type t
+                        JOIN pg_enum e ON e.enumtypid = t.oid
+                        WHERE t.typname = 'lado_pista_enum'
+                          AND e.enumlabel = 'esquerda'
+                    ) THEN
+                        ALTER TYPE lado_pista_enum RENAME VALUE 'esquerda' TO 'esquerdo';
+                    END IF;
+                END $$;
+                """
+            )
+        )
+        connection.execute(text("ALTER TABLE registros DROP CONSTRAINT IF EXISTS ck_registros_required_fields"))
+        connection.execute(
+            text(
+                """
+                ALTER TABLE registros
+                ADD CONSTRAINT ck_registros_required_fields
+                CHECK (
+                    data IS NOT NULL
+                    AND frente_servico_id IS NOT NULL
+                    AND usuario_registrador_id IS NOT NULL
+                    AND estaca_inicial IS NOT NULL
+                    AND estaca_final IS NOT NULL
+                    AND resultado IS NOT NULL
+                    AND tempo_manha IS NOT NULL
+                    AND tempo_tarde IS NOT NULL
+                    AND observacao IS NOT NULL
+                ) NOT VALID
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS registro_imagens (
+                    id SERIAL PRIMARY KEY,
+                    registro_id INT NOT NULL REFERENCES registros(id) ON DELETE CASCADE,
+                    storage_path VARCHAR NULL,
+                    external_url VARCHAR NULL,
+                    mime_type VARCHAR NULL,
+                    file_size INT NULL,
+                    origem VARCHAR NOT NULL DEFAULT 'api',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_registro_imagens_registro ON registro_imagens(registro_id)"))
 
 
 ensure_runtime_migrations()

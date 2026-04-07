@@ -225,25 +225,27 @@ Authorization: Bearer <token>
 - Body obrigatório:
 ```json
 {
-  "frente_servico_id": 1
+  "frente_servico_id": 1,
+  "data": "2026-04-05",
+  "usuario_registrador_id": 1,
+  "estaca_inicial": 10.5,
+  "estaca_final": 12.0,
+  "tempo_manha": "limpo",
+  "tempo_tarde": "nublado",
+  "observacao": "Observações do registro"
 }
 ```
 - Body opcional:
 ```json
 {
-  "data": "2026-04-05",
-  "usuario_registrador_id": 1,
-  "estaca_inicial": 10.5,
-  "estaca_final": 12.0,
   "resultado": 1.5,
-  "tempo_manha": "limpo",
-  "tempo_tarde": "nublado",
-  "pista": "direita",
-  "lado_pista": "direita",
-  "observacao": "Observações do registro"
+  "pista": "direito",
+  "lado_pista": "esquerdo"
 }
 ```
+- Regra: `pista` e `lado_pista` são opcionais.
 - Regra: se `resultado` não vier e `estaca_inicial` + `estaca_final` vierem, o backend calcula automaticamente.
+- Limite de imagens por registro: `30`.
 
 ### GET `/api/v1/registros/{registro_id}`
 - Retorna registro por id.
@@ -251,6 +253,22 @@ Authorization: Bearer <token>
 ### PUT/PATCH `/api/v1/registros/{registro_id}`
 - Atualiza registro.
 - Campos aceitos: `data`, `frente_servico_id`, `usuario_registrador_id`, `estaca_inicial`, `estaca_final`, `resultado`, `tempo_manha`, `tempo_tarde`, `pista`, `lado_pista`, `observacao`.
+
+### GET `/api/v1/registros/{registro_id}/imagens`
+- Lista imagens vinculadas ao registro.
+
+### POST `/api/v1/registros/{registro_id}/imagens`
+- Faz upload de uma imagem para o registro.
+- `Content-Type`: `multipart/form-data`
+- Campo obrigatório no form-data: `imagem`
+- Tipos permitidos: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif`
+- Respostas relevantes:
+  - `201`: imagem anexada
+  - `404`: registro não encontrado
+  - `409`: limite de 30 imagens atingido
+
+### DELETE `/api/v1/registros/{registro_id}/imagens/{imagem_id}`
+- Remove imagem vinculada ao registro.
 
 ### DELETE `/api/v1/registros/{registro_id}`
 - Remove registro.

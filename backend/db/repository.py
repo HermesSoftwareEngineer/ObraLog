@@ -6,6 +6,7 @@ from backend.db.models import (
     Usuario,
     FrenteServico,
     Registro,
+    RegistroImagem,
     TelegramLinkCode,
     NivelAcesso,
     Clima,
@@ -169,20 +170,22 @@ class RegistroRepository:
     def criar(
         db: Session,
         frente_servico_id: int,
-        data: date | None = None,
-        usuario_registrador_id: int | None = None,
-        estaca_inicial: float | None = None,
-        estaca_final: float | None = None,
-        resultado: float | None = None,
-        tempo_manha: Clima | None = None,
-        tempo_tarde: Clima | None = None,
+        data: date,
+        usuario_registrador_id: int,
+        estaca_inicial: float,
+        estaca_final: float,
+        resultado: float,
+        tempo_manha: Clima,
+        tempo_tarde: Clima,
         pista: LadoPista | None = None,
         lado_pista: LadoPista | None = None,
-        observacao: str | None = None,
+        observacao: str = "",
     ) -> Registro:
-        resolved_data = data or date.today()
+        if not observacao.strip():
+            raise ValueError("observacao é obrigatória para criar registro.")
+
         registro = Registro(
-            data=resolved_data,
+            data=data,
             frente_servico_id=frente_servico_id,
             usuario_registrador_id=usuario_registrador_id,
             estaca_inicial=estaca_inicial,
@@ -241,6 +244,67 @@ class RegistroRepository:
         return True
 
 
+class RegistroImagemRepository:
+    MAX_IMAGENS_POR_REGISTRO = 30
+
+    @staticmethod
+    def contar_por_registro(db: Session, registro_id: int) -> int:
+        return db.query(RegistroImagem).filter(RegistroImagem.registro_id == registro_id).count()
+
+    @staticmethod
+    def listar_por_registro(db: Session, registro_id: int) -> list[RegistroImagem]:
+        return (
+            db.query(RegistroImagem)
+            .filter(RegistroImagem.registro_id == registro_id)
+            .order_by(RegistroImagem.created_at.asc())
+            .all()
+        )
+
+    @staticmethod
+    def obter_por_id(db: Session, imagem_id: int) -> RegistroImagem | None:
+        return db.query(RegistroImagem).filter(RegistroImagem.id == imagem_id).first()
+
+    @staticmethod
+    def criar(
+        db: Session,
+        registro_id: int,
+        *,
+        storage_path: str | None = None,
+        external_url: str | None = None,
+        mime_type: str | None = None,
+        file_size: int | None = None,
+        origem: str = "api",
+    ) -> RegistroImagem:
+        if not storage_path and not external_url:
+            raise ValueError("Informe storage_path ou external_url para salvar imagem do registro.")
+
+        total = RegistroImagemRepository.contar_por_registro(db, registro_id)
+        if total >= RegistroImagemRepository.MAX_IMAGENS_POR_REGISTRO:
+            raise ValueError("Limite de 30 imagens por registro atingido.")
+
+        item = RegistroImagem(
+            registro_id=registro_id,
+            storage_path=storage_path,
+            external_url=external_url,
+            mime_type=mime_type,
+            file_size=file_size,
+            origem=origem,
+        )
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+        return item
+
+    @staticmethod
+    def deletar(db: Session, imagem_id: int) -> bool:
+        item = db.query(RegistroImagem).filter(RegistroImagem.id == imagem_id).first()
+        if not item:
+            return False
+        db.delete(item)
+        db.commit()
+        return True
+
+
 class TelegramLinkCodeRepository:
     @staticmethod
     def criar(
@@ -293,5 +357,6 @@ class Repository:
     usuarios = UsuarioRepository
     frentes_servico = FrenteServicoRepository
     registros = RegistroRepository
+    registro_imagens = RegistroImagemRepository
     telegram_link_codes = TelegramLinkCodeRepository
 

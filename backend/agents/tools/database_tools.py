@@ -24,6 +24,12 @@ def _to_dict(obj):
     return data
 
 
+def _registro_to_dict_with_images(db, registro):
+    data = _to_dict(registro)
+    data["imagens_total"] = Repository.registro_imagens.contar_por_registro(db, registro.id)
+    return data
+
+
 def _assert_permission(actor_level: str, operation: str, resource: str):
     rules = {
         NivelAcesso.ADMINISTRADOR.value: {
@@ -58,20 +64,20 @@ def _parse_lado_pista(value: str | None) -> LadoPista | None:
         return None
     normalized = _normalize_text(value)
     aliases = {
-        "direita": LadoPista.DIREITA,
-        "lado direita": LadoPista.DIREITA,
-        "lado direito": LadoPista.DIREITA,
-        "direito": LadoPista.DIREITA,
-        "dir": LadoPista.DIREITA,
-        "esquerda": LadoPista.ESQUERDA,
-        "lado esquerda": LadoPista.ESQUERDA,
-        "lado esquerdo": LadoPista.ESQUERDA,
-        "esquerdo": LadoPista.ESQUERDA,
-        "esq": LadoPista.ESQUERDA,
+        "direito": LadoPista.DIREITO,
+        "lado direito": LadoPista.DIREITO,
+        "direita": LadoPista.DIREITO,
+        "lado direita": LadoPista.DIREITO,
+        "dir": LadoPista.DIREITO,
+        "esquerdo": LadoPista.ESQUERDO,
+        "lado esquerdo": LadoPista.ESQUERDO,
+        "esquerda": LadoPista.ESQUERDO,
+        "lado esquerda": LadoPista.ESQUERDO,
+        "esq": LadoPista.ESQUERDO,
     }
     parsed = aliases.get(normalized)
     if parsed is None:
-        raise ValueError("lado_pista inválido. Valores aceitos: direita, esquerda.")
+        raise ValueError("lado_pista inválido. Valores aceitos: direito, esquerdo.")
     return parsed
 
 
@@ -280,26 +286,25 @@ def _build_tools(actor_user_id: int, actor_level: str):
 
     @tool
     def criar_registro(
+        data: str,
+        estaca_inicial: float,
+        estaca_final: float,
+        tempo_manha: str,
+        tempo_tarde: str,
+        observacao: str,
         frente_servico_id: int | None = None,
         frente_servico_nome: str | None = None,
-        data: str | None = None,
-        estaca_inicial: float | None = None,
-        estaca_final: float | None = None,
-        tempo_manha: str | None = None,
-        tempo_tarde: str | None = None,
         pista: str | None = None,
         lado_pista: str | None = None,
-        observacao: str | None = None,
     ) -> dict:
-        """Cria registro no diário. Use campo data (YYYY-MM-DD); se omitido, assume a data de hoje."""
+        """Cria registro no diário com campos obrigatórios; apenas pista e lado_pista são opcionais."""
         _assert_permission(actor_level, "create", "registros")
-        parsed_data = date.today()
-        if data:
-            parsed_data = date.fromisoformat(data)
-        
-        resultado = None
-        if estaca_inicial is not None and estaca_final is not None:
-            resultado = estaca_final - estaca_inicial
+        parsed_data = date.fromisoformat(data)
+        observacao = observacao.strip()
+        if not observacao:
+            raise ValueError("observacao é obrigatória.")
+
+        resultado = estaca_final - estaca_inicial
 
         with SessionLocal() as db:
             resolved_frente_id = _resolve_frente_servico_id(
@@ -321,7 +326,49 @@ def _build_tools(actor_user_id: int, actor_level: str):
                 lado_pista=_parse_lado_pista(lado_pista),
                 observacao=observacao,
             )
-            return _to_dict(registro)
+            return _registro_to_dict_with_images(db, registro)
+
+    @tool
+    def anexar_imagem_registro(
+        registro_id: int,
+        imagem_url: str,
+    ) -> dict:
+        """Anexa imagem a um registro por URL externa. Limite: 30 imagens por registro."""
+        _assert_permission(actor_level, "update", "registros")
+        with SessionLocal() as db:
+            registro = Repository.registros.obter_por_id(db, registro_id)
+            if not registro:
+                return {"ok": False, "message": "Registro não encontrado."}
+
+            if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
+                raise PermissionError("Encarregado só pode anexar imagem em seus próprios registros.")
+
+            imagem_url = (imagem_url or "").strip()
+            if not imagem_url:
+                return {"ok": False, "message": "imagem_url é obrigatória."}
+
+            if not (imagem_url.startswith("http://") or imagem_url.startswith("https://")):
+                return {"ok": False, "message": "imagem_url deve ser uma URL HTTP/HTTPS válida."}
+
+            try:
+                imagem = Repository.registro_imagens.criar(
+                    db,
+                    registro_id=registro_id,
+                    external_url=imagem_url,
+                    origem="agent",
+                )
+            except ValueError as exc:
+                return {"ok": False, "message": str(exc)}
+
+            return {
+                "ok": True,
+                "imagem": {
+                    "id": imagem.id,
+                    "registro_id": imagem.registro_id,
+                    "external_url": imagem.external_url,
+                    "origem": imagem.origem,
+                },
+            }
 
     @tool
     def listar_registros(
@@ -348,7 +395,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
                 registros = Repository.registros.listar_por_usuario(db, usuario_id)
             else:
                 registros = Repository.registros.listar(db)
-            return [_to_dict(item) for item in registros]
+            return [_registro_to_dict_with_images(db, item) for item in registros]
 
     @tool
     def atualizar_registro(
@@ -400,7 +447,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
             if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
                 raise PermissionError("Encarregado só pode atualizar seus próprios registros.")
             updated = Repository.registros.atualizar(db, registro_id, **payload)
-            return {"ok": True, "registro": _to_dict(updated)}
+            return {"ok": True, "registro": _registro_to_dict_with_images(db, updated)}
 
     @tool
     def deletar_registro(registro_id: int) -> dict:
@@ -425,6 +472,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
         atualizar_frente_servico,
         deletar_frente_servico,
         criar_registro,
+        anexar_imagem_registro,
         listar_registros,
         atualizar_registro,
         deletar_registro,

@@ -23,8 +23,8 @@ class Clima(str, Enum):
     IMPRATICAVEL = "impraticavel"
 
 class LadoPista(str, Enum):
-    DIREITA = "direita"
-    ESQUERDA = "esquerda"
+    DIREITO = "direito"
+    ESQUERDO = "esquerdo"
 
 
 def _enum_values(enum_cls):
@@ -79,21 +79,42 @@ class Registro(Base):
     __tablename__ = "registros"
 
     id = Column(Integer, primary_key=True, index=True)
-    data = Column(Date, nullable=True, default=date.today, index=True)
+    data = Column(Date, nullable=False, index=True)
     frente_servico_id = Column(Integer, ForeignKey("frentes_servico.id", ondelete="CASCADE"), nullable=False, index=True)
-    usuario_registrador_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
-    estaca_inicial = Column(DECIMAL(10, 2), nullable=True)
-    estaca_final = Column(DECIMAL(10, 2), nullable=True)
-    resultado = Column(DECIMAL(10, 2), nullable=True)
-    tempo_manha = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=True)
-    tempo_tarde = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=True)
+    usuario_registrador_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=False, index=True)
+    estaca_inicial = Column(DECIMAL(10, 2), nullable=False)
+    estaca_final = Column(DECIMAL(10, 2), nullable=False)
+    resultado = Column(DECIMAL(10, 2), nullable=False)
+    tempo_manha = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=False)
+    tempo_tarde = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=False)
     pista = Column(SQLEnum(LadoPista, values_callable=_enum_values, name="lado_pista_enum"), nullable=True)
     lado_pista = Column(SQLEnum(LadoPista, values_callable=_enum_values, name="lado_pista_enum"), nullable=True)
-    observacao = Column(String, nullable=True)
+    observacao = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     frente_servico = relationship("FrenteServico", back_populates="registros")
     usuario_registrador = relationship("Usuario", back_populates="registros")
+    imagens = relationship(
+        "RegistroImagem",
+        back_populates="registro",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class RegistroImagem(Base):
+    __tablename__ = "registro_imagens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    registro_id = Column(Integer, ForeignKey("registros.id", ondelete="CASCADE"), nullable=False, index=True)
+    storage_path = Column(String, nullable=True)
+    external_url = Column(String, nullable=True)
+    mime_type = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    origem = Column(String, nullable=False, default="api")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    registro = relationship("Registro", back_populates="imagens")
 
 
 class TelegramLinkCode(Base):
