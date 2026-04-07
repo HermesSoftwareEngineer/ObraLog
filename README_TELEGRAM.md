@@ -16,6 +16,11 @@ O bot vai consultar a API do Telegram periodicamente e responder no mesmo termin
 - `TELEGRAM_TOKEN`: Token do bot obtido em @BotFather no Telegram
 - `DATABASE_URL`: Conexão ao Postgres (com checkpointer)
 
+### Variáveis recomendadas para produção (Webhook)
+
+- `PUBLIC_BASE_URL`: URL pública HTTPS do serviço (ex.: Cloud Run)
+- `TELEGRAM_WEBHOOK_SECRET_TOKEN`: Segredo validado no header `X-Telegram-Bot-Api-Secret-Token`
+
 ### Fluxo
 
 1. Abra um terminal e rode:
@@ -61,6 +66,8 @@ Para produção com webhook HTTPS:
    ```
 
 O webhook vai estar em `POST /telegram/webhook` recebendo updates.
+
+Se `TELEGRAM_WEBHOOK_SECRET_TOKEN` estiver configurado, o backend valida o header enviado pelo Telegram e rejeita requisições sem token válido.
 
 ---
 

@@ -55,9 +55,16 @@ def send_message(chat_id: int | str, text: str) -> None:
 
 
 def set_webhook(base_url: str) -> None:
+	if not base_url:
+		raise RuntimeError("PUBLIC_BASE_URL não configurada para registrar webhook.")
+
 	webhook_url = f"{base_url.rstrip('/')}/telegram/webhook"
+	secret_token = os.environ.get("TELEGRAM_WEBHOOK_SECRET_TOKEN")
 	print(f"Configurando webhook do Telegram para: {webhook_url}")
-	_telegram_api_call("setWebhook", {"url": webhook_url})
+	payload = {"url": webhook_url}
+	if secret_token:
+		payload["secret_token"] = secret_token
+	_telegram_api_call("setWebhook", payload)
 
 
 def _extract_text_content(content) -> str:

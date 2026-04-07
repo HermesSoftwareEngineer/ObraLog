@@ -30,6 +30,7 @@ Variáveis recomendadas no serviço:
 
 - `GOOGLE_API_KEY`
 - `TELEGRAM_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET_TOKEN`
 - `DATABASE_URL`
 - `CORS_ORIGINS`
 - `AUTH_SECRET_KEY`
@@ -47,6 +48,7 @@ Variáveis mínimas:
 
 - `GOOGLE_API_KEY` para o modelo Gemini.
 - `TELEGRAM_TOKEN` para enviar mensagens de volta ao chat.
+- `TELEGRAM_WEBHOOK_SECRET_TOKEN` para validar chamadas do webhook do Telegram.
 - `DATABASE_URL` para o checkpointer do LangGraph.
 
 Depois de subir o backend em uma URL pública HTTPS, aponte o webhook do bot para `/telegram/webhook`.
