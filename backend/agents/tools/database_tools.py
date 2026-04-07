@@ -1,10 +1,22 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 import unicodedata
+import uuid
 
 from langchain_core.tools import tool
+from sqlalchemy import func
 
-from backend.db.models import Clima, LadoPista, NivelAcesso
+from backend.db.diario_repository import agrupar_por_data, get_diario_do_dia, get_registros_por_periodo
+from backend.db.models import (
+    Alert,
+    AlertRead,
+    AlertSeverity,
+    AlertStatus,
+    AlertType,
+    Clima,
+    LadoPista,
+    NivelAcesso,
+)
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 
@@ -26,7 +38,10 @@ def _to_dict(obj):
 
 def _registro_to_dict_with_images(db, registro):
     data = _to_dict(registro)
-    data["imagens_total"] = Repository.registro_imagens.contar_por_registro(db, registro.id)
+    if db is not None:
+        data["imagens_total"] = Repository.registro_imagens.contar_por_registro(db, registro.id)
+    else:
+        data["imagens_total"] = len(getattr(registro, "_imagens_cache", []))
     return data
 
 
@@ -36,16 +51,19 @@ def _assert_permission(actor_level: str, operation: str, resource: str):
             "usuarios": {"create", "read", "update", "delete"},
             "frentes_servico": {"create", "read", "update", "delete"},
             "registros": {"create", "read", "update", "delete"},
+            "alerts": {"create", "read", "update", "delete"},
         },
         NivelAcesso.GERENTE.value: {
             "usuarios": {"read"},
             "frentes_servico": {"create", "read", "update", "delete"},
             "registros": {"create", "read", "update", "delete"},
+            "alerts": {"create", "read", "update", "delete"},
         },
         NivelAcesso.ENCARREGADO.value: {
             "usuarios": {"read"},
             "frentes_servico": {"read"},
             "registros": {"create", "read", "update", "delete"},
+            "alerts": {"create", "read", "update"},
         },
     }
 
@@ -117,10 +135,143 @@ def _parse_nivel_acesso(value: str | None) -> NivelAcesso | None:
     return parsed
 
 
+def _parse_alert_type(value: str) -> AlertType:
+    normalized = _normalize_text(value)
+    aliases = {
+        "maquina quebrada": AlertType.MAQUINA_QUEBRADA,
+        "maquina quebrado": AlertType.MAQUINA_QUEBRADA,
+        "maquina_quebrada": AlertType.MAQUINA_QUEBRADA,
+        "equipamento quebrado": AlertType.MAQUINA_QUEBRADA,
+        "equipamento quebrou": AlertType.MAQUINA_QUEBRADA,
+        "quebra de maquina": AlertType.MAQUINA_QUEBRADA,
+        "acidente": AlertType.ACIDENTE,
+        "colisao": AlertType.ACIDENTE,
+        "atropelamento": AlertType.ACIDENTE,
+        "queda": AlertType.ACIDENTE,
+        "falta material": AlertType.FALTA_MATERIAL,
+        "falta de material": AlertType.FALTA_MATERIAL,
+        "material nao chegou": AlertType.FALTA_MATERIAL,
+        "material nao veio": AlertType.FALTA_MATERIAL,
+        "falta_material": AlertType.FALTA_MATERIAL,
+        "risco seguranca": AlertType.RISCO_SEGURANCA,
+        "risco de seguranca": AlertType.RISCO_SEGURANCA,
+        "inseguranca": AlertType.RISCO_SEGURANCA,
+        "condicao insegura": AlertType.RISCO_SEGURANCA,
+        "risco_seguranca": AlertType.RISCO_SEGURANCA,
+        "outro": AlertType.OUTRO,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError("type inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro.")
+    return parsed
+
+
+def _parse_alert_severity(value: str) -> AlertSeverity:
+    if not value:
+        return AlertSeverity.MEDIA
+    normalized = _normalize_text(value)
+    aliases = {
+        "baixa": AlertSeverity.BAIXA,
+        "media": AlertSeverity.MEDIA,
+        "medio": AlertSeverity.MEDIA,
+        "moderada": AlertSeverity.MEDIA,
+        "alta": AlertSeverity.ALTA,
+        "critica": AlertSeverity.CRITICA,
+        "grave": AlertSeverity.CRITICA,
+        "urgente": AlertSeverity.CRITICA,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError("severity inválido. Use: baixa, media, alta, critica.")
+    return parsed
+
+
+def _parse_alert_status(value: str) -> AlertStatus:
+    normalized = _normalize_text(value)
+    aliases = {
+        "aberto": AlertStatus.ABERTO,
+        "em atendimento": AlertStatus.EM_ATENDIMENTO,
+        "em_atendimento": AlertStatus.EM_ATENDIMENTO,
+        "aguardando peca": AlertStatus.AGUARDANDO_PECA,
+        "aguardando_peca": AlertStatus.AGUARDANDO_PECA,
+        "resolvido": AlertStatus.RESOLVIDO,
+        "cancelado": AlertStatus.CANCELADO,
+    }
+    parsed = aliases.get(normalized)
+    if parsed is None:
+        raise ValueError("status inválido. Use: aberto, em_atendimento, aguardando_peca, resolvido, cancelado.")
+    return parsed
+
+
+def _default_alert_title(alert_type: AlertType) -> str:
+    type_labels = {
+        AlertType.MAQUINA_QUEBRADA: "Máquina quebrada",
+        AlertType.ACIDENTE: "Acidente",
+        AlertType.FALTA_MATERIAL: "Falta de material",
+        AlertType.RISCO_SEGURANCA: "Risco de segurança",
+        AlertType.OUTRO: "Alerta operacional",
+    }
+    return type_labels.get(alert_type, "Alerta operacional")
+
+
+def _default_alert_description(
+    alert_type: AlertType,
+    location_detail: str | None = None,
+    equipment_name: str | None = None,
+) -> str:
+    base_by_type = {
+        AlertType.MAQUINA_QUEBRADA: "Máquina/equipamento com falha operacional",
+        AlertType.ACIDENTE: "Ocorrência de acidente em campo",
+        AlertType.FALTA_MATERIAL: "Ocorrência de falta de material",
+        AlertType.RISCO_SEGURANCA: "Ocorrência de risco de segurança",
+        AlertType.OUTRO: "Ocorrência operacional reportada",
+    }
+    parts = [base_by_type.get(alert_type, "Ocorrência operacional reportada")]
+    if location_detail:
+        parts.append(f"Local: {location_detail}")
+    if equipment_name:
+        parts.append(f"Equipamento: {equipment_name}")
+    return ". ".join(parts)
+
+
+def _generate_alert_code(db) -> str:
+    year = datetime.utcnow().year
+    prefix = f"ALT-{year}-"
+    count = db.query(func.count(Alert.id)).filter(Alert.code.like(f"{prefix}%")).scalar() or 0
+    return f"{prefix}{count + 1:04d}"
+
+
+def _registro_to_diario_item(registro) -> dict:
+    data = _registro_to_dict_with_images(None, registro)
+    data["registrador_nome"] = registro.usuario_registrador.nome if getattr(registro, "usuario_registrador", None) else None
+    return data
+
+
+def _build_diario_do_dia_summary(data_alvo: date, registros: list) -> dict:
+    registros_out = [_registro_to_diario_item(item) for item in registros]
+    total_resultado = round(sum(float(item.get("resultado") or 0.0) for item in registros_out), 2)
+    dias_impraticaveis = bool(registros) and all(
+        (item.get("tempo_manha") == Clima.IMPRATICAVEL.value)
+        and (item.get("tempo_tarde") == Clima.IMPRATICAVEL.value)
+        for item in registros_out
+    )
+    manha = sorted({item.get("tempo_manha") for item in registros_out if item.get("tempo_manha")})
+    tarde = sorted({item.get("tempo_tarde") for item in registros_out if item.get("tempo_tarde")})
+    return {
+        "data": data_alvo.isoformat(),
+        "registros": registros_out,
+        "total_resultado": total_resultado,
+        "total_registros": len(registros_out),
+        "dias_impraticaveis": dias_impraticaveis,
+        "resumo_clima": f"Manhã: {', '.join(manha)} | Tarde: {', '.join(tarde)}",
+    }
+
+
 def _resolve_frente_servico_id(
     db,
     frente_servico_id: int | None = None,
     frente_servico_nome: str | None = None,
+    auto_select_single: bool = False,
 ) -> int:
     if frente_servico_id is not None:
         frente = Repository.frentes_servico.obter_por_id(db, frente_servico_id)
@@ -133,6 +284,8 @@ def _resolve_frente_servico_id(
         raise ValueError("Nenhuma frente de serviço cadastrada no momento.")
 
     if not frente_servico_nome:
+        if auto_select_single and len(frentes) == 1:
+            return frentes[0].id
         opcoes = ", ".join(f"{item.nome} (id={item.id})" for item in frentes[:8])
         raise ValueError(
             "Informe o nome da frente de serviço. "
@@ -460,6 +613,208 @@ def _build_tools(actor_user_id: int, actor_level: str):
             ok = Repository.registros.deletar(db, registro_id)
             return {"ok": ok}
 
+    @tool
+    def consultar_diario_dia(data: str, frente_servico_id: int | None = None) -> dict:
+        """Consulta diário consolidado de um dia, com totais de registros, resultado e clima."""
+        _assert_permission(actor_level, "read", "registros")
+        data_alvo = date.fromisoformat(data)
+        with SessionLocal() as db:
+            registros = get_diario_do_dia(db, data=data_alvo, frente_servico_id=frente_servico_id)
+            if actor_level == NivelAcesso.ENCARREGADO.value:
+                registros = [r for r in registros if r.usuario_registrador_id == actor_user_id]
+
+        if not registros:
+            return {"ok": False, "message": "Nenhum registro encontrado para os filtros informados."}
+
+        return {"ok": True, "diario": _build_diario_do_dia_summary(data_alvo, registros)}
+
+    @tool
+    def consultar_diario_periodo(
+        data_inicio: str,
+        data_fim: str,
+        frente_servico_id: int | None = None,
+        usuario_id: int | None = None,
+        apenas_impraticaveis: bool = False,
+    ) -> dict:
+        """Consulta diário por período, agrupado por dia, com totais gerais."""
+        _assert_permission(actor_level, "read", "registros")
+        inicio = date.fromisoformat(data_inicio)
+        fim = date.fromisoformat(data_fim)
+        if fim < inicio:
+            raise ValueError("data_fim não pode ser anterior a data_inicio.")
+        if (fim - inicio).days > 365:
+            raise ValueError("Período máximo permitido é de 365 dias.")
+
+        with SessionLocal() as db:
+            effective_usuario = actor_user_id if actor_level == NivelAcesso.ENCARREGADO.value else usuario_id
+            registros = get_registros_por_periodo(
+                db,
+                data_inicio=inicio,
+                data_fim=fim,
+                frente_servico_id=frente_servico_id,
+                usuario_id=effective_usuario,
+                apenas_impraticaveis=apenas_impraticaveis,
+            )
+
+        grouped = agrupar_por_data(registros)
+        dias = [_build_diario_do_dia_summary(day, items) for day, items in grouped.items()]
+        total_resultado = round(sum(day["total_resultado"] for day in dias), 2)
+        total_dias = len(dias)
+        total_dias_impraticaveis = sum(1 for day in dias if day["dias_impraticaveis"])
+
+        return {
+            "ok": True,
+            "relatorio": {
+                "data_inicio": inicio.isoformat(),
+                "data_fim": fim.isoformat(),
+                "dias": dias,
+                "total_resultado_periodo": total_resultado,
+                "total_dias": total_dias,
+                "total_dias_impraticaveis": total_dias_impraticaveis,
+                "media_diaria": round(total_resultado / total_dias, 2) if total_dias else 0.0,
+            },
+        }
+
+    @tool
+    def criar_alerta(
+        type: str,
+        description: str | None = None,
+        severity: str | None = None,
+        title: str | None = None,
+        raw_text: str | None = None,
+        location_detail: str | None = None,
+        equipment_name: str | None = None,
+        photo_urls: list[str] | None = None,
+        priority_score: int | None = None,
+        telegram_message_id: int | None = None,
+        notified_channels: list[str] | None = None,
+    ) -> dict:
+        """Cria alerta operacional."""
+        _assert_permission(actor_level, "create", "alerts")
+        with SessionLocal() as db:
+            alert_type = _parse_alert_type(type)
+            alert_severity = _parse_alert_severity(severity)
+            normalized_description = (description or "").strip()
+            used_description_suggestion = not bool(normalized_description)
+            if not normalized_description:
+                normalized_description = _default_alert_description(
+                    alert_type=alert_type,
+                    location_detail=(location_detail or "").strip() or None,
+                    equipment_name=(equipment_name or "").strip() or None,
+                )
+
+            alert = Alert(
+                code=_generate_alert_code(db),
+                type=alert_type,
+                severity=alert_severity,
+                reported_by=actor_user_id,
+                telegram_message_id=telegram_message_id,
+                title=(title or "").strip() or _default_alert_title(alert_type),
+                description=normalized_description,
+                raw_text=raw_text,
+                location_detail=location_detail,
+                equipment_name=equipment_name,
+                photo_urls=photo_urls,
+                status=AlertStatus.ABERTO,
+                priority_score=priority_score,
+                notified_channels=notified_channels,
+            )
+            db.add(alert)
+            db.commit()
+            db.refresh(alert)
+            payload = {"ok": True, "alerta": _to_dict(alert)}
+            if used_description_suggestion:
+                payload["description_sugerida"] = normalized_description
+            return payload
+
+    @tool
+    def listar_alertas(
+        status: str | None = None,
+        severity: str | None = None,
+        apenas_nao_lidos: bool = False,
+        limit: int = 50,
+    ) -> dict:
+        """Lista alertas com filtros de status e severidade."""
+        _assert_permission(actor_level, "read", "alerts")
+        with SessionLocal() as db:
+            query = db.query(Alert)
+            if status:
+                query = query.filter(Alert.status == _parse_alert_status(status))
+            if severity:
+                query = query.filter(Alert.severity == _parse_alert_severity(severity))
+            if apenas_nao_lidos:
+                query = query.filter(Alert.is_read.is_(False))
+
+            items = (
+                query.order_by(Alert.created_at.desc())
+                .limit(max(1, min(limit, 200)))
+                .all()
+            )
+            if not items:
+                return {
+                    "ok": True,
+                    "total": 0,
+                    "alertas": [],
+                    "message": "Nenhum alerta encontrado para os filtros informados.",
+                    "next_steps": [
+                        "consultar outro status",
+                        "consultar outra severidade",
+                        "listar alertas por periodo no diario",
+                        "listar alertas recentes sem filtros",
+                    ],
+                }
+            return {"ok": True, "total": len(items), "alertas": [_to_dict(item) for item in items]}
+
+    @tool
+    def atualizar_status_alerta(alert_id: str, status: str, resolution_notes: str | None = None) -> dict:
+        """Atualiza status de um alerta e registra dados de resolução quando aplicável."""
+        _assert_permission(actor_level, "update", "alerts")
+        alert_uuid = uuid.UUID(alert_id)
+        new_status = _parse_alert_status(status)
+
+        with SessionLocal() as db:
+            alert = db.query(Alert).filter(Alert.id == alert_uuid).first()
+            if not alert:
+                return {"ok": False, "message": "Alerta não encontrado."}
+
+            alert.status = new_status
+            alert.resolution_notes = resolution_notes
+            if new_status in {AlertStatus.RESOLVIDO, AlertStatus.CANCELADO}:
+                alert.resolved_by = actor_user_id
+                alert.resolved_at = datetime.utcnow()
+            db.commit()
+            db.refresh(alert)
+            return {"ok": True, "alerta": _to_dict(alert)}
+
+    @tool
+    def marcar_alerta_como_lido(alert_id: str) -> dict:
+        """Marca alerta como lido pelo usuário atual e registra trilha em alert_reads."""
+        _assert_permission(actor_level, "read", "alerts")
+        alert_uuid = uuid.UUID(alert_id)
+
+        with SessionLocal() as db:
+            alert = db.query(Alert).filter(Alert.id == alert_uuid).first()
+            if not alert:
+                return {"ok": False, "message": "Alerta não encontrado."}
+
+            existing = (
+                db.query(AlertRead)
+                .filter(AlertRead.alert_id == alert_uuid)
+                .filter(AlertRead.worker_id == actor_user_id)
+                .first()
+            )
+            if not existing:
+                existing = AlertRead(alert_id=alert_uuid, worker_id=actor_user_id)
+                db.add(existing)
+
+            alert.is_read = True
+            alert.read_at = datetime.utcnow()
+            alert.read_by = actor_user_id
+            db.commit()
+            db.refresh(alert)
+            db.refresh(existing)
+            return {"ok": True, "alerta": _to_dict(alert), "leitura": _to_dict(existing)}
+
     return [
         criar_usuario,
         listar_usuarios,
@@ -474,6 +829,12 @@ def _build_tools(actor_user_id: int, actor_level: str):
         listar_registros,
         atualizar_registro,
         deletar_registro,
+        consultar_diario_dia,
+        consultar_diario_periodo,
+        criar_alerta,
+        listar_alertas,
+        atualizar_status_alerta,
+        marcar_alerta_como_lido,
     ]
 
 

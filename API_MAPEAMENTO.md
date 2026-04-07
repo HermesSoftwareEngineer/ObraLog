@@ -231,8 +231,7 @@ Authorization: Bearer <token>
   "estaca_inicial": 10.5,
   "estaca_final": 12.0,
   "tempo_manha": "limpo",
-  "tempo_tarde": "nublado",
-  "observacao": "Observações do registro"
+  "tempo_tarde": "nublado"
 }
 ```
 - Body opcional:
@@ -240,10 +239,11 @@ Authorization: Bearer <token>
 {
   "resultado": 1.5,
   "pista": "direito",
-  "lado_pista": "esquerdo"
+  "lado_pista": "esquerdo",
+  "observacao": "Observações do registro"
 }
 ```
-- Regra: `pista` e `lado_pista` são opcionais.
+- Regra: `observacao`, `pista` e `lado_pista` são opcionais.
 - Regra: se `resultado` não vier e `estaca_inicial` + `estaca_final` vierem, o backend calcula automaticamente.
 - Limite de imagens por registro: `30`.
 
@@ -270,8 +270,111 @@ Authorization: Bearer <token>
 ### DELETE `/api/v1/registros/{registro_id}/imagens/{imagem_id}`
 - Remove imagem vinculada ao registro.
 
+### GET `/backend/uploads/registros/{filename}`
+- Retorna arquivo de imagem salvo localmente para exibição/download no frontend.
+- Exemplo:
+```text
+http://localhost:5000/backend/uploads/registros/registro_5_abc123.jpg
+```
+
+### GET `/api/v1/backend/uploads/registros/{filename}`
+- Rota compatível adicional para leitura de imagens de registros.
+- Exemplo:
+```text
+http://localhost:5000/api/v1/backend/uploads/registros/registro_5_abc123.jpg
+```
+
 ### DELETE `/api/v1/registros/{registro_id}`
 - Remove registro.
+
+## Diário de Obra
+### GET `/api/v1/diario/dia`
+- Retorna diário consolidado de um dia.
+- Query params:
+  - `data=YYYY-MM-DD` (obrigatório)
+  - `frente_servico_id=number` (opcional)
+- Respostas relevantes:
+  - `200`: diário retornado com totais por dia
+  - `404`: nenhum registro para os filtros
+  - `422`: parâmetros inválidos
+
+### GET `/api/v1/diario/periodo`
+- Retorna relatório consolidado por período, agrupado por dia.
+- Query params:
+  - `data_inicio=YYYY-MM-DD` (obrigatório)
+  - `data_fim=YYYY-MM-DD` (obrigatório)
+  - `frente_servico_id=number` (opcional)
+  - `usuario_id=number` (opcional)
+  - `apenas_impraticaveis=true|false` (opcional, default `false`)
+- Regras:
+  - `data_fim` não pode ser anterior a `data_inicio`
+  - período máximo de 365 dias
+
+### GET `/api/v1/diario/exportar`
+- Retorna o mesmo payload do endpoint de período em JSON para exportação.
+- Query params: mesmos do `/api/v1/diario/periodo`
+- Header de resposta:
+```text
+Content-Disposition: inline; filename="diario_YYYYMMDD_YYYYMMDD.json"
+```
+
+### GET `/api/v1/diario/frentes`
+- Lista frentes disponíveis para filtros do diário.
+
+## Alertas
+### GET `/api/v1/alertas`
+- Lista alertas operacionais.
+- Query params opcionais:
+  - `status=aberto|em_atendimento|aguardando_peca|resolvido|cancelado`
+  - `severity=baixa|media|alta|critica`
+  - `apenas_nao_lidos=true|false`
+
+### POST `/api/v1/alertas`
+- Cria alerta operacional.
+- Body obrigatório:
+```json
+{
+  "type": "maquina_quebrada",
+  "severity": "alta",
+  "title": "Parada de escavadeira"
+}
+```
+- Body opcional:
+```json
+{
+  "description": "Equipamento sem partida",
+  "telegram_message_id": 123456,
+  "raw_text": "texto original",
+  "location_detail": "km 12",
+  "equipment_name": "Escavadeira",
+  "photo_urls": ["https://.../foto1.jpg"],
+  "priority_score": 90,
+  "notified_channels": ["telegram", "email"]
+}
+```
+- Regra: se `description` não for enviada, o backend gera uma descrição sugerida automaticamente.
+
+### GET `/api/v1/alertas/{alert_id}`
+- Retorna um alerta por UUID.
+
+### PATCH `/api/v1/alertas/{alert_id}/status`
+- Atualiza status do alerta.
+- Apenas administrador/gerente.
+- Body obrigatório:
+```json
+{
+  "status": "resolvido"
+}
+```
+- Body opcional:
+```json
+{
+  "resolution_notes": "Troca de peça concluída"
+}
+```
+
+### POST `/api/v1/alertas/{alert_id}/read`
+- Marca alerta como lido para o usuário autenticado e registra trilha em `alert_reads`.
 
 ## Dashboard
 ### GET `/api/v1/dashboard/overview`
@@ -383,7 +486,7 @@ Authorization: Bearer <token>
 ```json
 {
   "id": 1,
-  "data": "2026-04-05|null",
+  "data": "2026-04-05",
   "frente_servico_id": 1,
   "usuario_registrador_id": 1,
   "estaca_inicial": 10.5,
@@ -391,8 +494,8 @@ Authorization: Bearer <token>
   "resultado": 1.5,
   "tempo_manha": "limpo",
   "tempo_tarde": "nublado",
-  "pista": "direita",
-  "lado_pista": "direita",
+  "pista": "direito",
+  "lado_pista": "direito",
   "observacao": "string|null",
   "created_at": "2026-04-05T12:00:00"
 }
@@ -411,10 +514,14 @@ Para acompanhar as mudanças realizadas na API, consulte:
 - **[CHANGELOG.md](./CHANGELOG.md)** - Resumo de todas as alterações por data
 - **[docs/api-changes/](./docs/api-changes/)** - Documentação detalhada de cada alteração com guias de migração
 
-### Últimas Alterações (2026-04-05)
+### Últimas Alterações (2026-04-07)
 - ✨ Campo `observacao` adicionado em Frentes de Serviço e Registros
 - 🔄 `frente_servico_id` agora obrigatório em Registros
 - ❌ Campo `hora_registro` removido de Registros
-- 🔄 Campos `data` e `usuario_registrador_id` agora opcionais em Registros
+- ✅ Campo `observacao` agora opcional em Registros
+- ✅ Rotas de download de imagem disponíveis em `/backend/uploads/registros/{filename}` e `/api/v1/backend/uploads/registros/{filename}`
+- ✅ Endpoints de Diário de Obra adicionados em `/api/v1/diario/*`
+- ✅ Endpoints de Alertas adicionados em `/api/v1/alertas/*`
+- ✅ Campos legados removidos da tabela e contratos de Alertas
 
 [Veja detalhes completos →](./docs/api-changes/20260405_alteracoes_frente_registros.md)

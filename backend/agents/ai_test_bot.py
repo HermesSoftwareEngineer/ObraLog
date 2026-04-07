@@ -132,33 +132,35 @@ def _ensure_dev_only() -> None:
 
 
 def _ensure_test_fixtures() -> dict:
-    seed_frentes = ["Drenagem", "Pavimentacao", "Sinalizacao", "Terraplenagem"]
-    run_tag = datetime.now(UTC).strftime("%Y%m%d")
-
+    # Safety: this test runner must never create or delete users/frentes automatically.
+    # It only selects existing users from the database.
     with SessionLocal() as db:
-        users = []
-        for level in (NivelAcesso.ADMINISTRADOR, NivelAcesso.GERENTE, NivelAcesso.ENCARREGADO):
-            email = f"teste.ia.{level.value}.{run_tag}@obralog.dev"
-            user = Repository.usuarios.obter_por_email(db, email)
-            if not user:
-                user = Repository.usuarios.criar(
-                    db=db,
-                    nome=f"Teste IA {level.value}",
-                    email=email,
-                    senha="senha_teste_123",
-                    nivel_acesso=level,
-                )
-            users.append(user)
+        all_users = Repository.usuarios.listar(db)
 
-        existing = {item.nome.lower() for item in Repository.frentes_servico.listar(db)}
-        for nome in seed_frentes:
-            if nome.lower() not in existing:
-                Repository.frentes_servico.criar(db, nome=nome)
+    by_level = {
+        "admin": [
+            item for item in all_users if (item.nivel_acesso.value if hasattr(item.nivel_acesso, "value") else str(item.nivel_acesso)) == NivelAcesso.ADMINISTRADOR.value
+        ],
+        "gerente": [
+            item for item in all_users if (item.nivel_acesso.value if hasattr(item.nivel_acesso, "value") else str(item.nivel_acesso)) == NivelAcesso.GERENTE.value
+        ],
+        "encarregado": [
+            item for item in all_users if (item.nivel_acesso.value if hasattr(item.nivel_acesso, "value") else str(item.nivel_acesso)) == NivelAcesso.ENCARREGADO.value
+        ],
+    }
+
+    missing_levels = [key for key, users in by_level.items() if not users]
+    if missing_levels:
+        raise RuntimeError(
+            "Bot de teste sem criação automática: faltam usuários existentes nos níveis "
+            + ", ".join(missing_levels)
+            + ". Cadastre manualmente antes de executar."
+        )
 
     return {
-        "admin": users[0],
-        "gerente": users[1],
-        "encarregado": users[2],
+        "admin": sorted(by_level["admin"], key=lambda item: item.id)[0],
+        "gerente": sorted(by_level["gerente"], key=lambda item: item.id)[0],
+        "encarregado": sorted(by_level["encarregado"], key=lambda item: item.id)[0],
     }
 
 

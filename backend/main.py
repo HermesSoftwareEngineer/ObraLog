@@ -1,18 +1,23 @@
 import os
 import threading
+from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 
 try:
     from .api.routes.webhook import telegram_blueprint
     from .api.routes.crud import api_blueprint
+    from .api.routes.diario import router as diario_router
+    from .api.routes.alerts import router as alerts_router
     from .api.routes.reports import router as reports_blueprint
     from .api.routes.auth import auth_blueprint
     from .services.telegram import start_polling, set_webhook
 except ImportError:
     from api.routes.webhook import telegram_blueprint
     from api.routes.crud import api_blueprint
+    from api.routes.diario import router as diario_router
+    from api.routes.alerts import router as alerts_router
     from api.routes.reports import router as reports_blueprint
     from api.routes.auth import auth_blueprint
     from services.telegram import start_polling, set_webhook
@@ -20,14 +25,27 @@ except ImportError:
 
 app = Flask(__name__)
 
+UPLOAD_DIR = Path(os.environ.get("REGISTRO_IMAGENS_DIR", str(Path("backend") / "uploads" / "registros")))
+
+
+def _parse_cors_origins() -> list[str]:
+    raw_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
+    origins = [item.strip() for item in raw_origins.split(",") if item.strip()]
+    return origins or ["http://localhost:5173"]
+
 CORS(
     app,
-    resources={r"/api/*": {"origins": os.environ.get("CORS_ORIGINS")}},
+    resources={
+        r"/api/*": {"origins": _parse_cors_origins()},
+        r"/backend/uploads/*": {"origins": _parse_cors_origins()},
+    },
     supports_credentials=True,
 )
 
 app.register_blueprint(telegram_blueprint)
 app.register_blueprint(api_blueprint)
+app.register_blueprint(diario_router)
+app.register_blueprint(alerts_router)
 app.register_blueprint(reports_blueprint)
 app.register_blueprint(auth_blueprint)
 
@@ -76,6 +94,19 @@ def health():
 @app.get("/")
 def index():
     return jsonify({"message": "Agente de Diário de Obra backend ativo"})
+
+
+@app.get("/backend/uploads/registros/<path:filename>")
+def download_registro_image(filename: str):
+    normalized = Path((filename or "").replace("\\", "/")).name
+    if not normalized:
+        return jsonify({"ok": False, "error": "Nome de arquivo inválido."}), 400
+
+    target = UPLOAD_DIR / normalized
+    if not target.exists() or not target.is_file():
+        return jsonify({"ok": False, "error": "Imagem não encontrada."}), 404
+
+    return send_from_directory(UPLOAD_DIR.resolve(), normalized)
 
 
 if __name__ == "__main__":

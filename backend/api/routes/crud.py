@@ -5,7 +5,7 @@ import os
 import unicodedata
 from uuid import uuid4
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from backend.db.models import Clima, LadoPista, NivelAcesso
@@ -140,6 +140,14 @@ def _to_project_relative(path: Path) -> str:
         return str(path.relative_to(get_project_root())).replace("\\", "/")
     except ValueError:
         return str(path)
+
+
+def _resolve_upload_filename(filename: str) -> str | None:
+    # Accept plain filenames and legacy persisted paths like backend/uploads/registros/<file>.
+    normalized = (filename or "").replace("\\", "/").strip("/")
+    if not normalized:
+        return None
+    return Path(normalized).name
 
 
 @api_blueprint.route("/agent/instructions", methods=["GET"])
@@ -604,3 +612,16 @@ def deletar_imagem_registro(registro_id: int, imagem_id: int):
                 pass
 
         return jsonify({"ok": True})
+
+
+@api_blueprint.route("/backend/uploads/registros/<path:filename>", methods=["GET"])
+def baixar_imagem_registro(filename: str):
+    resolved_name = _resolve_upload_filename(filename)
+    if not resolved_name:
+        return _json_error("Nome de arquivo inválido.", 400)
+
+    target_path = UPLOAD_DIR / resolved_name
+    if not target_path.exists() or not target_path.is_file():
+        return _json_error("Imagem não encontrada.", 404)
+
+    return send_from_directory(UPLOAD_DIR.resolve(), resolved_name)

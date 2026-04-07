@@ -77,28 +77,41 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
 
 
 def _ensure_required_fields(tool_name: str, tool_args: dict) -> str | None:
-    if tool_name != "criar_registro":
-        return None
+    if tool_name == "criar_registro":
+        required = [
+            "data",
+            "estaca_inicial",
+            "estaca_final",
+            "tempo_manha",
+            "tempo_tarde",
+        ]
+        missing = [field for field in required if tool_args.get(field) in (None, "")]
+        if not tool_args.get("frente_servico_id") and not tool_args.get("frente_servico_nome"):
+            missing.append("frente_servico_nome")
 
-    required = [
-        "data",
-        "estaca_inicial",
-        "estaca_final",
-        "tempo_manha",
-        "tempo_tarde",
-    ]
-    missing = [field for field in required if tool_args.get(field) in (None, "")]
-    if not tool_args.get("frente_servico_id") and not tool_args.get("frente_servico_nome"):
-        missing.append("frente_servico_nome")
+        if not missing:
+            return None
 
-    if not missing:
-        return None
+        return (
+            "Dados obrigatórios faltando para criar registro: "
+            + ", ".join(missing)
+            + ". Colete os campos faltantes antes de salvar."
+        )
 
-    return (
-        "Dados obrigatórios faltando para criar registro: "
-        + ", ".join(missing)
-        + ". Colete os campos faltantes antes de salvar."
-    )
+    if tool_name == "criar_alerta":
+        required = ["type"]
+        missing = [field for field in required if tool_args.get(field) in (None, "")]
+
+        if not missing:
+            return None
+
+        return (
+            "Dados obrigatórios faltando para criar alerta: "
+            + ", ".join(missing)
+            + ". Colete os campos faltantes antes de salvar."
+        )
+
+    return None
 
 
 def _normalize_tool_output(tool_name: str, tool_output):
@@ -130,6 +143,21 @@ def _normalize_tool_output(tool_name: str, tool_output):
                 "normalized_duplicates": duplicates,
             }
         return {"ok": True, "total": len(tool_output), "items": tool_output}
+
+    if tool_name == "listar_alertas" and isinstance(tool_output, dict):
+        if tool_output.get("ok") and tool_output.get("total") == 0:
+            payload = dict(tool_output)
+            payload.setdefault(
+                "next_steps",
+                [
+                    "consultar outro status",
+                    "consultar outra severidade",
+                    "listar alertas por periodo no diario",
+                    "listar alertas recentes sem filtros",
+                ],
+            )
+            return payload
+        return tool_output
 
     return tool_output
 
