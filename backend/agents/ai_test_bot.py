@@ -277,6 +277,8 @@ def _run_single_scenario(
     actor_user_id: int,
     actor_level: str,
     log_path: Path,
+    users_by_level: dict,
+    respect_profile_permissions: bool,
 ) -> dict:
     profile = random.choice(PROFILES)
     scenario = random.choice(profile.scenario_intents)
@@ -294,6 +296,10 @@ def _run_single_scenario(
             "profile": profile.__dict__,
             "scenario": scenario,
             "thread_id": thread_id,
+            "execution_actor": {
+                "id": actor_user_id,
+                "nivel_acesso": actor_level,
+            },
             "timestamp": datetime.now(UTC).isoformat(),
         },
     )
@@ -328,8 +334,20 @@ def _run_single_scenario(
             )
             continue
 
+        effective_actor_user_id = actor_user_id
+        effective_actor_level = actor_level
+        if respect_profile_permissions:
+            if profile.key == "engenheiro":
+                effective = users_by_level["gerente"]
+                effective_actor_user_id = effective.id
+                effective_actor_level = effective.nivel_acesso.value if hasattr(effective.nivel_acesso, "value") else str(effective.nivel_acesso)
+            elif profile.key in {"encarregado", "piao"}:
+                effective = users_by_level["encarregado"]
+                effective_actor_user_id = effective.id
+                effective_actor_level = effective.nivel_acesso.value if hasattr(effective.nivel_acesso, "value") else str(effective.nivel_acesso)
+
         try:
-            agent_text = _invoke_agent(user_text, actor_user_id, actor_level, thread_id)
+            agent_text = _invoke_agent(user_text, effective_actor_user_id, effective_actor_level, thread_id)
         except Exception as exc:
             agent_text = f"ERRO_AGENTE: {exc}"
 
@@ -359,6 +377,10 @@ def _run_single_scenario(
                 "profile": profile.key,
                 "scenario": scenario,
                 "thread_id": thread_id,
+                "execution_actor": {
+                    "id": effective_actor_user_id,
+                    "nivel_acesso": effective_actor_level,
+                },
                 "user": user_text,
                 "agent": agent_text,
                 "evaluation": evaluation,
@@ -423,6 +445,8 @@ def run(args: argparse.Namespace) -> Path:
             actor_user_id=actor.id,
             actor_level=actor.nivel_acesso.value if hasattr(actor.nivel_acesso, "value") else str(actor.nivel_acesso),
             log_path=log_path,
+            users_by_level=users,
+            respect_profile_permissions=args.respect_profile_permissions,
         )
         summaries.append(summary)
         scenario_id += 1
@@ -466,6 +490,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--continuous",
         action="store_true",
         help="Executa continuamente, gerando novos cenarios ate interrupcao manual.",
+    )
+    parser.add_argument(
+        "--respect-profile-permissions",
+        action="store_true",
+        default=True,
+        help="Alinha o nível de acesso efetivo ao perfil simulado (ex.: engenheiro usa permissões de gerente).",
+    )
+    parser.add_argument(
+        "--no-respect-profile-permissions",
+        action="store_false",
+        dest="respect_profile_permissions",
+        help="Mantém sempre o mesmo actor-level para todos os cenários.",
     )
     return parser
 
