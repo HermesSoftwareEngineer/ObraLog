@@ -37,7 +37,13 @@ def _telegram_api_call(method: str, params: dict, retries: int = 3) -> dict:
 	for attempt in range(retries):
 		try:
 			with urlopen(request, timeout=60) as response:
-				return json.loads(response.read().decode("utf-8"))
+				data = json.loads(response.read().decode("utf-8"))
+
+			if not data.get("ok"):
+				description = data.get("description") or "Erro ao chamar API do Telegram."
+				raise RuntimeError(f"Telegram {method} falhou: {description}")
+
+			return data
 		except (HTTPError, URLError) as exc:
 			if attempt == retries - 1:
 				raise RuntimeError("Erro na API do Telegram.") from exc
