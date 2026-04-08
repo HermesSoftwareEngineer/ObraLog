@@ -4,6 +4,7 @@ import time
 import threading
 import re
 import uuid
+from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -17,6 +18,7 @@ except ImportError:
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 from backend.agents.llms import transcribe_audio_bytes
+from backend.services.telegram_interactions import get_poll_context
 
 
 _POLLING_LOCK = threading.Lock()
@@ -88,6 +90,16 @@ def _extract_text_content(content) -> str:
 			return text_value
 
 	return str(content)
+
+
+def _response_used_telegram_ui(messages: list) -> bool:
+	for msg in reversed(messages):
+		content = getattr(msg, "content", "")
+		if not isinstance(content, str):
+			continue
+		if "'telegram_ui_dispatched': True" in content or '"telegram_ui_dispatched": True' in content:
+			return True
+	return False
 
 def get_updates(offset: int | None = None) -> list:
 	params = {"timeout": 30}
@@ -223,7 +235,95 @@ def _is_reset_context_command(text: str) -> bool:
 	return normalized in reset_commands
 
 
+def _conversation_date_payload() -> dict:
+	now = datetime.now()
+	return {
+		"conversation_date": now.date().isoformat(),
+		"conversation_date_br": now.strftime("%d/%m/%Y"),
+	}
+
+
+def _build_poll_answer_text(question: str, selected_options: list[str]) -> str:
+	if not selected_options:
+		return f"Resposta de enquete recebida. Pergunta: {question}. Nenhuma opção selecionada."
+	return (
+		f"Resposta de enquete recebida. Pergunta: {question}. "
+		f"Opções selecionadas: {', '.join(selected_options)}."
+	)
+
+
+def _handle_poll_answer_update(poll_answer: dict) -> dict:
+	poll_id = poll_answer.get("poll_id")
+	if not poll_id:
+		return {"ok": True, "ignored": True, "reason": "poll_answer_sem_poll_id"}
+
+	context = get_poll_context(str(poll_id))
+	if not context:
+		return {"ok": True, "ignored": True, "reason": "poll_context_nao_encontrado"}
+
+	chat_id = context.get("chat_id")
+	thread_id = context.get("thread_id")
+	telegram_message_thread_id = context.get("telegram_message_thread_id")
+	actor_user_id = context.get("actor_user_id")
+	actor_level = context.get("actor_level")
+	question = context.get("question") or "Checklist"
+	options = context.get("options") or []
+	option_ids = poll_answer.get("option_ids") or []
+
+	selected_options = []
+	for option_id in option_ids:
+		if isinstance(option_id, int) and 0 <= option_id < len(options):
+			selected_options.append(options[option_id])
+
+	poll_response_text = _build_poll_answer_text(question, selected_options)
+
+	if not chat_id or thread_id is None or actor_user_id is None or actor_level is None:
+		return {"ok": True, "ignored": True, "reason": "poll_context_incompleto"}
+
+	with SessionLocal() as db:
+		usuario = Repository.usuarios.obter_por_id(db, int(actor_user_id))
+
+	if not usuario:
+		send_message(chat_id, "Recebi a resposta da enquete, mas não localizei o usuário vinculado no sistema.")
+		return {"ok": False, "chat_id": chat_id, "reason": "usuario_enquete_nao_encontrado"}
+
+	chat_user = poll_answer.get("user") or {}
+	chat_display_name = (
+		chat_user.get("first_name")
+		or chat_user.get("username")
+		or usuario.nome
+		or str(chat_id)
+	)
+
+	config = {
+		"configurable": {
+			"thread_id": str(thread_id),
+			"telegram_chat_id": str(chat_id),
+			"telegram_message_thread_id": int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
+			**_conversation_date_payload(),
+			"actor_user_id": usuario.id,
+			"actor_level": usuario.nivel_acesso.value if hasattr(usuario.nivel_acesso, "value") else str(usuario.nivel_acesso),
+			"actor_name": usuario.nome,
+			"actor_chat_display_name": chat_display_name,
+		}
+	}
+
+	response = graph.invoke({"messages": [HumanMessage(content=poll_response_text)]}, config)
+	response_messages = response["messages"]
+	ui_dispatched = _response_used_telegram_ui(response_messages)
+	reply = _extract_text_content(response_messages[-1].content)
+	if not reply:
+		reply = "Resposta da enquete recebida."
+	if not ui_dispatched:
+		send_message(chat_id, reply)
+	return {"ok": True, "chat_id": chat_id, "reason": "poll_answer_processado", "poll_id": poll_id}
+
+
 def handle_telegram_update(update: dict) -> dict:
+	poll_answer = update.get("poll_answer")
+	if poll_answer:
+		return _handle_poll_answer_update(poll_answer)
+
 	message = update.get("message") or update.get("edited_message")
 	if not message:
 		return {"ok": True, "ignored": True}
@@ -238,6 +338,7 @@ def handle_telegram_update(update: dict) -> dict:
 		or chat.get("username")
 		or str(chat_id)
 	)
+	telegram_message_thread_id = message.get("message_thread_id")
 
 	text = _extract_message_text_or_transcription(message, chat_id)
 	if not text:
@@ -313,6 +414,9 @@ def handle_telegram_update(update: dict) -> dict:
 	config = {
 		"configurable": {
 			"thread_id": _resolve_thread_id(usuario, chat_id),
+			"telegram_chat_id": str(chat_id),
+			"telegram_message_thread_id": int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
+			**_conversation_date_payload(),
 			"actor_user_id": usuario.id,
 			"actor_level": usuario.nivel_acesso.value if hasattr(usuario.nivel_acesso, "value") else str(usuario.nivel_acesso),
 			"actor_name": usuario.nome,
@@ -320,10 +424,13 @@ def handle_telegram_update(update: dict) -> dict:
 		}
 	}
 	response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
-	reply = _extract_text_content(response["messages"][-1].content)
+	response_messages = response["messages"]
+	ui_dispatched = _response_used_telegram_ui(response_messages)
+	reply = _extract_text_content(response_messages[-1].content)
 	if not reply:
 		reply = "Recebi sua mensagem, mas não consegui gerar uma resposta em texto."
-	send_message(chat_id, reply)
+	if not ui_dispatched:
+		send_message(chat_id, reply)
 	return {"ok": True, "chat_id": chat_id}
 
 def start_polling() -> None:

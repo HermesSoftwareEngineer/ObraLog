@@ -47,6 +47,7 @@ class TestProfile:
     objective: str
     front_rule: str
     scenario_intents: tuple[str, ...]
+    alert_scenario_intents: tuple[str, ...]
 
 
 PROFILES = [
@@ -64,6 +65,11 @@ PROFILES = [
             "Misturar pedido valido com ruido e termos vagos",
             "Induzir uso indevido de comando e testar tratamento de erro",
         ),
+        alert_scenario_intents=(
+            "Criar alerta com dados incompletos",
+            "Listar alertas em periodo com filtros vagos",
+            "Misturar relato de risco com ruido e termos ambiguos",
+        ),
     ),
     TestProfile(
         key="encarregado",
@@ -79,6 +85,12 @@ PROFILES = [
             "Registrar produtividade com dados incompletos",
             "Consultar registros por data e por frente",
             "Atualizar registro existente com informacoes contraditorias",
+        ),
+        alert_scenario_intents=(
+            "Criar alerta com dados completos",
+            "Criar alerta com dados incompletos",
+            "Consultar alertas por periodo e status",
+            "Atualizar alerta existente com informacoes contraditorias",
         ),
     ),
     TestProfile(
@@ -96,8 +108,22 @@ PROFILES = [
             "Registrar produtividade com dados completos",
             "Atualizar registro existente com informacoes contraditorias",
         ),
+        alert_scenario_intents=(
+            "Criar alerta de risco com prioridade e impacto",
+            "Consultar alertas por periodo, status e frente",
+            "Atualizar alerta existente com informacoes contraditorias",
+            "Misturar pedido de alerta com consulta de registros",
+        ),
     ),
 ]
+
+
+def _build_scenario_pool(profile: TestProfile, focus: str) -> tuple[str, ...]:
+    if focus == "registros":
+        return profile.scenario_intents
+    if focus == "alertas":
+        return profile.alert_scenario_intents
+    return profile.scenario_intents + profile.alert_scenario_intents
 
 
 def _extract_text_content(content) -> str:
@@ -176,15 +202,29 @@ def _build_profile_context(profile: TestProfile) -> str:
     )
 
 
-def _build_generator_prompt(profile: TestProfile, scenario: str, history: list[dict], step: int) -> list:
+def _build_generator_prompt(profile: TestProfile, scenario: str, history: list[dict], step: int, focus: str) -> list:
     history_text = "\n".join(f"{item['role']}: {item['text']}" for item in history[-10:]) or "(sem historico)"
+    if focus == "registros":
+        focus_rule = (
+            "Foco obrigatorio: gerar mensagens apenas sobre registros do diario de obra (criar/listar/ajustar registros). "
+            "Nao force cenarios de alerta neste modo."
+        )
+    elif focus == "alertas":
+        focus_rule = (
+            "Foco obrigatorio: gerar mensagens apenas sobre alertas do diario de obra (criar/listar/acompanhar alertas). "
+            "Nao force cenarios de registro de produtividade neste modo."
+        )
+    else:
+        focus_rule = "Foco: pode alternar entre registros e alertas de forma natural conforme o cenario."
+
     system = SystemMessage(
         content=(
             "Voce eh um gerador de mensagens para testes do ObraLog. O sistema serve para registrar e consultar dados de obra, "
             "como produtividade, registros operacionais e frentes de servico. O agente principal eh o Tiao, assistente do diario de obra. "
             "Seu trabalho e simular usuarios reais de canteiro para validar se o agente entende a intencao, coleta os dados certos, "
             "respeita permissoes e lida bem com ambiguidades e erros. Gere SOMENTE a proxima mensagem do usuario, em pt-BR, curta "
-            "(1-3 frases), natural e coerente com o historico. Nao explique estrategia, nao use markdown."
+            "(1-3 frases), natural e coerente com o historico. Nao explique estrategia, nao use markdown. "
+            f"{focus_rule}"
         )
     )
     user = HumanMessage(
@@ -203,9 +243,17 @@ def _build_generator_prompt(profile: TestProfile, scenario: str, history: list[d
     return [system, user]
 
 
-def _build_evaluator_prompt(profile: TestProfile, scenario: str, user_text: str, agent_text: str) -> list:
+def _build_evaluator_prompt(profile: TestProfile, scenario: str, user_text: str, agent_text: str, focus: str) -> list:
+    if focus == "registros":
+        focus_eval = "Verifique se o agente permaneceu no contexto de registros e nao desviou para fluxo de alertas sem necessidade. "
+    elif focus == "alertas":
+        focus_eval = "Verifique se o agente permaneceu no contexto de alertas e nao desviou para fluxo de registros sem necessidade. "
+    else:
+        focus_eval = "Verifique se o agente alternou corretamente entre registros e alertas quando o contexto exigir. "
+
     rubric = (
         "Avalie a resposta do agente com foco em clareza, coerencia, utilidade, tratamento de erros e aderencia ao objetivo. "
+        f"{focus_eval}"
         "Considere tambem se a resposta respeitou o papel simulado e a regra de frentes de servico: peao e encarregado nao devem receber fluxo de cadastro de frente, "
         "enquanto engenheiro pode acionar esse tipo de assunto. "
         "Retorne JSON puro com campos: "
@@ -259,6 +307,7 @@ def _append_jsonl(log_path: Path, payload: dict) -> None:
 
 
 def _invoke_agent(user_text: str, actor_user_id: int, actor_level: str, thread_id: str) -> str:
+    now = datetime.now(UTC)
     config = {
         "configurable": {
             "thread_id": thread_id,
@@ -266,6 +315,8 @@ def _invoke_agent(user_text: str, actor_user_id: int, actor_level: str, thread_i
             "actor_level": actor_level,
             "actor_name": "Usuario QA",
             "actor_chat_display_name": "qa-bot",
+            "conversation_date": now.date().isoformat(),
+            "conversation_date_br": now.astimezone().strftime("%d/%m/%Y"),
         }
     }
     response = graph.invoke({"messages": [HumanMessage(content=user_text)]}, config)
@@ -281,9 +332,10 @@ def _run_single_scenario(
     log_path: Path,
     users_by_level: dict,
     respect_profile_permissions: bool,
+    focus: str,
 ) -> dict:
     profile = random.choice(PROFILES)
-    scenario = random.choice(profile.scenario_intents)
+    scenario = random.choice(_build_scenario_pool(profile, focus))
     thread_id = f"qa:{uuid4().hex}"
     history: list[dict] = []
     issue_count = 0
@@ -307,7 +359,7 @@ def _run_single_scenario(
     )
 
     for step in range(1, max_turns + 1):
-        generator_messages = _build_generator_prompt(profile, scenario, history, step)
+        generator_messages = _build_generator_prompt(profile, scenario, history, step, focus)
         generated = llm_main.invoke(generator_messages)
         user_text = _extract_text_content(generated.content).strip()
         if not user_text:
@@ -358,7 +410,7 @@ def _run_single_scenario(
         history.append({"role": "user", "text": user_text})
         history.append({"role": "assistant", "text": agent_text})
 
-        evaluator_messages = _build_evaluator_prompt(profile, scenario, user_text, agent_text)
+        evaluator_messages = _build_evaluator_prompt(profile, scenario, user_text, agent_text, focus)
         evaluation_raw = llm_main.invoke(evaluator_messages)
         evaluation_text = _extract_text_content(evaluation_raw.content)
         evaluation = _safe_json_parse(evaluation_text)
@@ -449,6 +501,7 @@ def run(args: argparse.Namespace) -> Path:
             log_path=log_path,
             users_by_level=users,
             respect_profile_permissions=args.respect_profile_permissions,
+            focus=args.focus,
         )
         summaries.append(summary)
         scenario_id += 1
@@ -492,6 +545,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--continuous",
         action="store_true",
         help="Executa continuamente, gerando novos cenarios ate interrupcao manual.",
+    )
+    parser.add_argument(
+        "--focus",
+        choices=["registros", "alertas", "ambos"],
+        default="ambos",
+        help="Restringe os cenarios para ferramentas de registros, alertas ou ambos.",
     )
     parser.add_argument(
         "--respect-profile-permissions",

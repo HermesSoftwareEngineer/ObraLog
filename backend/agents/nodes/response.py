@@ -1,17 +1,18 @@
 try:
     from ..llms import llm_main
     from ..state import State
-    from ..tools import get_database_tools
+    from ..tools import get_database_tools, get_telegram_tools
     from ..prompts import build_system_prompt
     from ..context.vector_context import get_context_for_query
 except ImportError:
     from llms import llm_main
     from state import State
-    from tools import get_database_tools
+    from tools import get_database_tools, get_telegram_tools
     from prompts import build_system_prompt
     from context.vector_context import get_context_for_query
 
 import unicodedata
+from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -41,6 +42,14 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
     actor_level = configurable.get("actor_level")
     actor_name = configurable.get("actor_name")
     actor_chat_display_name = configurable.get("actor_chat_display_name")
+    conversation_date = configurable.get("conversation_date")
+    conversation_date_br = configurable.get("conversation_date_br")
+
+    if not conversation_date:
+        conversation_date = datetime.now().date().isoformat()
+    if not conversation_date_br and isinstance(conversation_date, str) and len(conversation_date) == 10:
+        yyyy, mm, dd = conversation_date.split("-")
+        conversation_date_br = f"{dd}/{mm}/{yyyy}"
 
     user_query = _last_human_text(state_messages)
     retrieved_context = get_context_for_query(user_query)
@@ -54,7 +63,9 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             f"- ID: {actor_user_id}\n"
             f"- Nome cadastrado: {actor_name or 'não informado'}\n"
             f"- Nome exibido no chat: {actor_chat_display_name or 'não informado'}\n"
-            f"- Nível de acesso: {actor_level}"
+            f"- Nível de acesso: {actor_level}\n"
+            f"- Data atual da conversa (ISO): {conversation_date}\n"
+            f"- Data atual da conversa (BR): {conversation_date_br or 'não informado'}"
         )
 
     user_hint_block = ""
@@ -174,7 +185,21 @@ def _resolve_tool_map(config: RunnableConfig | None = None):
     if actor_user_id is None or actor_level is None:
         return {}
 
+    configurable = (config or {}).get("configurable", {})
+    telegram_chat_id = configurable.get("telegram_chat_id")
+    thread_id = configurable.get("thread_id")
+    telegram_message_thread_id = configurable.get("telegram_message_thread_id")
+
     tools = get_database_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
+    tools.extend(
+        get_telegram_tools(
+            chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+            telegram_message_thread_id=int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
+            actor_user_id=int(actor_user_id),
+            actor_level=str(actor_level),
+        )
+    )
     return {tool.name: tool for tool in tools}
 
 
@@ -187,7 +212,20 @@ def agent_step(state: State, config: RunnableConfig | None = None):
         response = llm_main.invoke([system_message] + state_messages)
         return {"messages": [response]}
 
+    configurable = (config or {}).get("configurable", {})
+    telegram_chat_id = configurable.get("telegram_chat_id")
+    thread_id = configurable.get("thread_id")
+    telegram_message_thread_id = configurable.get("telegram_message_thread_id")
     tools = get_database_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
+    tools.extend(
+        get_telegram_tools(
+            chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+            telegram_message_thread_id=int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
+            actor_user_id=int(actor_user_id),
+            actor_level=str(actor_level),
+        )
+    )
     model = llm_main.bind_tools(tools)
     response = model.invoke([system_message] + state_messages)
     return {"messages": [response]}

@@ -376,6 +376,9 @@ Content-Disposition: inline; filename="diario_YYYYMMDD_YYYYMMDD.json"
 ### POST `/api/v1/alertas/{alert_id}/read`
 - Marca alerta como lido para o usuário autenticado e registra trilha em `alert_reads`.
 
+### POST `/api/v1/alertas/{alert_id}/unread`
+- Marca alerta como não lido para o usuário autenticado e remove a trilha de leitura dele em `alert_reads`.
+
 ## Dashboard
 ### GET `/api/v1/dashboard/overview`
 - Retorna KPIs e séries básicas para gráficos.

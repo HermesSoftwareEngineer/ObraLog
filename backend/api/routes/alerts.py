@@ -5,7 +5,7 @@ from uuid import UUID
 import unicodedata
 
 from flask import Blueprint, g, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import desc, func
 
 from backend.api.routes.auth import require_auth
 from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, AlertType, NivelAcesso
@@ -117,6 +117,23 @@ def _generate_alert_code(db) -> str:
     prefix = f"ALT-{year}-"
     count = db.query(func.count(Alert.id)).filter(Alert.code.like(f"{prefix}%")).scalar() or 0
     return f"{prefix}{count + 1:04d}"
+
+
+def _sync_alert_read_flags(db, alert):
+    latest_read = (
+        db.query(AlertRead)
+        .filter(AlertRead.alert_id == alert.id)
+        .order_by(desc(AlertRead.read_at))
+        .first()
+    )
+    if latest_read:
+        alert.is_read = True
+        alert.read_at = latest_read.read_at
+        alert.read_by = latest_read.worker_id
+    else:
+        alert.is_read = False
+        alert.read_at = None
+        alert.read_by = None
 
 
 @router.get("")
@@ -260,3 +277,28 @@ def marcar_como_lido(alert_id):
         db.refresh(alert)
         db.refresh(read)
         return jsonify({"ok": True, "alerta": _to_dict(alert), "leitura": _to_dict(read)})
+
+
+@router.post("/<uuid:alert_id>/unread")
+@require_auth
+def marcar_como_nao_lido(alert_id):
+    with SessionLocal() as db:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        if not alert:
+            return _json_error("Alerta não encontrado.", 404)
+
+        read = (
+            db.query(AlertRead)
+            .filter(AlertRead.alert_id == alert_id)
+            .filter(AlertRead.worker_id == g.current_user.id)
+            .first()
+        )
+        if not read:
+            return jsonify({"ok": True, "message": "Alerta já estava como não lido para este usuário.", "alerta": _to_dict(alert)})
+
+        db.delete(read)
+        _sync_alert_read_flags(db, alert)
+
+        db.commit()
+        db.refresh(alert)
+        return jsonify({"ok": True, "alerta": _to_dict(alert)})

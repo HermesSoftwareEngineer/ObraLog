@@ -4,7 +4,7 @@ import unicodedata
 import uuid
 
 from langchain_core.tools import tool
-from sqlalchemy import func
+from sqlalchemy import desc, func
 
 from backend.db.diario_repository import agrupar_por_data, get_diario_do_dia, get_registros_por_periodo
 from backend.db.models import (
@@ -239,6 +239,23 @@ def _generate_alert_code(db) -> str:
     prefix = f"ALT-{year}-"
     count = db.query(func.count(Alert.id)).filter(Alert.code.like(f"{prefix}%")).scalar() or 0
     return f"{prefix}{count + 1:04d}"
+
+
+def _sync_alert_read_flags(db, alert) -> None:
+    latest_read = (
+        db.query(AlertRead)
+        .filter(AlertRead.alert_id == alert.id)
+        .order_by(desc(AlertRead.read_at))
+        .first()
+    )
+    if latest_read:
+        alert.is_read = True
+        alert.read_at = latest_read.read_at
+        alert.read_by = latest_read.worker_id
+    else:
+        alert.is_read = False
+        alert.read_at = None
+        alert.read_by = None
 
 
 def _registro_to_diario_item(registro) -> dict:
@@ -815,6 +832,32 @@ def _build_tools(actor_user_id: int, actor_level: str):
             db.refresh(existing)
             return {"ok": True, "alerta": _to_dict(alert), "leitura": _to_dict(existing)}
 
+    @tool
+    def marcar_alerta_como_nao_lido(alert_id: str) -> dict:
+        """Marca alerta como não lido para o usuário atual."""
+        _assert_permission(actor_level, "read", "alerts")
+        alert_uuid = uuid.UUID(alert_id)
+
+        with SessionLocal() as db:
+            alert = db.query(Alert).filter(Alert.id == alert_uuid).first()
+            if not alert:
+                return {"ok": False, "message": "Alerta não encontrado."}
+
+            existing = (
+                db.query(AlertRead)
+                .filter(AlertRead.alert_id == alert_uuid)
+                .filter(AlertRead.worker_id == actor_user_id)
+                .first()
+            )
+            if not existing:
+                return {"ok": True, "message": "Alerta já estava como não lido para este usuário.", "alerta": _to_dict(alert)}
+
+            db.delete(existing)
+            _sync_alert_read_flags(db, alert)
+            db.commit()
+            db.refresh(alert)
+            return {"ok": True, "alerta": _to_dict(alert)}
+
     return [
         criar_usuario,
         listar_usuarios,
@@ -835,6 +878,7 @@ def _build_tools(actor_user_id: int, actor_level: str):
         listar_alertas,
         atualizar_status_alerta,
         marcar_alerta_como_lido,
+        marcar_alerta_como_nao_lido,
     ]
 
 
