@@ -62,7 +62,7 @@ def get_telegram_tools(
     def enviar_botoes_resposta_rapida(
         pergunta: str,
         opcoes: list[str],
-        manter_teclado_visivel: bool = False,
+        manter_teclado_visivel: bool = True,
         placeholder: str | None = None,
     ) -> dict:
         """Envia botões de resposta rápida no Telegram para coletar informação pontual."""
@@ -75,8 +75,7 @@ def get_telegram_tools(
         reply_markup = {
             "keyboard": keyboard,
             "resize_keyboard": True,
-            "one_time_keyboard": not manter_teclado_visivel,
-            "selective": False,
+            "one_time_keyboard": False,
         }
         if placeholder:
             value = " ".join(placeholder.strip().split())
@@ -91,8 +90,38 @@ def get_telegram_tools(
         if telegram_message_thread_id is not None:
             payload["message_thread_id"] = int(telegram_message_thread_id)
 
-        result = _telegram_api_call("sendMessage", payload)
-        message_id = ((result.get("result") or {}).get("message_id"))
+        try:
+            result = _telegram_api_call("sendMessage", payload)
+        except Exception as exc:
+            # Fallback para inline keyboard quando o contexto do chat não aceita ReplyKeyboard.
+            inline_markup = {
+                "inline_keyboard": [[{"text": item, "callback_data": f"rk:{idx}"}] for idx, item in enumerate(options)]
+            }
+            fallback_payload = {
+                "chat_id": chat_id,
+                "text": question,
+                "reply_markup": inline_markup,
+            }
+            if telegram_message_thread_id is not None:
+                fallback_payload["message_thread_id"] = int(telegram_message_thread_id)
+            result = _telegram_api_call("sendMessage", fallback_payload)
+
+            result_payload = result.get("result") or {}
+            message_id = result_payload.get("message_id")
+            return {
+                "ok": True,
+                "message": "Reply keyboard indisponível neste contexto; inline keyboard enviado como fallback.",
+                "telegram_ui_dispatched": True,
+                "telegram_ui_type": "inline_keyboard_fallback",
+                "question": question,
+                "options": options,
+                "telegram_message_id": message_id,
+                "keep_keyboard_visible": bool(manter_teclado_visivel),
+            }
+
+        result_payload = result.get("result") or {}
+        message_id = result_payload.get("message_id")
+
         return {
             "ok": True,
             "message": "Botões de resposta rápida enviados com sucesso.",
@@ -101,6 +130,7 @@ def get_telegram_tools(
             "question": question,
             "options": options,
             "telegram_message_id": message_id,
+            "keep_keyboard_visible": bool(manter_teclado_visivel),
         }
 
     @tool
