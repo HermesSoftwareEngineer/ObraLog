@@ -1,14 +1,16 @@
-import json
 import os
-import time
+import sys
 import threading
 import re
 import uuid
+import asyncio
+import logging
 from datetime import datetime
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from langchain_core.messages import HumanMessage
+from telegram import Bot
+from telegram.error import TelegramError
+from telegram.request import HTTPXRequest
 
 try:
 	from backend.agents.graph import graph
@@ -23,83 +25,172 @@ from backend.services.telegram_interactions import get_poll_context
 
 _POLLING_LOCK = threading.Lock()
 _POLLING_STARTED = False
+_BOT = None
+
+logger = logging.getLogger(__name__)
 
 
-def _telegram_api_call(method: str, params: dict, retries: int = 3) -> dict:
-	token = os.environ.get("TELEGRAM_TOKEN")
-	if not token:
-		raise RuntimeError("TELEGRAM_TOKEN não configurado.")
+def _log_info(message: str):
+	"""Log info com print e flush garantido."""
+	print(f"[TELEGRAM] {message}", flush=True)
+	logger.info(message)
 
-	url = f"https://api.telegram.org/bot{token}/{method}"
-	payload = json.dumps(params).encode("utf-8")
-	request = Request(url, data=payload, headers={"Content-Type": "application/json"})
 
+def _log_warning(message: str):
+	"""Log warning com print e flush garantido."""
+	print(f"[TELEGRAM-WARN] {message}", flush=True)
+	logger.warning(message)
+
+
+def _log_error(message: str, exc_info=False):
+	"""Log error com print e flush garantido."""
+	print(f"[TELEGRAM-ERROR] {message}", flush=True)
+	logger.error(message, exc_info=exc_info)
+
+
+def _log_debug(message: str):
+	"""Log debug com print e flush garantido."""
+	logger.debug(message)
+
+
+def _get_bot() -> Bot:
+	"""Retorna a instância do bot Telegram."""
+	global _BOT
+	if _BOT is None:
+		token = os.environ.get("TELEGRAM_TOKEN")
+		if not token:
+			raise RuntimeError("TELEGRAM_TOKEN não configurado no .env")
+		
+		request = HTTPXRequest(connect_timeout=10, read_timeout=30)
+		_BOT = Bot(token=token, request=request)
+	
+	return _BOT
+
+
+async def _telegram_api_call_async(method_name: str, **kwargs) -> dict:
+	"""Realiza chamada à API Telegram de forma assíncrona com retry."""
+	bot = _get_bot()
+	retries = 3
+	
+	logger.debug(f"[API_CALL] Iniciando chamada: {method_name} com args: {list(kwargs.keys())}")
+	
 	for attempt in range(retries):
 		try:
-			with urlopen(request, timeout=60) as response:
-				data = json.loads(response.read().decode("utf-8"))
-
-			if not data.get("ok"):
-				description = data.get("description") or "Erro ao chamar API do Telegram."
-				raise RuntimeError(f"Telegram {method} falhou: {description}")
-
-			return data
-		except (HTTPError, URLError) as exc:
+			method = getattr(bot, method_name)
+			logger.debug(f"[API_CALL] Tentativa {attempt + 1}/{retries}: {method_name}")
+			result = await method(**kwargs)
+			print(f"[API_CALL] Sucesso em {method_name}", flush=True)
+			logger.info(f"[API_CALL] Sucesso em {method_name}")
+			return {"ok": True, "result": result}
+		except TelegramError as exc:
+			logger.warning(f"[API_CALL] TelegramError na tentativa {attempt + 1}/{retries}: {exc}")
 			if attempt == retries - 1:
-				raise RuntimeError("Erro na API do Telegram.") from exc
+				logger.error(f"[API_CALL] Falha final em {method_name} após {retries} tentativas: {exc}")
+				raise RuntimeError(f"Erro na API do Telegram: {exc}") from exc
 			wait = 2 ** attempt
-			print(f"Erro ao conectar ({attempt + 1}/{retries}), aguardando {wait}s...")
-			time.sleep(wait)
-		except TimeoutError as exc:
+			logger.warning(f"[API_CALL] Aguardando {wait}s antes da retentativa...")
+			await asyncio.sleep(wait)
+		except Exception as exc:
+			logger.error(f"[API_CALL] Erro inesperado em {method_name}: {type(exc).__name__}: {exc}", exc_info=True)
 			if attempt == retries - 1:
-				raise RuntimeError("Timeout na API do Telegram após múltiplas tentativas.") from exc
+				raise RuntimeError(f"Erro ao chamar API do Telegram: {exc}") from exc
 			wait = 2 ** attempt
-			print(f"Timeout ({attempt + 1}/{retries}), aguardando {wait}s...")
-			time.sleep(wait)
+			await asyncio.sleep(wait)
+	
+	return {"ok": False}
 
 
 def send_message(chat_id: int | str, text: str) -> None:
-	_telegram_api_call("sendMessage", {"chat_id": chat_id, "text": text})
+	"""Envia mensagem de forma síncrona (compatibilidade com código existente)."""
+	logger.debug(f"[SEND_MSG] Iniciando envio para chat_id={chat_id}, tamanho_texto={len(text)}")
+	try:
+		loop = asyncio.get_event_loop()
+		if loop.is_running():
+			# Se já há um loop rodando, cria uma tarefa
+			logger.debug(f"[SEND_MSG] Loop já rodando, criando task")
+			asyncio.create_task(_telegram_api_call_async("send_message", chat_id=chat_id, text=text))
+		else:
+			logger.debug(f"[SEND_MSG] Loop não rodando, executando sync")
+			loop.run_until_complete(_telegram_api_call_async("send_message", chat_id=chat_id, text=text))
+	except RuntimeError as e:
+		logger.debug(f"[SEND_MSG] RuntimeError (sem loop), criando novo: {e}")
+		# Sem event loop, create novo
+		asyncio.run(_telegram_api_call_async("send_message", chat_id=chat_id, text=text))
+	except Exception as e:
+		logger.error(f"[SEND_MSG] ERRO inesperado ao enviar: {e}", exc_info=True)
+		raise
 
 
 def set_webhook(base_url: str) -> None:
+	"""Configura o webhook do Telegram (síncrono)."""
 	if not base_url:
 		raise RuntimeError("PUBLIC_BASE_URL não configurada para registrar webhook.")
 
 	webhook_url = f"{base_url.rstrip('/')}/telegram/webhook"
 	secret_token = os.environ.get("TELEGRAM_WEBHOOK_SECRET_TOKEN")
-	print(f"Configurando webhook do Telegram para: {webhook_url}")
-	payload = {"url": webhook_url}
-	if secret_token:
-		payload["secret_token"] = secret_token
-	_telegram_api_call("setWebhook", payload)
+	logger.info(f"Configurando webhook do Telegram para: {webhook_url}")
+	
+	try:
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+		loop.run_until_complete(
+			_telegram_api_call_async("set_webhook", url=webhook_url, secret_token=secret_token)
+		)
+		loop.close()
+		logger.info("Webhook configurado com sucesso")
+	except Exception as e:
+		logger.error(f"Erro ao configurar webhook: {e}")
+		raise
 
 
 def _extract_text_content(content) -> str:
+	"""Extrai conteúdo de texto de uma resposta do agente."""
 	if isinstance(content, str):
+		logger.debug(f"[EXTRACT] Conteúdo é string: {content[:50]}...")
 		return content
 
 	if isinstance(content, list):
+		logger.debug(f"[EXTRACT] Conteúdo é list com {len(content)} itens")
 		parts = []
-		for item in content:
+		for i, item in enumerate(content):
 			if isinstance(item, str):
 				parts.append(item)
+				logger.debug(f"[EXTRACT] Item {i}: string")
 			elif isinstance(item, dict):
 				text_value = item.get("text")
 				if isinstance(text_value, str):
 					parts.append(text_value)
-		return "\n".join(part for part in parts if part).strip()
+					logger.debug(f"[EXTRACT] Item {i}: dict com 'text'")
+				else:
+					logger.debug(f"[EXTRACT] Item {i}: dict sem 'text' válido. Keys: {item.keys()}")
+			else:
+				logger.debug(f"[EXTRACT] Item {i}: tipo {type(item).__name__}")
+		result = "\n".join(part for part in parts if part).strip()
+		logger.debug(f"[EXTRACT] Resultado list: {result[:50] if result else 'VAZIO'}...")
+		return result
 
 	if isinstance(content, dict):
+		logger.debug(f"[EXTRACT] Conteúdo é dict com keys: {content.keys()}")
 		text_value = content.get("text")
 		if isinstance(text_value, str):
+			logger.debug(f"[EXTRACT] Extrato dict: {text_value[:50]}...")
 			return text_value
+		logger.debug(f"[EXTRACT] Dict sem 'text' válido")
 
-	return str(content)
+	result = str(content)
+	logger.debug(f"[EXTRACT] Conversão final para string: {result[:50]}...")
+	return result
 
 
 def _response_used_telegram_ui(messages: list) -> bool:
+	# Check only messages after the last HumanMessage to avoid old history matches
+	recent_messages = []
 	for msg in reversed(messages):
+		if getattr(msg, "type", "") == "human" or type(msg).__name__ == "HumanMessage":
+			break
+		recent_messages.append(msg)
+		
+	for msg in recent_messages:
 		content = getattr(msg, "content", "")
 		if not isinstance(content, str):
 			continue
@@ -107,38 +198,71 @@ def _response_used_telegram_ui(messages: list) -> bool:
 			return True
 	return False
 
+
+async def get_updates_async(offset: int | None = None) -> list:
+	"""Obtém updates do Telegram de forma assíncrona."""
+	bot = _get_bot()
+	try:
+		updates = await bot.get_updates(
+			offset=offset,
+			timeout=30,
+			allowed_updates=["message", "callback_query"]
+		)
+		return [u.to_dict() for u in updates]
+	except TelegramError as e:
+		logger.error(f"Erro ao buscar updates: {e}")
+		raise RuntimeError(f"Erro na API do Telegram.") from e
+
+
 def get_updates(offset: int | None = None) -> list:
-	params = {"timeout": 30}
-	if offset is not None:
-		params["offset"] = offset
-	result = _telegram_api_call("getUpdates", params)
-	return result.get("result", [])
+	"""Wrapper síncrono para compatibilidade com código existente."""
+	try:
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+		result = loop.run_until_complete(get_updates_async(offset))
+		loop.close()
+		return result
+	except Exception as e:
+		logger.error(f"Erro em get_updates: {e}")
+		raise
+
+
+async def _download_telegram_file_async(file_id: str) -> tuple[bytes, str]:
+	"""Baixa arquivo do Telegram de forma assíncrona."""
+	bot = _get_bot()
+	
+	try:
+		file_obj = await bot.get_file(file_id)
+		file_bytes = await file_obj.download_as_bytearray()
+		
+		# Determina MIME type baseado na extensão
+		file_path = file_obj.file_path or ""
+		mime_type = "audio/ogg"  # default
+		
+		if file_path.endswith(".mp3"):
+			mime_type = "audio/mpeg"
+		elif file_path.endswith(".wav"):
+			mime_type = "audio/wav"
+		elif file_path.endswith(".m4a"):
+			mime_type = "audio/mp4"
+		
+		return bytes(file_bytes), mime_type
+	except TelegramError as e:
+		logger.error(f"Erro ao baixar arquivo do Telegram: {e}")
+		raise RuntimeError(f"Erro ao baixar arquivo: {e}") from e
 
 
 def _download_telegram_file(file_id: str) -> tuple[bytes, str]:
-	token = os.environ.get("TELEGRAM_TOKEN")
-	if not token:
-		raise RuntimeError("TELEGRAM_TOKEN não configurado.")
-
-	file_result = _telegram_api_call("getFile", {"file_id": file_id})
-	file_info = file_result.get("result") or {}
-	file_path = file_info.get("file_path")
-	if not file_path:
-		raise RuntimeError("Não foi possível obter o caminho do arquivo de áudio no Telegram.")
-
-	file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-	with urlopen(file_url, timeout=60) as response:
-		audio_bytes = response.read()
-
-	mime_type = "audio/ogg"
-	if file_path.endswith(".mp3"):
-		mime_type = "audio/mpeg"
-	elif file_path.endswith(".wav"):
-		mime_type = "audio/wav"
-	elif file_path.endswith(".m4a"):
-		mime_type = "audio/mp4"
-
-	return audio_bytes, mime_type
+	"""Wrapper síncrono para compatibilidade."""
+	try:
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+		result = loop.run_until_complete(_download_telegram_file_async(file_id))
+		loop.close()
+		return result
+	except Exception as e:
+		logger.error(f"Erro em _download_telegram_file: {e}")
+		raise
 
 
 def _extract_message_text_or_transcription(message: dict, chat_id: int | str) -> str | None:
@@ -157,13 +281,19 @@ def _extract_message_text_or_transcription(message: dict, chat_id: int | str) ->
 		if not file_id:
 			raise RuntimeError("Imagem recebida sem file_id.")
 
-		file_result = _telegram_api_call("getFile", {"file_id": file_id})
-		file_info = file_result.get("result") or {}
-		file_path = file_info.get("file_path")
-		if not file_path:
-			raise RuntimeError("Não foi possível obter file_path da imagem no Telegram.")
-
-		image_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+		try:
+			# Obtém o URL da imagem usando a API
+			bot = _get_bot()
+			loop = asyncio.new_event_loop()
+			asyncio.set_event_loop(loop)
+			file_obj = loop.run_until_complete(bot.get_file(file_id))
+			loop.close()
+			
+			image_url = f"https://api.telegram.org/file/bot{os.environ.get('TELEGRAM_TOKEN')}/{file_obj.file_path}"
+		except Exception as e:
+			logger.warning(f"Não foi possível obter URL da imagem: {e}")
+			image_url = f"telegram://{file_id}"
+		
 		caption = (message.get("caption") or "").strip()
 		if caption:
 			return (
@@ -332,11 +462,13 @@ def handle_telegram_update(update: dict) -> dict:
 
 	message = update.get("message") or update.get("edited_message")
 	if not message:
+		_log_debug("Update ignorado: sem mensagem")
 		return {"ok": True, "ignored": True}
 
 	chat = message.get("chat") or {}
 	chat_id = chat.get("id")
 	if chat_id is None:
+		_log_error("Chat inválido no update do Telegram")
 		raise RuntimeError("Chat inválido no update do Telegram.")
 
 	chat_display_name = (
@@ -346,29 +478,39 @@ def handle_telegram_update(update: dict) -> dict:
 	)
 	telegram_message_thread_id = message.get("message_thread_id")
 
+	_log_info(f"Nova mensagem recebida - chat_id={chat_id}, usuario={chat_display_name}")
+
 	text = _extract_message_text_or_transcription(message, chat_id)
 	if not text:
+		logger.debug(f"[TELEGRAM] Mensagem ignorada (sem texto) - chat_id={chat_id}")
 		return {"ok": True, "ignored": True}
+	
+	_log_info(f"Texto extraído: {text[:100]}... (chat_id={chat_id})")
 
 	with SessionLocal() as db:
 		usuario = Repository.usuarios.obter_por_telegram_chat_id(db, str(chat_id))
 
 	if not usuario:
+		_log_warning(f"Usuário não vinculado - chat_id={chat_id}")
 		link_code = _extract_link_code(text)
 		if link_code:
+			_log_info(f"Tentando vínculo com código: {link_code}")
 			with SessionLocal() as db:
 				code_item = Repository.telegram_link_codes.obter_valido_por_codigo(db, link_code)
 				if not code_item:
+					_log_warning(f"Código inválido/expirado: {link_code}")
 					send_message(chat_id, "Código inválido ou expirado. Peça um novo código ao administrador.")
 					return {"ok": False, "chat_id": chat_id, "reason": "codigo_invalido"}
 
 				target_user = Repository.usuarios.obter_por_id(db, code_item.user_id)
 				if not target_user:
+					_log_error(f"Usuário do código não encontrado (user_id={code_item.user_id})")
 					send_message(chat_id, "Usuário do código não encontrado. Solicite um novo código.")
 					return {"ok": False, "chat_id": chat_id, "reason": "usuario_codigo_inexistente"}
 
 				existing_chat_user = Repository.usuarios.obter_por_telegram_chat_id(db, str(chat_id))
 				if existing_chat_user and existing_chat_user.id != target_user.id:
+					_log_error(f"Chat já vinculado a outro usuário - chat_id={chat_id}")
 					send_message(chat_id, "Este Telegram já está vinculado a outro usuário.")
 					return {"ok": False, "chat_id": chat_id, "reason": "chat_ja_vinculado"}
 
@@ -379,10 +521,12 @@ def handle_telegram_update(update: dict) -> dict:
 					telegram_thread_id=str(chat_id),
 				)
 				Repository.telegram_link_codes.marcar_usado(db, code_item.id)
+				_log_info(f"Vínculo concluído - user_id={target_user.id}, chat_id={chat_id}")
 
 			send_message(chat_id, "Vínculo concluído com sucesso. Agora você já pode usar o assistente.")
 			return {"ok": True, "chat_id": chat_id, "reason": "vinculado_por_codigo"}
 
+		_log_debug(f"Usuário não vinculado e sem código - chat_id={chat_id}")
 		send_message(
 			chat_id,
 			"Seu usuário ainda não está vinculado no sistema. Peça ao administrador um código de vínculo e envie: /vincular SEU_CODIGO",
@@ -390,14 +534,17 @@ def handle_telegram_update(update: dict) -> dict:
 		return {"ok": False, "chat_id": chat_id, "reason": "usuario_nao_vinculado"}
 
 	if _is_reset_context_command(text):
+		_log_info(f"Comando de reset de contexto - chat_id={chat_id}, user_id={usuario.id}")
 		with SessionLocal() as db:
 			usuario_db = Repository.usuarios.obter_por_id(db, usuario.id)
 			if not usuario_db:
+				_log_error(f"Usuário não encontrado para reset - user_id={usuario.id}")
 				send_message(chat_id, "Não encontrei seu usuário para reiniciar o contexto.")
 				return {"ok": False, "chat_id": chat_id, "reason": "usuario_nao_encontrado_reset"}
 
 			new_thread_id = _new_thread_id(chat_id)
 			Repository.usuarios.atualizar(db, usuario_db.id, telegram_thread_id=new_thread_id)
+			_log_info(f"Contexto reiniciado - user_id={usuario.id}, new_thread_id={new_thread_id}")
 
 		send_message(
 			chat_id,
@@ -413,13 +560,17 @@ def handle_telegram_update(update: dict) -> dict:
 
 	# Migração lazy para usuários antigos sem thread persistida
 	if not getattr(usuario, "telegram_thread_id", None):
+		_log_info(f"Migrando usuário para thread persistida - user_id={usuario.id}, chat_id={chat_id}")
 		with SessionLocal() as db:
 			Repository.usuarios.atualizar(db, usuario.id, telegram_thread_id=str(chat_id))
 		usuario.telegram_thread_id = str(chat_id)
 
+	thread_id = _resolve_thread_id(usuario, chat_id)
+	_log_info(f"Iniciando processamento - user_id={usuario.id}, chat_id={chat_id}, thread_id={thread_id}")
+
 	config = {
 		"configurable": {
-			"thread_id": _resolve_thread_id(usuario, chat_id),
+			"thread_id": thread_id,
 			"telegram_chat_id": str(chat_id),
 			"telegram_message_thread_id": int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
 			**_conversation_date_payload(),
@@ -429,40 +580,124 @@ def handle_telegram_update(update: dict) -> dict:
 			"actor_chat_display_name": chat_display_name,
 		}
 	}
-	response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
-	response_messages = response["messages"]
-	ui_dispatched = _response_used_telegram_ui(response_messages)
-	reply = _extract_text_content(response_messages[-1].content)
-	if not reply:
-		reply = "Recebi sua mensagem, mas não consegui gerar uma resposta em texto."
-	if not ui_dispatched:
-		send_message(chat_id, reply)
-	return {"ok": True, "chat_id": chat_id}
+	
+	try:
+		print(f"[TELEGRAM] Invocando graph com mensagem: {text[:50]}...", flush=True)
+		logger.debug(f"[TELEGRAM] Invocando graph com mensagem: {text[:50]}...")
+		response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
+		print(f"[TELEGRAM] Graph retornou resposta. Tipo: {type(response)}", flush=True)
+		logger.debug(f"[TELEGRAM] Graph retornou resposta. Tipo: {type(response)}")
+	except Exception as e:
+		print(f"[TELEGRAM] ERRO ao invocar graph - chat_id={chat_id}: {e}", flush=True)
+		logger.error(f"[TELEGRAM] ERRO ao invocar graph - chat_id={chat_id}: {e}", exc_info=True)
+		send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
+		return {"ok": False, "chat_id": chat_id, "reason": "erro_graph", "error": str(e)}
+	
+	try:
+		response_messages = response.get("messages", [])
+		print(f"[TELEGRAM] Mensagens na resposta: {len(response_messages)}", flush=True)
+		logger.debug(f"[TELEGRAM] Mensagens na resposta: {len(response_messages)}")
+		
+		if not response_messages:
+			print(f"[TELEGRAM] AVISO: response_messages vazio - chat_id={chat_id}", flush=True)
+			logger.warning(f"[TELEGRAM] AVISO: response_messages vazio - chat_id={chat_id}")
+			send_message(chat_id, "Recebi sua mensagem, mas não consegui gerar uma resposta.")
+			return {"ok": True, "chat_id": chat_id}
+		
+		ui_dispatched = _response_used_telegram_ui(response_messages)
+		print(f"[TELEGRAM] UI Dispatched: {ui_dispatched}", flush=True)
+		logger.info(f"[TELEGRAM] UI Dispatched: {ui_dispatched}")
+		
+		reply = _extract_text_content(response_messages[-1].content)
+		logger.debug(f"[TELEGRAM] Texto extraído (primeiro 100 chars): {reply[:100] if reply else 'VAZIO'}")
+		
+		if not reply:
+			print(f"[TELEGRAM] AVISO: Nenhuma resposta em texto gerada - chat_id={chat_id}, ui_dispatched={ui_dispatched}", flush=True)
+			logger.warning(f"[TELEGRAM] AVISO: Nenhuma resposta em texto gerada - chat_id={chat_id}, ui_dispatched={ui_dispatched}")
+			reply = "Recebi sua mensagem, mas não consegui gerar uma resposta em texto."
+		
+		if not ui_dispatched:
+			_log_info(f"Enviando resposta via Telegram - chat_id={chat_id}, tamanho={len(reply)}")
+			try:
+				send_message(chat_id, reply)
+				_log_info(f"Mensagem enviada com sucesso - chat_id={chat_id}")
+			except Exception as e:
+				_log_error(f"ERRO ao enviar mensagem - chat_id={chat_id}: {e}", exc_info=True)
+				return {"ok": False, "chat_id": chat_id, "reason": "erro_envio", "error": str(e)}
+		else:
+			_log_info(f"Resposta via UI dispensada (ui_dispatched=True) - chat_id={chat_id}")
+		
+		return {"ok": True, "chat_id": chat_id}
+		
+	except Exception as e:
+		_log_error(f"ERRO ao processar resposta do graph - chat_id={chat_id}: {e}", exc_info=True)
+		try:
+			send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
+		except Exception as send_error:
+			logger.error(f"[TELEGRAM] Falha ao enviar mensagem de erro - chat_id={chat_id}: {send_error}")
+		return {"ok": False, "chat_id": chat_id, "reason": "erro_resposta", "error": str(e)}
 
 def start_polling() -> None:
+	"""Inicia polling do Telegram usando async."""
 	global _POLLING_STARTED
 
 	with _POLLING_LOCK:
 		if _POLLING_STARTED:
-			print("Polling do Telegram já está ativo neste processo. Ignorando nova inicialização.")
+			logger.info("Polling do Telegram já está ativo neste processo. Ignorando nova inicialização.")
 			return
 		_POLLING_STARTED = True
 
-	offset = None
-	print("Iniciando polling do Telegram...")
-	print("Verifique se TELEGRAM_TOKEN está correto no .env\n")
+	logger.info("Iniciando polling do Telegram...")
+	logger.info("Verifique se TELEGRAM_TOKEN está correto no .env")
+	
 	try:
-		while True:
-			try:
-				updates = get_updates(offset)
-				for update in updates:
-					try:
-						handle_telegram_update(update)
-					except Exception as e:
-						print(f"Erro ao processar update: {e}")
-					offset = update.get("update_id", 0) + 1
-			except (RuntimeError, ConnectionError) as e:
-				print(f"Erro ao buscar updates: {e}")
-				time.sleep(5)
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+		loop.run_until_complete(_start_polling_async())
 	except KeyboardInterrupt:
-		print("\nPolling encerrado.")
+		logger.info("Polling encerrado pelo usuário.")
+	except Exception as e:
+		logger.error(f"Erro fatal no polling: {e}")
+	finally:
+		loop.close()
+
+
+async def _start_polling_async() -> None:
+	"""Polling assíncrono com melhor tratamento de erros e reconexão."""
+	offset = None
+	consecutive_errors = 0
+	max_consecutive_errors = 5
+	
+	while True:
+		try:
+			# Tenta buscar updates com timeout
+			updates = await get_updates_async(offset)
+			consecutive_errors = 0  # Reset contador após sucesso
+			
+			for update in updates:
+				try:
+					handle_telegram_update(update)
+					offset = update.get("update_id", 0) + 1
+				except Exception as e:
+					logger.error(f"Erro ao processar update: {e}", exc_info=True)
+			
+			# Pequeno delay para evitar CPU 100%
+			if not updates:
+				await asyncio.sleep(0.5)
+				
+		except RuntimeError as e:
+			consecutive_errors += 1
+			wait = min(2 ** consecutive_errors, 60)  # Max 60 segundos
+			logger.warning(f"Erro ao buscar updates ({consecutive_errors}/{max_consecutive_errors}): {e}. Aguardando {wait}s...")
+			
+			if consecutive_errors >= max_consecutive_errors:
+				logger.error(f"Muitos erros consecutivos ({consecutive_errors}). Encerrando polling.")
+				raise
+			
+			await asyncio.sleep(wait)
+		except asyncio.CancelledError:
+			logger.info("Polling cancelado.")
+			break
+		except Exception as e:
+			logger.error(f"Erro inesperado no polling: {e}", exc_info=True)
+			raise

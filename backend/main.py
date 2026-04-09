@@ -5,6 +5,8 @@ from pathlib import Path
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 
+from backend.core.logger import logger as core_logger
+
 try:
     from .api.routes.webhook import telegram_blueprint
     from .api.routes.crud import api_blueprint
@@ -51,22 +53,32 @@ app.register_blueprint(auth_blueprint)
 
 
 def _should_start_polling_in_dev() -> bool:
-    debug_enabled = os.environ.get("FLASK_DEBUG", "").lower() in {"1", "true", "yes", "on"}
     polling_enabled = os.environ.get("TELEGRAM_POLLING_IN_DEV", "true").lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    reloader_main = os.environ.get("WERKZEUG_RUN_MAIN")
     if not polling_enabled:
         return False
 
-    # With flask --debug, only start polling in the reloader child process.
-    if debug_enabled:
-        return reloader_main == "true"
+    # Werkzeug/Flask uses a parent watcher and a child worker process when debug/reload is on.
+    # We ONLY want to poll in the worker process to avoid Conflict: terminated by other getUpdates.
+    import sys
+    is_flask_command = "flask" in sys.argv[0].lower() or os.environ.get("FLASK_RUN_FROM_CLI") == "true"
+    has_debug_or_reload = (
+        any(arg in sys.argv for arg in ["--debug", "--reload", "-d"]) or
+        os.environ.get("FLASK_DEBUG", "").lower() in {"1", "true", "yes", "on"} or
+        os.environ.get("FLASK_ENV", "").lower() == "development"
+    )
+    
+    reloader_main = os.environ.get("WERKZEUG_RUN_MAIN")
 
-    # Without debug/reloader (e.g., python backend/main.py), start normally.
+    if is_flask_command and has_debug_or_reload:
+        # In debug mode under flask, only start polling if we are in the reloader child process.
+        return reloader_main == "true"
+        
+    # Otherwise (e.g., standard python main.py or flask run without debug), start normally.
     return reloader_main is None
 
 
@@ -111,3 +123,4 @@ def download_registro_image(filename: str):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
