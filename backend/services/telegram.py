@@ -25,7 +25,6 @@ from backend.services.telegram_interactions import get_poll_context
 
 _POLLING_LOCK = threading.Lock()
 _POLLING_STARTED = False
-_BOT = None
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +54,13 @@ def _log_debug(message: str):
 
 def _get_bot() -> Bot:
 	"""Retorna a instância do bot Telegram."""
-	global _BOT
-	if _BOT is None:
-		token = os.environ.get("TELEGRAM_TOKEN")
-		if not token:
-			raise RuntimeError("TELEGRAM_TOKEN não configurado no .env")
-		
-		request = HTTPXRequest(connect_timeout=10, read_timeout=30)
-		_BOT = Bot(token=token, request=request)
-	
-	return _BOT
+	token = os.environ.get("TELEGRAM_TOKEN")
+	if not token:
+		raise RuntimeError("TELEGRAM_TOKEN não configurado no .env")
+
+	# Evita reuso de cliente HTTP assíncrono entre loops diferentes.
+	request = HTTPXRequest(connect_timeout=10, read_timeout=30)
+	return Bot(token=token, request=request)
 
 
 def _run_async_sync(async_fn, *args, **kwargs):
