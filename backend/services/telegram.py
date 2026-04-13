@@ -67,6 +67,34 @@ def _get_bot() -> Bot:
 	return _BOT
 
 
+def _run_async_sync(async_fn, *args, **kwargs):
+	"""Executa função async em contexto síncrono sem fechar loop global."""
+	try:
+		return asyncio.run(async_fn(*args, **kwargs))
+	except RuntimeError as exc:
+		# Fallback para casos em que já existe loop ativo na thread atual.
+		if "asyncio.run() cannot be called from a running event loop" not in str(exc):
+			raise
+
+	result_holder = {}
+	error_holder = {}
+
+	def _runner():
+		try:
+			result_holder["value"] = asyncio.run(async_fn(*args, **kwargs))
+		except Exception as runner_exc:
+			error_holder["error"] = runner_exc
+
+	thread = threading.Thread(target=_runner, daemon=True)
+	thread.start()
+	thread.join()
+
+	if "error" in error_holder:
+		raise error_holder["error"]
+
+	return result_holder.get("value")
+
+
 async def _telegram_api_call_async(method_name: str, **kwargs) -> dict:
 	"""Realiza chamada à API Telegram de forma assíncrona com retry."""
 	bot = _get_bot()
@@ -104,18 +132,7 @@ def send_message(chat_id: int | str, text: str) -> None:
 	"""Envia mensagem de forma síncrona (compatibilidade com código existente)."""
 	logger.debug(f"[SEND_MSG] Iniciando envio para chat_id={chat_id}, tamanho_texto={len(text)}")
 	try:
-		loop = asyncio.get_event_loop()
-		if loop.is_running():
-			# Se já há um loop rodando, cria uma tarefa
-			logger.debug(f"[SEND_MSG] Loop já rodando, criando task")
-			asyncio.create_task(_telegram_api_call_async("send_message", chat_id=chat_id, text=text))
-		else:
-			logger.debug(f"[SEND_MSG] Loop não rodando, executando sync")
-			loop.run_until_complete(_telegram_api_call_async("send_message", chat_id=chat_id, text=text))
-	except RuntimeError as e:
-		logger.debug(f"[SEND_MSG] RuntimeError (sem loop), criando novo: {e}")
-		# Sem event loop, create novo
-		asyncio.run(_telegram_api_call_async("send_message", chat_id=chat_id, text=text))
+		_run_async_sync(_telegram_api_call_async, "send_message", chat_id=chat_id, text=text)
 	except Exception as e:
 		logger.error(f"[SEND_MSG] ERRO inesperado ao enviar: {e}", exc_info=True)
 		raise
@@ -131,12 +148,7 @@ def set_webhook(base_url: str) -> None:
 	logger.info(f"Configurando webhook do Telegram para: {webhook_url}")
 	
 	try:
-		loop = asyncio.new_event_loop()
-		asyncio.set_event_loop(loop)
-		loop.run_until_complete(
-			_telegram_api_call_async("set_webhook", url=webhook_url, secret_token=secret_token)
-		)
-		loop.close()
+		_run_async_sync(_telegram_api_call_async, "set_webhook", url=webhook_url, secret_token=secret_token)
 		logger.info("Webhook configurado com sucesso")
 	except Exception as e:
 		logger.error(f"Erro ao configurar webhook: {e}")
@@ -217,11 +229,7 @@ async def get_updates_async(offset: int | None = None) -> list:
 def get_updates(offset: int | None = None) -> list:
 	"""Wrapper síncrono para compatibilidade com código existente."""
 	try:
-		loop = asyncio.new_event_loop()
-		asyncio.set_event_loop(loop)
-		result = loop.run_until_complete(get_updates_async(offset))
-		loop.close()
-		return result
+		return _run_async_sync(get_updates_async, offset)
 	except Exception as e:
 		logger.error(f"Erro em get_updates: {e}")
 		raise
@@ -255,11 +263,7 @@ async def _download_telegram_file_async(file_id: str) -> tuple[bytes, str]:
 def _download_telegram_file(file_id: str) -> tuple[bytes, str]:
 	"""Wrapper síncrono para compatibilidade."""
 	try:
-		loop = asyncio.new_event_loop()
-		asyncio.set_event_loop(loop)
-		result = loop.run_until_complete(_download_telegram_file_async(file_id))
-		loop.close()
-		return result
+		return _run_async_sync(_download_telegram_file_async, file_id)
 	except Exception as e:
 		logger.error(f"Erro em _download_telegram_file: {e}")
 		raise
@@ -284,10 +288,7 @@ def _extract_message_text_or_transcription(message: dict, chat_id: int | str) ->
 		try:
 			# Obtém o URL da imagem usando a API
 			bot = _get_bot()
-			loop = asyncio.new_event_loop()
-			asyncio.set_event_loop(loop)
-			file_obj = loop.run_until_complete(bot.get_file(file_id))
-			loop.close()
+			file_obj = _run_async_sync(bot.get_file, file_id)
 			
 			image_url = f"https://api.telegram.org/file/bot{os.environ.get('TELEGRAM_TOKEN')}/{file_obj.file_path}"
 		except Exception as e:
@@ -651,15 +652,11 @@ def start_polling() -> None:
 	logger.info("Verifique se TELEGRAM_TOKEN está correto no .env")
 	
 	try:
-		loop = asyncio.new_event_loop()
-		asyncio.set_event_loop(loop)
-		loop.run_until_complete(_start_polling_async())
+		_run_async_sync(_start_polling_async)
 	except KeyboardInterrupt:
 		logger.info("Polling encerrado pelo usuário.")
 	except Exception as e:
 		logger.error(f"Erro fatal no polling: {e}")
-	finally:
-		loop.close()
 
 
 async def _start_polling_async() -> None:
