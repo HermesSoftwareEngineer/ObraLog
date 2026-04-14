@@ -52,6 +52,31 @@ class AlertStatus(str, Enum):
     CANCELADO = "cancelado"
 
 
+class CanalOrigemMensagem(str, Enum):
+    TELEGRAM = "telegram"
+
+
+class ConteudoMensagemTipo(str, Enum):
+    TEXTO = "texto"
+    FOTO = "foto"
+    AUDIO = "audio"
+    MISTO = "misto"
+
+
+class ProcessamentoMensagemStatus(str, Enum):
+    PENDENTE = "pendente"
+    PROCESSADA = "processada"
+    ERRO = "erro"
+
+
+class RegistroStatus(str, Enum):
+    PENDENTE = "pendente"
+    CONSOLIDADO = "consolidado"
+    REVISADO = "revisado"
+    ATIVO = "ativo"
+    DESCARTADO = "descartado"
+
+
 def _enum_values(enum_cls):
     return [item.value for item in enum_cls]
 
@@ -108,6 +133,8 @@ class Usuario(Base):
         back_populates="worker",
         foreign_keys="AlertRead.worker_id",
     )
+    mensagens_campo = relationship("MensagemCampo", back_populates="usuario")
+    auditorias_registro = relationship("RegistroAuditoria", back_populates="actor")
 
 class FrenteServico(Base):
     __tablename__ = "frentes_servico"
@@ -124,27 +151,50 @@ class Registro(Base):
     __tablename__ = "registros"
 
     id = Column(Integer, primary_key=True, index=True)
-    data = Column(Date, nullable=False, index=True)
-    frente_servico_id = Column(Integer, ForeignKey("frentes_servico.id", ondelete="CASCADE"), nullable=False, index=True)
-    usuario_registrador_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=False, index=True)
-    estaca_inicial = Column(DECIMAL(10, 2), nullable=False)
-    estaca_final = Column(DECIMAL(10, 2), nullable=False)
-    resultado = Column(DECIMAL(10, 2), nullable=False)
-    tempo_manha = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=False)
-    tempo_tarde = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=False)
-    pista = Column(SQLEnum(LadoPista, values_callable=_enum_values, name="lado_pista_enum"), nullable=True)
+    status = Column(
+        SQLEnum(RegistroStatus, values_callable=_enum_values, name="registro_status"),
+        nullable=False,
+        default=RegistroStatus.PENDENTE,
+        index=True,
+    )
+    data = Column(Date, nullable=True, index=True)
+    frente_servico_id = Column(Integer, ForeignKey("frentes_servico.id", ondelete="CASCADE"), nullable=True, index=True)
+    usuario_registrador_id = Column(Integer, ForeignKey("usuarios.id", ondelete="RESTRICT"), nullable=True, index=True)
+    estaca_inicial = Column(DECIMAL(10, 2), nullable=True)
+    estaca_final = Column(DECIMAL(10, 2), nullable=True)
+    resultado = Column(DECIMAL(10, 2), nullable=True)
+    tempo_manha = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=True)
+    tempo_tarde = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=True)
     lado_pista = Column(SQLEnum(LadoPista, values_callable=_enum_values, name="lado_pista_enum"), nullable=True)
     observacao = Column(String, nullable=True)
+    raw_text = Column(Text, nullable=True)
+    source_message_id = Column(PGUUID(as_uuid=True), ForeignKey("mensagens_campo.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
     frente_servico = relationship("FrenteServico", back_populates="registros")
     usuario_registrador = relationship("Usuario", back_populates="registros")
+    source_message = relationship("MensagemCampo", back_populates="registros")
     imagens = relationship(
         "RegistroImagem",
         back_populates="registro",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    auditoria = relationship(
+        "RegistroAuditoria",
+        back_populates="registro",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    @property
+    def pista(self):
+        return self.lado_pista
+
+    @pista.setter
+    def pista(self, value):
+        self.lado_pista = value
 
 
 class RegistroImagem(Base):
@@ -160,6 +210,53 @@ class RegistroImagem(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     registro = relationship("Registro", back_populates="imagens")
+
+
+class MensagemCampo(Base):
+    __tablename__ = "mensagens_campo"
+
+    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    canal = Column(SQLEnum(CanalOrigemMensagem, values_callable=_enum_values, name="canal_origem_mensagem"), nullable=False)
+    telegram_chat_id = Column(String, nullable=True, index=True)
+    telegram_message_id = Column(BigInteger, nullable=True)
+    telegram_update_id = Column(BigInteger, nullable=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
+    recebida_em = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    tipo_conteudo = Column(
+        SQLEnum(ConteudoMensagemTipo, values_callable=_enum_values, name="conteudo_mensagem_tipo"),
+        nullable=False,
+        default=ConteudoMensagemTipo.TEXTO,
+    )
+    texto_bruto = Column(Text, nullable=True)
+    texto_normalizado = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=True)
+    hash_idempotencia = Column(String(120), nullable=True, unique=True, index=True)
+    processada_em = Column(DateTime(timezone=True), nullable=True)
+    status_processamento = Column(
+        SQLEnum(ProcessamentoMensagemStatus, values_callable=_enum_values, name="processamento_mensagem_status"),
+        nullable=False,
+        default=ProcessamentoMensagemStatus.PENDENTE,
+        index=True,
+    )
+    erro_processamento = Column(Text, nullable=True)
+
+    usuario = relationship("Usuario", back_populates="mensagens_campo")
+    registros = relationship("Registro", back_populates="source_message")
+
+
+class RegistroAuditoria(Base):
+    __tablename__ = "registro_auditoria"
+
+    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    registro_id = Column(Integer, ForeignKey("registros.id", ondelete="CASCADE"), nullable=False, index=True)
+    acao = Column(String(30), nullable=False)
+    diff_json = Column(Text, nullable=False)
+    actor_user_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
+    actor_level = Column(String(30), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    registro = relationship("Registro", back_populates="auditoria")
+    actor = relationship("Usuario", back_populates="auditorias_registro")
 
 
 class TelegramLinkCode(Base):
@@ -232,51 +329,3 @@ class AlertRead(Base):
 
     alert = relationship("Alert", back_populates="reads")
     worker = relationship("Usuario", back_populates="alert_reads", foreign_keys=[worker_id])
-
-from datetime import datetime, date
-
-
-class Diario(Base):
-    __tablename__ = "diarios"
-    id = Column(Integer, primary_key=True, index=True)
-    data = Column(Date, nullable=False, index=True)
-    frente_servico_id = Column(Integer, index=True) # Reference to frentes_servico
-    usuario_registrador_id = Column(Integer, index=True)
-    clima_manha = Column(String, nullable=True)
-    clima_tarde = Column(String, nullable=True)
-    observacoes_gerais = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    atividades = relationship("Atividade", back_populates="diario", cascade="all, delete-orphan")
-
-class Atividade(Base):
-    __tablename__ = "atividades"
-    id = Column(Integer, primary_key=True, index=True)
-    diario_id = Column(Integer, ForeignKey("diarios.id"), nullable=False)
-    descricao = Column(Text, nullable=False)
-    estaca_inicial = Column(String, nullable=True)
-    estaca_final = Column(String, nullable=True)
-    pista = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    diario = relationship("Diario", back_populates="atividades")
-    producoes = relationship("Producao", back_populates="atividade", cascade="all, delete-orphan")
-    equipamentos = relationship("AtividadeEquipamento", back_populates="atividade", cascade="all, delete-orphan")
-
-class Producao(Base):
-    __tablename__ = "producoes"
-    id = Column(Integer, primary_key=True, index=True)
-    atividade_id = Column(Integer, ForeignKey("atividades.id"), nullable=False)
-    quantidade = Column(DECIMAL(10, 2), nullable=False)
-    unidade_medida = Column(String, nullable=False)
-
-    atividade = relationship("Atividade", back_populates="producoes")
-
-class AtividadeEquipamento(Base):
-    __tablename__ = "atividade_equipamentos"
-    id = Column(Integer, primary_key=True, index=True)
-    atividade_id = Column(Integer, ForeignKey("atividades.id"), nullable=False)
-    equipamento_nome = Column(String, nullable=False)
-
-    atividade = relationship("Atividade", back_populates="equipamentos")
-

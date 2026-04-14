@@ -238,12 +238,15 @@ Authorization: Bearer <token>
 ```json
 {
   "resultado": 1.5,
-  "pista": "direito",
   "lado_pista": "esquerdo",
-  "observacao": "Observações do registro"
+  "pista": "direito",
+  "observacao": "Observações do registro",
+  "raw_text": "texto bruto da origem",
+  "source_message_id": "uuid-opcional"
 }
 ```
-- Regra: `observacao`, `pista` e `lado_pista` são opcionais.
+- Regra: `observacao` e `lado_pista` são opcionais.
+- Regra: `pista` é aceito apenas como alias legado e é normalizado para `lado_pista`.
 - Regra: se `resultado` não vier e `estaca_inicial` + `estaca_final` vierem, o backend calcula automaticamente.
 - Limite de imagens por registro: `30`.
 
@@ -252,7 +255,56 @@ Authorization: Bearer <token>
 
 ### PUT/PATCH `/api/v1/registros/{registro_id}`
 - Atualiza registro.
-- Campos aceitos: `data`, `frente_servico_id`, `usuario_registrador_id`, `estaca_inicial`, `estaca_final`, `resultado`, `tempo_manha`, `tempo_tarde`, `pista`, `lado_pista`, `observacao`.
+- Campos aceitos: `data`, `frente_servico_id`, `usuario_registrador_id`, `estaca_inicial`, `estaca_final`, `resultado`, `tempo_manha`, `tempo_tarde`, `lado_pista`, `pista` (alias legado), `observacao`, `raw_text`, `source_message_id`.
+
+### GET `/api/v1/registros/{registro_id}/auditoria`
+- Lista trilha de auditoria do registro.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Resposta 200:
+```json
+{
+  "ok": true,
+  "total": 1,
+  "items": [
+    {
+      "id": "uuid",
+      "registro_id": 10,
+      "acao": "create_registro",
+      "diff_json": "{...}",
+      "actor_user_id": 1,
+      "actor_level": "gerente",
+      "created_at": "2026-04-14T18:20:11+00:00"
+    }
+  ]
+}
+```
+
+## Mensagens de Campo
+### GET `/api/v1/mensagens-campo`
+- Lista mensagens capturadas no fluxo operacional.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Query params opcionais:
+  - `status=pendente|processada|erro`
+  - `telegram_chat_id=string`
+  - `limit=1..200` (default `50`)
+
+### GET `/api/v1/mensagens-campo/{mensagem_id}`
+- Retorna detalhe de mensagem de campo por UUID.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+
+## Fluxo Removido
+### `/api/v1/lancamentos/*`
+- Todos os endpoints de lançamentos foram removidos do fluxo oficial.
+- Resposta atual: `410 Gone` com orientação para usar apenas registros e status de registro.
 
 ### GET `/api/v1/registros/{registro_id}/imagens`
 - Lista imagens vinculadas ao registro.

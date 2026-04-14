@@ -6,6 +6,97 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/).
 
 ---
 
+## [2026-04-14] - Fase 4 e 5: Remocao Definitiva e Hardening
+
+### ✨ Adicionado
+- Migration final de remocao: `backend/db/migrations/sql/20260414_012_remocao_final_lancamentos.up.sql`.
+
+### ❌ Removido
+- Classes ORM e repositórios de `Lancamento*`.
+- Código morto de rotas `/api/v1/lancamentos/*`.
+- Mappers e tools de gateway focados em lançamentos.
+- Tipos/tabelas/índices de lançamento no schema base.
+
+### 🔄 Alterado
+- Runtime migration passa a dropar estruturas legadas de lançamento quando existirem.
+- Documentação oficial atualizada para fluxo único de registros com status.
+
+---
+
+## [2026-04-14] - Redesenho Técnico do Banco para Diário de Obra
+
+### 📝 Descrição Geral
+Evolução do modelo de dados para suportar ingestão bruta de mensagens do Telegram, camada de lançamentos operacionais e trilha de auditoria, além de correções de integridade em `registros`.
+
+### ✨ Adicionado
+- Novas tabelas:
+  - `mensagens_campo`
+  - `lancamentos_diario`
+  - `lancamento_itens`
+  - `lancamento_recursos`
+  - `lancamento_midias`
+  - `registro_auditoria`
+- Novos campos em `registros`:
+  - `raw_text`
+  - `source_message_id`
+  - `updated_at`
+- Persistência de mensagens recebidas no fluxo Telegram com idempotência por hash.
+
+### 🔄 Alterado
+- `registros.usuario_registrador_id` agora usa `ON DELETE RESTRICT` para coerência com `NOT NULL`.
+- Constraint `ck_registros_required_fields` ajustada para não exigir `observacao`.
+- `pista` removido do schema físico; `lado_pista` permanece como campo único.
+- API e tools mantêm compatibilidade de entrada para `pista` (alias legado), normalizando para `lado_pista`.
+
+### 📋 Arquivos Modificados
+- `backend/db/models.py`
+- `backend/db/repository.py`
+- `backend/db/schema.sql`
+- `backend/db/session.py`
+- `backend/services/telegram.py`
+- `backend/api/routes/crud.py`
+- `backend/agents/tools/database_tools.py`
+- `SETUP_DB.md`
+- `docs/README.md`
+
+### 🔢 Database
+- Migration UP: `backend/db/migrations/sql/20260414_010_ingestao_lancamentos_e_integridade_registros.up.sql`
+- Migration DOWN: `backend/db/migrations/sql/20260414_010_ingestao_lancamentos_e_integridade_registros.down.sql`
+- Documento técnico: `docs/DB_DESENHO_TECNICO_20260414.md`
+
+---
+
+## [2026-04-14] - Atualização de API para Frontend
+
+### ✨ Adicionado
+- Endpoints para rastreabilidade operacional:
+  - `GET /api/v1/mensagens-campo`
+  - `GET /api/v1/mensagens-campo/{mensagem_id}`
+- Endpoints para ciclo completo de lançamentos:
+  - `GET/POST /api/v1/lancamentos`
+  - `PATCH /api/v1/lancamentos/{lancamento_id}`
+  - `POST /api/v1/lancamentos/{lancamento_id}/itens`
+  - `POST /api/v1/lancamentos/{lancamento_id}/recursos`
+  - `POST /api/v1/lancamentos/{lancamento_id}/midias`
+  - `POST /api/v1/lancamentos/{lancamento_id}/confirmar`
+  - `POST /api/v1/lancamentos/{lancamento_id}/descartar`
+  - `POST /api/v1/lancamentos/{lancamento_id}/consolidar`
+- Endpoint de trilha de alterações:
+  - `GET /api/v1/registros/{registro_id}/auditoria`
+
+### 🔄 Alterado
+- Contrato de registros atualizado para frontend:
+  - `lado_pista` é campo técnico preferencial
+  - `pista` mantido como alias legado compatível
+
+### 📚 Documentação Atualizada
+- `API_MAPEAMENTO.md`
+- `docs/api-changes/STATUS_ENDPOINTS.md`
+- `docs/api-changes/README.md`
+- `docs/api-changes/20260414_api_frontend_lancamentos_mensagens.md`
+
+---
+
 ## [2026-04-05] - Alterações nos Modelos de Frente de Serviço e Registros
 
 ### 📝 Descrição Geral

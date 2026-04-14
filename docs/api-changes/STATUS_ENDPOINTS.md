@@ -47,10 +47,26 @@ Rastreamento do status e última atualização de cada endpoint da API.
 | Endpoint | Status | Última alteração |
 |----------|--------|------------------|
 | `GET /api/v1/registros` | ✅ | - |
-| `POST /api/v1/registros` | 🔄 | 2026-04-05 — `frente_servico_id` obrigatório; `data` e `usuario_registrador_id` opcionais; `hora_registro` removido; `observacao` adicionado |
+| `POST /api/v1/registros` | 🔄 | 2026-04-14 — contrato atualizado: `pista` é alias legado e `lado_pista` é o campo técnico persistido |
 | `GET /api/v1/registros/{registro_id}` | ✅ | - |
-| `PUT/PATCH /api/v1/registros/{registro_id}` | 🔄 | 2026-04-05 — `hora_registro` removido; `observacao` adicionado |
+| `PUT/PATCH /api/v1/registros/{registro_id}` | 🔄 | 2026-04-14 — contrato atualizado: `pista` é alias legado e `lado_pista` é o campo técnico persistido |
+| `GET /api/v1/registros/{registro_id}/auditoria` | ✅ | 2026-04-14 — Novo endpoint para trilha de alterações |
 | `DELETE /api/v1/registros/{registro_id}` | ✅ | - |
+
+---
+
+## Mensagens de Campo
+| Endpoint | Status | Última alteração |
+|----------|--------|------------------|
+| `GET /api/v1/mensagens-campo` | ✅ | 2026-04-14 — Novo endpoint para rastreabilidade de entrada |
+| `GET /api/v1/mensagens-campo/{mensagem_id}` | ✅ | 2026-04-14 — Novo endpoint de detalhe |
+
+---
+
+## Fluxo Removido
+| Endpoint | Status | Última alteração |
+|----------|--------|------------------|
+| `/api/v1/lancamentos/*` | ❌ | 2026-04-14 — Fluxo removido; API retorna `410 Gone` |
 
 ---
 

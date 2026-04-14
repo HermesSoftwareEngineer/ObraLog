@@ -29,6 +29,14 @@ O Agent Diário é o assistente de Telegram que conversa naturalmente com pessoa
 
 ---
 
+### 🗄️ Banco de Dados
+
+| Documento | Descrição |
+|-----------|-----------|
+| **[DB_DESENHO_TECNICO_20260414.md](./DB_DESENHO_TECNICO_20260414.md)** | Desenho técnico do banco com ingestão de mensagens, lançamentos, auditoria e ajustes de integridade |
+
+---
+
 ## 🎯 Como Usar Esta Documentação
 
 ### Se você é...

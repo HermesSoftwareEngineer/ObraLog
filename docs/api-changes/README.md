@@ -11,6 +11,12 @@ Documentação de todas as mudanças realizadas na API do ObraLog.
   - ❌ Campo `hora_registro` removido de Registros
   - 🔄 Campos `data` e `usuario_registrador_id` agora opcionais em Registros
 
+### 2026-04-14
+- **[API frontend para mensagens e auditoria](./20260414_api_frontend_lancamentos_mensagens.md)**
+  - ✨ Endpoints para `mensagens-campo` e auditoria de registros
+  - ❌ Fluxo `/lancamentos/*` removido em favor de registro único com status
+  - 🔄 Contrato de `pista` consolidado como alias legado para `lado_pista`
+
 ## 📊 Status dos Endpoints
 
 Veja [STATUS_ENDPOINTS.md](./STATUS_ENDPOINTS.md) para um resumo do status de cada endpoint e sua data de última alteração.

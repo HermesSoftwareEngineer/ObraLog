@@ -5,6 +5,8 @@ import re
 import uuid
 import asyncio
 import logging
+import json
+import hashlib
 from datetime import datetime
 
 from langchain_core.messages import HumanMessage
@@ -21,10 +23,16 @@ from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 from backend.agents.llms import transcribe_audio_bytes
 from backend.services.telegram_interactions import get_poll_context
+from backend.db.models import ConteudoMensagemTipo
 
 
 _POLLING_LOCK = threading.Lock()
 _POLLING_STARTED = False
+
+_MESSAGE_BATCH_LOCK = threading.Lock()
+_MESSAGE_BATCH_PENDING: dict[str, list[dict]] = {}
+_MESSAGE_BATCH_TIMERS: dict[str, threading.Timer] = {}
+_MESSAGE_BATCH_DEBOUNCE_SECONDS = float(os.environ.get("TELEGRAM_MESSAGE_BATCH_DEBOUNCE_SECONDS", "1.2"))
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +273,7 @@ def _download_telegram_file(file_id: str) -> tuple[bytes, str]:
 		raise
 
 
-def _extract_message_text_or_transcription(message: dict, chat_id: int | str) -> str | None:
+def _extract_message_text_or_transcription(message: dict, chat_id: int | str, *, send_audio_ack: bool = True) -> str | None:
 	text = message.get("text")
 	if text:
 		return text
@@ -305,7 +313,8 @@ def _extract_message_text_or_transcription(message: dict, chat_id: int | str) ->
 	if not audio_payload:
 		return None
 
-	send_message(chat_id, "Recebi seu áudio, estou ouvindo...")
+	if send_audio_ack:
+		send_message(chat_id, "Recebi seu áudio, estou ouvindo...")
 	file_id = audio_payload.get("file_id")
 	if not file_id:
 		raise RuntimeError("Áudio recebido sem file_id.")
@@ -385,6 +394,61 @@ def _build_poll_answer_text(question: str, selected_options: list[str]) -> str:
 	)
 
 
+def _normalize_message_text(value: str | None) -> str | None:
+	if value is None:
+		return None
+	return " ".join(str(value).strip().split())
+
+
+def _detect_content_type(message: dict) -> ConteudoMensagemTipo:
+	has_text = bool(message.get("text") or message.get("caption"))
+	has_photo = bool(message.get("photo"))
+	has_audio = bool(message.get("voice") or message.get("audio"))
+
+	if (has_photo or has_audio) and has_text:
+		return ConteudoMensagemTipo.MISTO
+	if has_photo:
+		return ConteudoMensagemTipo.FOTO
+	if has_audio:
+		return ConteudoMensagemTipo.AUDIO
+	return ConteudoMensagemTipo.TEXTO
+
+
+def _build_message_hash(chat_id: int | str, message_id: int | None, update_id: int | None) -> str:
+	base = f"telegram:{chat_id}:{message_id or '-'}:{update_id or '-'}"
+	return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+def _persist_raw_message(
+	*,
+	update: dict,
+	message: dict,
+	chat_id: int | str,
+	texto_extraido: str | None,
+	usuario_id: int | None,
+):
+	message_id = message.get("message_id")
+	update_id = update.get("update_id")
+	hash_idempotencia = _build_message_hash(chat_id=chat_id, message_id=message_id, update_id=update_id)
+	payload_json = json.dumps(update, ensure_ascii=False)
+	tipo_conteudo = _detect_content_type(message)
+	texto_normalizado = _normalize_message_text(texto_extraido)
+
+	with SessionLocal() as db:
+		return Repository.mensagens_campo.criar_telegram(
+			db,
+			telegram_chat_id=str(chat_id),
+			telegram_message_id=message_id,
+			telegram_update_id=update_id,
+			texto_bruto=texto_extraido,
+			texto_normalizado=texto_normalizado,
+			payload_json=payload_json,
+			hash_idempotencia=hash_idempotencia,
+			tipo_conteudo=tipo_conteudo,
+			usuario_id=usuario_id,
+		)
+
+
 def _handle_poll_answer_update(poll_answer: dict) -> dict:
 	poll_id = poll_answer.get("poll_id")
 	if not poll_id:
@@ -452,61 +516,132 @@ def _handle_poll_answer_update(poll_answer: dict) -> dict:
 	return {"ok": True, "chat_id": chat_id, "reason": "poll_answer_processado", "poll_id": poll_id}
 
 
-def handle_telegram_update(update: dict) -> dict:
-	poll_answer = update.get("poll_answer")
-	if poll_answer:
-		return _handle_poll_answer_update(poll_answer)
+def _mark_raw_messages_processed(raw_messages: list) -> None:
+	if not raw_messages:
+		return
+	with SessionLocal() as db:
+		for raw_message in raw_messages:
+			Repository.mensagens_campo.marcar_processada(db, raw_message.id)
 
+
+def _mark_raw_messages_error(raw_messages: list, reason: str) -> None:
+	if not raw_messages:
+		return
+	with SessionLocal() as db:
+		for raw_message in raw_messages:
+			Repository.mensagens_campo.marcar_erro(db, raw_message.id, reason)
+
+
+def _set_raw_messages_user(raw_messages: list, usuario_id: int) -> None:
+	if not raw_messages:
+		return
+	with SessionLocal() as db:
+		for raw_message in raw_messages:
+			Repository.mensagens_campo.atualizar_usuario(db, raw_message.id, usuario_id)
+
+
+def _build_batched_input_text(entries: list[str]) -> str:
+	if not entries:
+		return ""
+	if len(entries) == 1:
+		return entries[0]
+	parts = [
+		"Recebi uma sequência de mensagens em pouco tempo. Considere tudo junto no mesmo contexto:",
+	]
+	for idx, item in enumerate(entries, start=1):
+		parts.append(f"{idx}. {item}")
+	return "\n".join(parts)
+
+
+def _chat_id_from_update(update: dict):
 	message = update.get("message") or update.get("edited_message")
 	if not message:
-		_log_debug("Update ignorado: sem mensagem")
-		return {"ok": True, "ignored": True}
-
+		return None
 	chat = message.get("chat") or {}
-	chat_id = chat.get("id")
+	return chat.get("id")
+
+
+def _process_telegram_message_batch(updates: list[dict]) -> dict:
+	if not updates:
+		return {"ok": True, "ignored": True, "reason": "batch_vazio"}
+
+	first_message = updates[0].get("message") or updates[0].get("edited_message") or {}
+	first_chat = first_message.get("chat") or {}
+	chat_id = first_chat.get("id")
 	if chat_id is None:
-		_log_error("Chat inválido no update do Telegram")
-		raise RuntimeError("Chat inválido no update do Telegram.")
+		_log_error("Chat inválido no batch do Telegram")
+		raise RuntimeError("Chat inválido no batch do Telegram.")
 
 	chat_display_name = (
-		chat.get("first_name")
-		or chat.get("username")
+		first_chat.get("first_name")
+		or first_chat.get("username")
 		or str(chat_id)
 	)
-	telegram_message_thread_id = message.get("message_thread_id")
 
-	_log_info(f"Nova mensagem recebida - chat_id={chat_id}, usuario={chat_display_name}")
+	extracted_entries: list[str] = []
+	raw_messages = []
+	telegram_message_thread_id = None
 
-	text = _extract_message_text_or_transcription(message, chat_id)
-	if not text:
-		logger.debug(f"[TELEGRAM] Mensagem ignorada (sem texto) - chat_id={chat_id}")
-		return {"ok": True, "ignored": True}
-	
-	_log_info(f"Texto extraído: {text[:100]}... (chat_id={chat_id})")
+	for update in updates:
+		message = update.get("message") or update.get("edited_message")
+		if not message:
+			continue
+		if message.get("message_thread_id") is not None:
+			telegram_message_thread_id = message.get("message_thread_id")
+
+		text = _extract_message_text_or_transcription(message, chat_id, send_audio_ack=False)
+		if not text:
+			continue
+		extracted_entries.append(text)
+		raw_messages.append(
+			_persist_raw_message(
+				update=update,
+				message=message,
+				chat_id=chat_id,
+				texto_extraido=text,
+				usuario_id=None,
+			)
+		)
+
+	if not extracted_entries:
+		_log_debug(f"Batch ignorado sem texto útil - chat_id={chat_id}")
+		return {"ok": True, "ignored": True, "reason": "batch_sem_texto"}
+
+	text = _build_batched_input_text(extracted_entries)
+	_log_info(f"Processando batch - chat_id={chat_id}, mensagens={len(extracted_entries)}")
 
 	with SessionLocal() as db:
 		usuario = Repository.usuarios.obter_por_telegram_chat_id(db, str(chat_id))
 
+	link_code = None
+	for item in extracted_entries:
+		candidate = _extract_link_code(item)
+		if candidate:
+			link_code = candidate
+			break
+
 	if not usuario:
 		_log_warning(f"Usuário não vinculado - chat_id={chat_id}")
-		link_code = _extract_link_code(text)
 		if link_code:
 			_log_info(f"Tentando vínculo com código: {link_code}")
 			with SessionLocal() as db:
 				code_item = Repository.telegram_link_codes.obter_valido_por_codigo(db, link_code)
 				if not code_item:
+					_mark_raw_messages_error(raw_messages, "codigo_invalido")
 					_log_warning(f"Código inválido/expirado: {link_code}")
 					send_message(chat_id, "Código inválido ou expirado. Peça um novo código ao administrador.")
 					return {"ok": False, "chat_id": chat_id, "reason": "codigo_invalido"}
 
 				target_user = Repository.usuarios.obter_por_id(db, code_item.user_id)
 				if not target_user:
+					_mark_raw_messages_error(raw_messages, "usuario_codigo_inexistente")
 					_log_error(f"Usuário do código não encontrado (user_id={code_item.user_id})")
 					send_message(chat_id, "Usuário do código não encontrado. Solicite um novo código.")
 					return {"ok": False, "chat_id": chat_id, "reason": "usuario_codigo_inexistente"}
 
 				existing_chat_user = Repository.usuarios.obter_por_telegram_chat_id(db, str(chat_id))
 				if existing_chat_user and existing_chat_user.id != target_user.id:
+					_mark_raw_messages_error(raw_messages, "chat_ja_vinculado")
 					_log_error(f"Chat já vinculado a outro usuário - chat_id={chat_id}")
 					send_message(chat_id, "Este Telegram já está vinculado a outro usuário.")
 					return {"ok": False, "chat_id": chat_id, "reason": "chat_ja_vinculado"}
@@ -518,24 +653,28 @@ def handle_telegram_update(update: dict) -> dict:
 					telegram_thread_id=str(chat_id),
 				)
 				Repository.telegram_link_codes.marcar_usado(db, code_item.id)
+				_set_raw_messages_user(raw_messages, target_user.id)
+				_mark_raw_messages_processed(raw_messages)
 				_log_info(f"Vínculo concluído - user_id={target_user.id}, chat_id={chat_id}")
 
 			send_message(chat_id, "Vínculo concluído com sucesso. Agora você já pode usar o assistente.")
 			return {"ok": True, "chat_id": chat_id, "reason": "vinculado_por_codigo"}
 
 		_log_debug(f"Usuário não vinculado e sem código - chat_id={chat_id}")
+		_mark_raw_messages_error(raw_messages, "usuario_nao_vinculado")
 		send_message(
 			chat_id,
 			"Seu usuário ainda não está vinculado no sistema. Peça ao administrador um código de vínculo e envie: /vincular SEU_CODIGO",
 		)
 		return {"ok": False, "chat_id": chat_id, "reason": "usuario_nao_vinculado"}
 
-	if _is_reset_context_command(text):
+	if any(_is_reset_context_command(item) for item in extracted_entries):
 		_log_info(f"Comando de reset de contexto - chat_id={chat_id}, user_id={usuario.id}")
 		with SessionLocal() as db:
 			usuario_db = Repository.usuarios.obter_por_id(db, usuario.id)
 			if not usuario_db:
 				_log_error(f"Usuário não encontrado para reset - user_id={usuario.id}")
+				_mark_raw_messages_error(raw_messages, "usuario_nao_encontrado_reset")
 				send_message(chat_id, "Não encontrei seu usuário para reiniciar o contexto.")
 				return {"ok": False, "chat_id": chat_id, "reason": "usuario_nao_encontrado_reset"}
 
@@ -548,6 +687,8 @@ def handle_telegram_update(update: dict) -> dict:
 			"Contexto da conversa reiniciado com sucesso. Vamos começar uma nova thread aqui.\n"
 			"Se quiser, me diga seu próximo registro ou dúvida.",
 		)
+		_set_raw_messages_user(raw_messages, usuario.id)
+		_mark_raw_messages_processed(raw_messages)
 		return {
 			"ok": True,
 			"chat_id": chat_id,
@@ -555,7 +696,8 @@ def handle_telegram_update(update: dict) -> dict:
 			"thread_id": new_thread_id,
 		}
 
-	# Migração lazy para usuários antigos sem thread persistida
+	_set_raw_messages_user(raw_messages, usuario.id)
+
 	if not getattr(usuario, "telegram_thread_id", None):
 		_log_info(f"Migrando usuário para thread persistida - user_id={usuario.id}, chat_id={chat_id}")
 		with SessionLocal() as db:
@@ -563,13 +705,15 @@ def handle_telegram_update(update: dict) -> dict:
 		usuario.telegram_thread_id = str(chat_id)
 
 	thread_id = _resolve_thread_id(usuario, chat_id)
-	_log_info(f"Iniciando processamento - user_id={usuario.id}, chat_id={chat_id}, thread_id={thread_id}")
+	raw_source_id = str(raw_messages[-1].id) if raw_messages else None
+	_log_info(f"Iniciando processamento - user_id={usuario.id}, chat_id={chat_id}, thread_id={thread_id}, batch={len(extracted_entries)}")
 
 	config = {
 		"configurable": {
 			"thread_id": thread_id,
 			"telegram_chat_id": str(chat_id),
 			"telegram_message_thread_id": int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
+			"source_message_id": raw_source_id,
 			**_conversation_date_payload(),
 			"actor_user_id": usuario.id,
 			"actor_level": usuario.nivel_acesso.value if hasattr(usuario.nivel_acesso, "value") else str(usuario.nivel_acesso),
@@ -577,62 +721,95 @@ def handle_telegram_update(update: dict) -> dict:
 			"actor_chat_display_name": chat_display_name,
 		}
 	}
-	
+
 	try:
-		print(f"[TELEGRAM] Invocando graph com mensagem: {text[:50]}...", flush=True)
-		logger.debug(f"[TELEGRAM] Invocando graph com mensagem: {text[:50]}...")
 		response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
-		print(f"[TELEGRAM] Graph retornou resposta. Tipo: {type(response)}", flush=True)
-		logger.debug(f"[TELEGRAM] Graph retornou resposta. Tipo: {type(response)}")
 	except Exception as e:
-		print(f"[TELEGRAM] ERRO ao invocar graph - chat_id={chat_id}: {e}", flush=True)
-		logger.error(f"[TELEGRAM] ERRO ao invocar graph - chat_id={chat_id}: {e}", exc_info=True)
+		_log_error(f"ERRO ao invocar graph - chat_id={chat_id}: {e}", exc_info=True)
+		_mark_raw_messages_error(raw_messages, str(e))
 		send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
 		return {"ok": False, "chat_id": chat_id, "reason": "erro_graph", "error": str(e)}
-	
+
 	try:
 		response_messages = response.get("messages", [])
-		print(f"[TELEGRAM] Mensagens na resposta: {len(response_messages)}", flush=True)
-		logger.debug(f"[TELEGRAM] Mensagens na resposta: {len(response_messages)}")
-		
 		if not response_messages:
-			print(f"[TELEGRAM] AVISO: response_messages vazio - chat_id={chat_id}", flush=True)
-			logger.warning(f"[TELEGRAM] AVISO: response_messages vazio - chat_id={chat_id}")
-			send_message(chat_id, "Recebi sua mensagem, mas não consegui gerar uma resposta.")
+			send_message(chat_id, "Recebi suas mensagens, mas não consegui gerar uma resposta.")
+			_mark_raw_messages_processed(raw_messages)
 			return {"ok": True, "chat_id": chat_id}
-		
+
 		ui_dispatched = _response_used_telegram_ui(response_messages)
-		print(f"[TELEGRAM] UI Dispatched: {ui_dispatched}", flush=True)
-		logger.info(f"[TELEGRAM] UI Dispatched: {ui_dispatched}")
-		
 		reply = _extract_text_content(response_messages[-1].content)
-		logger.debug(f"[TELEGRAM] Texto extraído (primeiro 100 chars): {reply[:100] if reply else 'VAZIO'}")
-		
 		if not reply:
-			print(f"[TELEGRAM] AVISO: Nenhuma resposta em texto gerada - chat_id={chat_id}, ui_dispatched={ui_dispatched}", flush=True)
-			logger.warning(f"[TELEGRAM] AVISO: Nenhuma resposta em texto gerada - chat_id={chat_id}, ui_dispatched={ui_dispatched}")
-			reply = "Recebi sua mensagem, mas não consegui gerar uma resposta em texto."
-		
+			reply = "Recebi suas mensagens, mas não consegui gerar uma resposta em texto."
+
 		if not ui_dispatched:
-			_log_info(f"Enviando resposta via Telegram - chat_id={chat_id}, tamanho={len(reply)}")
 			try:
 				send_message(chat_id, reply)
-				_log_info(f"Mensagem enviada com sucesso - chat_id={chat_id}")
 			except Exception as e:
 				_log_error(f"ERRO ao enviar mensagem - chat_id={chat_id}: {e}", exc_info=True)
+				_mark_raw_messages_error(raw_messages, f"erro_envio: {e}")
 				return {"ok": False, "chat_id": chat_id, "reason": "erro_envio", "error": str(e)}
-		else:
-			_log_info(f"Resposta via UI dispensada (ui_dispatched=True) - chat_id={chat_id}")
-		
+
+		_mark_raw_messages_processed(raw_messages)
 		return {"ok": True, "chat_id": chat_id}
-		
+
 	except Exception as e:
 		_log_error(f"ERRO ao processar resposta do graph - chat_id={chat_id}: {e}", exc_info=True)
+		_mark_raw_messages_error(raw_messages, str(e))
 		try:
 			send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
 		except Exception as send_error:
 			logger.error(f"[TELEGRAM] Falha ao enviar mensagem de erro - chat_id={chat_id}: {send_error}")
 		return {"ok": False, "chat_id": chat_id, "reason": "erro_resposta", "error": str(e)}
+
+
+def _flush_queued_updates(chat_key: str) -> None:
+	with _MESSAGE_BATCH_LOCK:
+		updates = _MESSAGE_BATCH_PENDING.pop(chat_key, [])
+		_MESSAGE_BATCH_TIMERS.pop(chat_key, None)
+
+	if not updates:
+		return
+
+	try:
+		_process_telegram_message_batch(updates)
+	except Exception as exc:
+		_log_error(f"Falha ao processar batch do chat {chat_key}: {exc}", exc_info=True)
+
+
+def _enqueue_update_for_batch(update: dict) -> dict:
+	chat_id = _chat_id_from_update(update)
+	if chat_id is None:
+		_log_debug("Update ignorado: sem mensagem")
+		return {"ok": True, "ignored": True}
+
+	chat_key = str(chat_id)
+	with _MESSAGE_BATCH_LOCK:
+		pending = _MESSAGE_BATCH_PENDING.setdefault(chat_key, [])
+		pending.append(update)
+
+		timer = _MESSAGE_BATCH_TIMERS.get(chat_key)
+		if timer:
+			timer.cancel()
+
+		timer = threading.Timer(_MESSAGE_BATCH_DEBOUNCE_SECONDS, _flush_queued_updates, args=(chat_key,))
+		timer.daemon = True
+		_MESSAGE_BATCH_TIMERS[chat_key] = timer
+		timer.start()
+
+	return {
+		"ok": True,
+		"queued": True,
+		"chat_id": chat_id,
+		"batch_window_seconds": _MESSAGE_BATCH_DEBOUNCE_SECONDS,
+	}
+
+
+def handle_telegram_update(update: dict) -> dict:
+	poll_answer = update.get("poll_answer")
+	if poll_answer:
+		return _handle_poll_answer_update(poll_answer)
+	return _enqueue_update_for_batch(update)
 
 def start_polling() -> None:
 	"""Inicia polling do Telegram usando async."""

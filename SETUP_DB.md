@@ -8,6 +8,8 @@ python backend/db/init_db.py
 
 Isso vai executar o schema.sql no seu banco de dados Supabase automaticamente.
 
+Observação: na inicialização da aplicação, o módulo de sessão também executa migrações runtime idempotentes para alinhar ambientes já existentes.
+
 ## Opção 2: Via Supabase Console (SQL Editor)
 
 1. Abra [Supabase Console](https://supabase.com/dashboard)
@@ -38,6 +40,19 @@ engine = create_engine(settings.database_url)
 inspector = inspect(engine)
 print("Tabelas criadas:", inspector.get_table_names())
 ```
+
+## Migração SQL Aplicada (2026-04-14)
+
+Para bancos já existentes, execute também a migration:
+
+- `backend/db/migrations/sql/20260414_010_ingestao_lancamentos_e_integridade_registros.up.sql`
+
+Essa migration inclui:
+
+- Correção de integridade em `registros` (`usuario_registrador_id` com `ON DELETE RESTRICT`)
+- Remoção da coluna redundante `pista` (mantendo `lado_pista`)
+- Criação de `mensagens_campo`, `lancamentos_diario`, `lancamento_itens`, `lancamento_recursos`, `lancamento_midias`, `registro_auditoria`
+- Ajuste da constraint de campos obrigatórios sem exigir `observacao`
 
 ## Usar no Código
 

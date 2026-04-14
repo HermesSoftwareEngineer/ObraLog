@@ -1,21 +1,24 @@
 try:
     from ..llms import llm_main
     from ..state import State
-    from ..tools import get_database_tools, get_telegram_tools
+    from ..tools import get_database_tools, get_gateway_tools, get_telegram_tools
     from ..prompts import build_system_prompt
     from ..context.vector_context import get_context_for_query
 except ImportError:
     from llms import llm_main
     from state import State
-    from tools import get_database_tools, get_telegram_tools
+    from tools import get_database_tools, get_gateway_tools, get_telegram_tools
     from prompts import build_system_prompt
     from context.vector_context import get_context_for_query
 
 import unicodedata
+import os
 from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+
+from ..gateway.rag_service import BusinessRAGService
 
 
 def _normalize_text(value: str) -> str:
@@ -89,6 +92,10 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
 
 def _ensure_required_fields(tool_name: str, tool_args: dict) -> str | None:
     if tool_name == "criar_registro":
+        status = _normalize_text(str(tool_args.get("status") or ""))
+        if status != "consolidado":
+            return None
+
         required = [
             "data",
             "estaca_inicial",
@@ -170,6 +177,33 @@ def _normalize_tool_output(tool_name: str, tool_output):
             return payload
         return tool_output
 
+    if tool_name in {
+        "criar_registro",
+        "atualizar_registro",
+        "registrar_producao_diaria",
+        "atualizar_status_registro_operacional",
+    } and isinstance(tool_output, dict):
+        registro = tool_output.get("registro")
+        if tool_name == "criar_registro" and not isinstance(registro, dict):
+            registro = tool_output
+        if isinstance(registro, dict):
+            status = _normalize_text(str(registro.get("status") or ""))
+            if status != "consolidado":
+                business_rag = BusinessRAGService()
+                sugestao = business_rag.sugerir_campos_faltantes(tipo_registro="producao_diaria", dados_parciais=registro)
+                payload = dict(tool_output)
+                if sugestao.get("ok"):
+                    payload["faltantes"] = sugestao.get("faltantes", [])
+                    payload["validacoes"] = sugestao.get("validacoes", [])
+                    payload["completo_para_consolidar"] = bool(sugestao.get("pronto_para_consolidar"))
+                    if payload["faltantes"] or payload["validacoes"]:
+                        payload["next_steps"] = [
+                            "coletar campos faltantes para consolidacao",
+                            "atualizar o mesmo registro com as novas informacoes",
+                            "consolidar somente quando estiver completo",
+                        ]
+                return payload
+
     return tool_output
 
 
@@ -178,6 +212,28 @@ def _resolve_actor_context(config: RunnableConfig | None = None) -> tuple[int | 
     actor_user_id = configurable.get("actor_user_id")
     actor_level = configurable.get("actor_level")
     return actor_user_id, actor_level
+
+
+def _is_gateway_enabled() -> bool:
+    raw = os.environ.get("AGENT_USE_GATEWAY", "true").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _get_business_tools(actor_user_id: int, actor_level: str):
+    if _is_gateway_enabled():
+        try:
+            return get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
+        except NameError:
+            from ..tools import get_gateway_tools as lazy_get_gateway_tools
+
+            return lazy_get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
+
+    try:
+        return get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
+    except NameError:
+        from ..tools import get_database_tools as lazy_get_database_tools
+
+        return lazy_get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
 
 
 def _resolve_tool_map(config: RunnableConfig | None = None):
@@ -190,7 +246,7 @@ def _resolve_tool_map(config: RunnableConfig | None = None):
     thread_id = configurable.get("thread_id")
     telegram_message_thread_id = configurable.get("telegram_message_thread_id")
 
-    tools = get_database_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
+    tools = _get_business_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
     tools.extend(
         get_telegram_tools(
             chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
@@ -216,7 +272,7 @@ def agent_step(state: State, config: RunnableConfig | None = None):
     telegram_chat_id = configurable.get("telegram_chat_id")
     thread_id = configurable.get("thread_id")
     telegram_message_thread_id = configurable.get("telegram_message_thread_id")
-    tools = get_database_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
+    tools = _get_business_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
     tools.extend(
         get_telegram_tools(
             chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,

@@ -8,7 +8,13 @@ from backend.db.models import (
     Registro,
     RegistroImagem,
     TelegramLinkCode,
+    MensagemCampo,
+    RegistroAuditoria,
     NivelAcesso,
+    CanalOrigemMensagem,
+    ConteudoMensagemTipo,
+    ProcessamentoMensagemStatus,
+    RegistroStatus,
     Clima,
     LadoPista,
 )
@@ -167,23 +173,60 @@ class FrenteServicoRepository:
 
 class RegistroRepository:
     @staticmethod
+    def _required_missing_for_consolidated(payload: dict) -> list[str]:
+        required_fields = [
+            "data",
+            "frente_servico_id",
+            "usuario_registrador_id",
+            "estaca_inicial",
+            "estaca_final",
+            "resultado",
+            "tempo_manha",
+            "tempo_tarde",
+        ]
+        return [field for field in required_fields if payload.get(field) in (None, "")]
+
+    @staticmethod
     def criar(
         db: Session,
-        frente_servico_id: int,
-        data: date,
-        usuario_registrador_id: int,
-        estaca_inicial: float,
-        estaca_final: float,
-        resultado: float,
-        tempo_manha: Clima,
-        tempo_tarde: Clima,
-        pista: LadoPista | None = None,
+        frente_servico_id: int | None = None,
+        data: date | None = None,
+        usuario_registrador_id: int | None = None,
+        estaca_inicial: float | None = None,
+        estaca_final: float | None = None,
+        resultado: float | None = None,
+        tempo_manha: Clima | None = None,
+        tempo_tarde: Clima | None = None,
         lado_pista: LadoPista | None = None,
         observacao: str | None = None,
+        raw_text: str | None = None,
+        source_message_id=None,
+        status: RegistroStatus = RegistroStatus.PENDENTE,
     ) -> Registro:
         observacao_normalizada = (observacao or "").strip() or None
 
+        if resultado is None and estaca_inicial is not None and estaca_final is not None:
+            resultado = float(estaca_final) - float(estaca_inicial)
+
+        payload = {
+            "data": data,
+            "frente_servico_id": frente_servico_id,
+            "usuario_registrador_id": usuario_registrador_id,
+            "estaca_inicial": estaca_inicial,
+            "estaca_final": estaca_final,
+            "resultado": resultado,
+            "tempo_manha": tempo_manha,
+            "tempo_tarde": tempo_tarde,
+        }
+        if status == RegistroStatus.CONSOLIDADO:
+            missing = RegistroRepository._required_missing_for_consolidated(payload)
+            if missing:
+                raise ValueError(
+                    "Nao e possivel marcar como consolidado sem campos basicos: " + ", ".join(missing)
+                )
+
         registro = Registro(
+            status=status,
             data=data,
             frente_servico_id=frente_servico_id,
             usuario_registrador_id=usuario_registrador_id,
@@ -192,9 +235,10 @@ class RegistroRepository:
             resultado=resultado,
             tempo_manha=tempo_manha,
             tempo_tarde=tempo_tarde,
-            pista=pista,
             lado_pista=lado_pista,
             observacao=observacao_normalizada,
+            raw_text=raw_text,
+            source_message_id=source_message_id,
         )
         db.add(registro)
         db.commit()
@@ -226,9 +270,63 @@ class RegistroRepository:
         registro = db.query(Registro).filter(Registro.id == registro_id).first()
         if not registro:
             return None
+        if "pista" in dados and dados.get("lado_pista") is None:
+            dados["lado_pista"] = dados.get("pista")
         for chave, valor in dados.items():
             if hasattr(registro, chave) and valor is not None:
                 setattr(registro, chave, valor)
+
+        if (
+            dados.get("resultado") is None
+            and registro.estaca_inicial is not None
+            and registro.estaca_final is not None
+        ):
+            registro.resultado = float(registro.estaca_final) - float(registro.estaca_inicial)
+
+        if registro.status == RegistroStatus.CONSOLIDADO:
+            payload = {
+                "data": registro.data,
+                "frente_servico_id": registro.frente_servico_id,
+                "usuario_registrador_id": registro.usuario_registrador_id,
+                "estaca_inicial": registro.estaca_inicial,
+                "estaca_final": registro.estaca_final,
+                "resultado": registro.resultado,
+                "tempo_manha": registro.tempo_manha,
+                "tempo_tarde": registro.tempo_tarde,
+            }
+            missing = RegistroRepository._required_missing_for_consolidated(payload)
+            if missing:
+                raise ValueError(
+                    "Registro consolidado ficou inconsistente. Campos ausentes: " + ", ".join(missing)
+                )
+        db.commit()
+        db.refresh(registro)
+        return registro
+
+    @staticmethod
+    def atualizar_status(db: Session, registro_id: int, status: RegistroStatus) -> Registro | None:
+        registro = db.query(Registro).filter(Registro.id == registro_id).first()
+        if not registro:
+            return None
+
+        if status == RegistroStatus.CONSOLIDADO:
+            payload = {
+                "data": registro.data,
+                "frente_servico_id": registro.frente_servico_id,
+                "usuario_registrador_id": registro.usuario_registrador_id,
+                "estaca_inicial": registro.estaca_inicial,
+                "estaca_final": registro.estaca_final,
+                "resultado": registro.resultado,
+                "tempo_manha": registro.tempo_manha,
+                "tempo_tarde": registro.tempo_tarde,
+            }
+            missing = RegistroRepository._required_missing_for_consolidated(payload)
+            if missing:
+                raise ValueError(
+                    "Nao e possivel consolidar registro sem campos basicos: " + ", ".join(missing)
+                )
+
+        registro.status = status
         db.commit()
         db.refresh(registro)
         return registro
@@ -304,6 +402,95 @@ class RegistroImagemRepository:
         return True
 
 
+class MensagemCampoRepository:
+    @staticmethod
+    def criar_telegram(
+        db: Session,
+        *,
+        telegram_chat_id: str,
+        telegram_message_id: int | None,
+        telegram_update_id: int | None,
+        texto_bruto: str | None,
+        texto_normalizado: str | None,
+        payload_json: str | None,
+        hash_idempotencia: str,
+        tipo_conteudo: ConteudoMensagemTipo,
+        usuario_id: int | None = None,
+    ) -> MensagemCampo:
+        existente = db.query(MensagemCampo).filter(MensagemCampo.hash_idempotencia == hash_idempotencia).first()
+        if existente:
+            return existente
+
+        item = MensagemCampo(
+            canal=CanalOrigemMensagem.TELEGRAM,
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
+            telegram_update_id=telegram_update_id,
+            usuario_id=usuario_id,
+            tipo_conteudo=tipo_conteudo,
+            texto_bruto=texto_bruto,
+            texto_normalizado=texto_normalizado,
+            payload_json=payload_json,
+            hash_idempotencia=hash_idempotencia,
+            status_processamento=ProcessamentoMensagemStatus.PENDENTE,
+        )
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+        return item
+
+    @staticmethod
+    def marcar_processada(db: Session, mensagem_id) -> None:
+        item = db.query(MensagemCampo).filter(MensagemCampo.id == mensagem_id).first()
+        if not item:
+            return
+        item.status_processamento = ProcessamentoMensagemStatus.PROCESSADA
+        item.processada_em = datetime.utcnow()
+        item.erro_processamento = None
+        db.commit()
+
+    @staticmethod
+    def atualizar_usuario(db: Session, mensagem_id, usuario_id: int) -> None:
+        item = db.query(MensagemCampo).filter(MensagemCampo.id == mensagem_id).first()
+        if not item:
+            return
+        item.usuario_id = usuario_id
+        db.commit()
+
+    @staticmethod
+    def marcar_erro(db: Session, mensagem_id, erro: str) -> None:
+        item = db.query(MensagemCampo).filter(MensagemCampo.id == mensagem_id).first()
+        if not item:
+            return
+        item.status_processamento = ProcessamentoMensagemStatus.ERRO
+        item.erro_processamento = erro
+        db.commit()
+
+
+class RegistroAuditoriaRepository:
+    @staticmethod
+    def registrar(
+        db: Session,
+        *,
+        registro_id: int,
+        acao: str,
+        diff_json: str,
+        actor_user_id: int | None = None,
+        actor_level: str | None = None,
+    ) -> RegistroAuditoria:
+        item = RegistroAuditoria(
+            registro_id=registro_id,
+            acao=acao,
+            diff_json=diff_json,
+            actor_user_id=actor_user_id,
+            actor_level=actor_level,
+        )
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+        return item
+
+
 class TelegramLinkCodeRepository:
     @staticmethod
     def criar(
@@ -358,4 +545,6 @@ class Repository:
     registros = RegistroRepository
     registro_imagens = RegistroImagemRepository
     telegram_link_codes = TelegramLinkCodeRepository
+    mensagens_campo = MensagemCampoRepository
+    registro_auditoria = RegistroAuditoriaRepository
 

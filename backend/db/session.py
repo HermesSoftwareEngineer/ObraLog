@@ -90,26 +90,114 @@ def ensure_runtime_migrations() -> None:
                 """
             )
         )
+        connection.execute(text("ALTER TABLE registros ADD COLUMN IF NOT EXISTS raw_text TEXT"))
+        connection.execute(text("ALTER TABLE registros ADD COLUMN IF NOT EXISTS source_message_id UUID"))
+        connection.execute(text("ALTER TABLE registros ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'registro_status') THEN
+                        CREATE TYPE registro_status AS ENUM ('pendente', 'consolidado', 'revisado', 'ativo', 'descartado');
+                    END IF;
+                END $$;
+                """
+            )
+        )
+        connection.execute(text("ALTER TABLE registros ADD COLUMN IF NOT EXISTS status registro_status DEFAULT 'pendente'"))
+        connection.execute(text("UPDATE registros SET status = 'pendente' WHERE status IS NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN status SET NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN data DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN frente_servico_id DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN usuario_registrador_id DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN estaca_inicial DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN estaca_final DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN resultado DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN tempo_manha DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE registros ALTER COLUMN tempo_tarde DROP NOT NULL"))
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'registros'
+                          AND column_name = 'pista'
+                    ) THEN
+                        UPDATE registros
+                        SET lado_pista = pista
+                        WHERE lado_pista IS NULL
+                          AND pista IS NOT NULL;
+
+                        ALTER TABLE registros DROP COLUMN pista;
+                    END IF;
+                END $$;
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'registros_usuario_registrador_id_fkey'
+                    ) THEN
+                        ALTER TABLE registros DROP CONSTRAINT registros_usuario_registrador_id_fkey;
+                    END IF;
+
+                    ALTER TABLE registros
+                    ADD CONSTRAINT registros_usuario_registrador_id_fkey
+                    FOREIGN KEY (usuario_registrador_id) REFERENCES usuarios(id) ON DELETE RESTRICT;
+                END $$;
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'registros_source_message_id_fkey'
+                    ) THEN
+                        ALTER TABLE registros DROP CONSTRAINT registros_source_message_id_fkey;
+                    END IF;
+                END $$;
+                """
+            )
+        )
         connection.execute(text("ALTER TABLE registros DROP CONSTRAINT IF EXISTS ck_registros_required_fields"))
+        connection.execute(text("ALTER TABLE registros DROP CONSTRAINT IF EXISTS ck_registros_consolidado_campos_basicos"))
         connection.execute(
             text(
                 """
                 ALTER TABLE registros
-                ADD CONSTRAINT ck_registros_required_fields
+                ADD CONSTRAINT ck_registros_consolidado_campos_basicos
                 CHECK (
-                    data IS NOT NULL
-                    AND frente_servico_id IS NOT NULL
-                    AND usuario_registrador_id IS NOT NULL
-                    AND estaca_inicial IS NOT NULL
-                    AND estaca_final IS NOT NULL
-                    AND resultado IS NOT NULL
-                    AND tempo_manha IS NOT NULL
-                    AND tempo_tarde IS NOT NULL
-                    AND observacao IS NOT NULL
+                    status <> 'consolidado'
+                    OR (
+                        data IS NOT NULL
+                        AND frente_servico_id IS NOT NULL
+                        AND usuario_registrador_id IS NOT NULL
+                        AND estaca_inicial IS NOT NULL
+                        AND estaca_final IS NOT NULL
+                        AND resultado IS NOT NULL
+                        AND tempo_manha IS NOT NULL
+                        AND tempo_tarde IS NOT NULL
+                    )
                 ) NOT VALID
                 """
             )
         )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_registros_status ON registros(status)"))
         connection.execute(
             text(
                 """
@@ -128,6 +216,81 @@ def ensure_runtime_migrations() -> None:
         )
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_registro_imagens_registro ON registro_imagens(registro_id)"))
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'canal_origem_mensagem') THEN
+                        CREATE TYPE canal_origem_mensagem AS ENUM ('telegram');
+                    END IF;
+
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'conteudo_mensagem_tipo') THEN
+                        CREATE TYPE conteudo_mensagem_tipo AS ENUM ('texto', 'foto', 'audio', 'misto');
+                    END IF;
+
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'processamento_mensagem_status') THEN
+                        CREATE TYPE processamento_mensagem_status AS ENUM ('pendente', 'processada', 'erro');
+                    END IF;
+                END $$;
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS mensagens_campo (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    canal canal_origem_mensagem NOT NULL,
+                    telegram_chat_id VARCHAR,
+                    telegram_message_id BIGINT,
+                    telegram_update_id BIGINT,
+                    usuario_id INT REFERENCES usuarios(id) ON DELETE SET NULL,
+                    recebida_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    tipo_conteudo conteudo_mensagem_tipo NOT NULL DEFAULT 'texto',
+                    texto_bruto TEXT,
+                    texto_normalizado TEXT,
+                    payload_json TEXT,
+                    hash_idempotencia VARCHAR(120) UNIQUE,
+                    processada_em TIMESTAMPTZ,
+                    status_processamento processamento_mensagem_status NOT NULL DEFAULT 'pendente',
+                    erro_processamento TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS registro_auditoria (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    registro_id INT NOT NULL REFERENCES registros(id) ON DELETE CASCADE,
+                    acao VARCHAR(30) NOT NULL,
+                    diff_json TEXT NOT NULL,
+                    actor_user_id INT REFERENCES usuarios(id) ON DELETE SET NULL,
+                    actor_level VARCHAR(30),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        connection.execute(text("ALTER TABLE registros ADD CONSTRAINT registros_source_message_id_fkey FOREIGN KEY (source_message_id) REFERENCES mensagens_campo(id) ON DELETE SET NULL"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_mensagens_campo_telegram_msg ON mensagens_campo(canal, telegram_chat_id, telegram_message_id) WHERE telegram_message_id IS NOT NULL"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_mensagens_campo_status ON mensagens_campo(status_processamento)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_mensagens_campo_recebida_em ON mensagens_campo(recebida_em)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_registro_auditoria_registro ON registro_auditoria(registro_id)"))
+        connection.execute(text("DROP INDEX IF EXISTS idx_lancamento_midias_lancamento"))
+        connection.execute(text("DROP INDEX IF EXISTS idx_lancamento_recursos_lancamento"))
+        connection.execute(text("DROP INDEX IF EXISTS idx_lancamento_itens_lancamento"))
+        connection.execute(text("DROP INDEX IF EXISTS idx_lancamentos_diario_status"))
+        connection.execute(text("DROP INDEX IF EXISTS idx_lancamentos_diario_data"))
+        connection.execute(text("DROP TABLE IF EXISTS lancamento_midias"))
+        connection.execute(text("DROP TABLE IF EXISTS lancamento_recursos"))
+        connection.execute(text("DROP TABLE IF EXISTS lancamento_itens"))
+        connection.execute(text("DROP TABLE IF EXISTS lancamentos_diario"))
+        connection.execute(text("DROP TYPE IF EXISTS recurso_categoria"))
+        connection.execute(text("DROP TYPE IF EXISTS lancamento_tipo_item"))
+        connection.execute(text("DROP TYPE IF EXISTS lancamento_status"))
         connection.execute(
             text(
                 """
