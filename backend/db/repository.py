@@ -1,5 +1,6 @@
 from datetime import date, datetime, time
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash
 
 from backend.db.models import (
@@ -404,6 +405,21 @@ class RegistroImagemRepository:
 
 class MensagemCampoRepository:
     @staticmethod
+    def _obter_por_chave_natural(
+        db: Session,
+        *,
+        telegram_chat_id: str,
+        telegram_message_id: int,
+    ) -> MensagemCampo | None:
+        return (
+            db.query(MensagemCampo)
+            .filter(MensagemCampo.canal == CanalOrigemMensagem.TELEGRAM)
+            .filter(MensagemCampo.telegram_chat_id == telegram_chat_id)
+            .filter(MensagemCampo.telegram_message_id == telegram_message_id)
+            .first()
+        )
+
+    @staticmethod
     def criar_telegram(
         db: Session,
         *,
@@ -417,6 +433,15 @@ class MensagemCampoRepository:
         tipo_conteudo: ConteudoMensagemTipo,
         usuario_id: int | None = None,
     ) -> MensagemCampo:
+        if telegram_message_id is not None:
+            existente = MensagemCampoRepository._obter_por_chave_natural(
+                db,
+                telegram_chat_id=telegram_chat_id,
+                telegram_message_id=telegram_message_id,
+            )
+            if existente:
+                return existente
+
         existente = db.query(MensagemCampo).filter(MensagemCampo.hash_idempotencia == hash_idempotencia).first()
         if existente:
             return existente
@@ -435,7 +460,23 @@ class MensagemCampoRepository:
             status_processamento=ProcessamentoMensagemStatus.PENDENTE,
         )
         db.add(item)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            if telegram_message_id is not None:
+                existente = MensagemCampoRepository._obter_por_chave_natural(
+                    db,
+                    telegram_chat_id=telegram_chat_id,
+                    telegram_message_id=telegram_message_id,
+                )
+                if existente:
+                    return existente
+
+            existente = db.query(MensagemCampo).filter(MensagemCampo.hash_idempotencia == hash_idempotencia).first()
+            if existente:
+                return existente
+            raise
         db.refresh(item)
         return item
 

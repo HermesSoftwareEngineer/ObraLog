@@ -37,6 +37,40 @@ _MESSAGE_BATCH_DEBOUNCE_SECONDS = float(os.environ.get("TELEGRAM_MESSAGE_BATCH_D
 logger = logging.getLogger(__name__)
 
 
+def _is_truthy_env(value: str | None) -> bool:
+	if value is None:
+		return False
+	return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_polling_debug_enabled() -> bool:
+	return _is_truthy_env(os.environ.get("TELEGRAM_POLLING_DEBUG", "false"))
+
+
+def _is_typing_indicator_enabled() -> bool:
+	return _is_truthy_env(os.environ.get("TELEGRAM_TYPING_INDICATOR_ENABLED", "true"))
+
+
+def _typing_indicator_interval_seconds() -> float:
+	raw_value = os.environ.get("TELEGRAM_TYPING_INTERVAL_SECONDS", "3.5")
+	try:
+		interval = float(raw_value)
+	except (TypeError, ValueError):
+		return 3.5
+	return max(1.0, interval)
+
+
+def _configure_polling_debug_logging() -> None:
+	# Controla verbosidade de bibliotecas usadas no long polling.
+	enabled = _is_polling_debug_enabled()
+	level = logging.DEBUG if enabled else logging.INFO
+	for logger_name in ("httpcore", "httpx", "telegram", "telegram.request", "telegram.ext"):
+		logging.getLogger(logger_name).setLevel(level)
+
+	if enabled:
+		logger.info("Debug de polling habilitado (TELEGRAM_POLLING_DEBUG=true).")
+
+
 def _log_info(message: str):
 	"""Log info com print e flush garantido."""
 	print(f"[TELEGRAM] {message}", flush=True)
@@ -140,6 +174,41 @@ def send_message(chat_id: int | str, text: str) -> None:
 	except Exception as e:
 		logger.error(f"[SEND_MSG] ERRO inesperado ao enviar: {e}", exc_info=True)
 		raise
+
+
+def send_typing(chat_id: int | str, message_thread_id: int | None = None) -> None:
+	"""Envia indicador de digitando no Telegram para o chat/tópico."""
+	kwargs = {"chat_id": chat_id, "action": "typing"}
+	if message_thread_id is not None:
+		kwargs["message_thread_id"] = int(message_thread_id)
+
+	try:
+		_run_async_sync(_telegram_api_call_async, "send_chat_action", **kwargs)
+	except Exception as exc:
+		# Indicador de typing não deve bloquear o fluxo principal.
+		_log_debug(f"Falha ao enviar typing para chat_id={chat_id}: {exc}")
+
+
+def _start_typing_indicator(chat_id: int | str, message_thread_id: int | None = None):
+	if not _is_typing_indicator_enabled():
+		return lambda: None
+
+	stop_event = threading.Event()
+	interval = _typing_indicator_interval_seconds()
+
+	def _typing_loop():
+		while not stop_event.is_set():
+			send_typing(chat_id=chat_id, message_thread_id=message_thread_id)
+			stop_event.wait(interval)
+
+	worker = threading.Thread(target=_typing_loop, name=f"telegram-typing-{chat_id}", daemon=True)
+	worker.start()
+
+	def _stop():
+		stop_event.set()
+		worker.join(timeout=0.3)
+
+	return _stop
 
 
 def set_webhook(base_url: str) -> None:
@@ -415,7 +484,10 @@ def _detect_content_type(message: dict) -> ConteudoMensagemTipo:
 
 
 def _build_message_hash(chat_id: int | str, message_id: int | None, update_id: int | None) -> str:
-	base = f"telegram:{chat_id}:{message_id or '-'}:{update_id or '-'}"
+	if message_id is not None:
+		base = f"telegram:{chat_id}:{message_id}"
+	else:
+		base = f"telegram:{chat_id}:-:{update_id or '-'}"
 	return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
@@ -554,11 +626,25 @@ def _build_batched_input_text(entries: list[str]) -> str:
 
 
 def _chat_id_from_update(update: dict):
-	message = update.get("message") or update.get("edited_message")
+	message = update.get("message")
 	if not message:
 		return None
 	chat = message.get("chat") or {}
 	return chat.get("id")
+
+
+def _send_immediate_typing_for_update(update: dict) -> bool:
+	if not _is_typing_indicator_enabled():
+		return False
+
+	message = update.get("message") or {}
+	chat = message.get("chat") or {}
+	chat_id = chat.get("id")
+	if chat_id is None:
+		return False
+
+	send_typing(chat_id=chat_id, message_thread_id=message.get("message_thread_id"))
+	return True
 
 
 def _process_telegram_message_batch(updates: list[dict]) -> dict:
@@ -568,6 +654,7 @@ def _process_telegram_message_batch(updates: list[dict]) -> dict:
 	first_message = updates[0].get("message") or updates[0].get("edited_message") or {}
 	first_chat = first_message.get("chat") or {}
 	chat_id = first_chat.get("id")
+	telegram_message_thread_id = first_message.get("message_thread_id")
 	if chat_id is None:
 		_log_error("Chat inválido no batch do Telegram")
 		raise RuntimeError("Chat inválido no batch do Telegram.")
@@ -580,10 +667,12 @@ def _process_telegram_message_batch(updates: list[dict]) -> dict:
 
 	extracted_entries: list[str] = []
 	raw_messages = []
-	telegram_message_thread_id = None
+
+	if _is_typing_indicator_enabled():
+		send_typing(chat_id=chat_id, message_thread_id=telegram_message_thread_id)
 
 	for update in updates:
-		message = update.get("message") or update.get("edited_message")
+		message = update.get("message")
 		if not message:
 			continue
 		if message.get("message_thread_id") is not None:
@@ -721,46 +810,53 @@ def _process_telegram_message_batch(updates: list[dict]) -> dict:
 			"actor_chat_display_name": chat_display_name,
 		}
 	}
+	typing_indicator_stop = _start_typing_indicator(
+		chat_id=chat_id,
+		message_thread_id=telegram_message_thread_id,
+	)
 
 	try:
-		response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
-	except Exception as e:
-		_log_error(f"ERRO ao invocar graph - chat_id={chat_id}: {e}", exc_info=True)
-		_mark_raw_messages_error(raw_messages, str(e))
-		send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
-		return {"ok": False, "chat_id": chat_id, "reason": "erro_graph", "error": str(e)}
+		try:
+			response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
+		except Exception as e:
+			_log_error(f"ERRO ao invocar graph - chat_id={chat_id}: {e}", exc_info=True)
+			_mark_raw_messages_error(raw_messages, str(e))
+			send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
+			return {"ok": False, "chat_id": chat_id, "reason": "erro_graph", "error": str(e)}
 
-	try:
-		response_messages = response.get("messages", [])
-		if not response_messages:
-			send_message(chat_id, "Recebi suas mensagens, mas não consegui gerar uma resposta.")
+		try:
+			response_messages = response.get("messages", [])
+			if not response_messages:
+				send_message(chat_id, "Recebi suas mensagens, mas não consegui gerar uma resposta.")
+				_mark_raw_messages_processed(raw_messages)
+				return {"ok": True, "chat_id": chat_id}
+
+			ui_dispatched = _response_used_telegram_ui(response_messages)
+			reply = _extract_text_content(response_messages[-1].content)
+			if not reply:
+				reply = "Recebi suas mensagens, mas não consegui gerar uma resposta em texto."
+
+			if not ui_dispatched:
+				try:
+					send_message(chat_id, reply)
+				except Exception as e:
+					_log_error(f"ERRO ao enviar mensagem - chat_id={chat_id}: {e}", exc_info=True)
+					_mark_raw_messages_error(raw_messages, f"erro_envio: {e}")
+					return {"ok": False, "chat_id": chat_id, "reason": "erro_envio", "error": str(e)}
+
 			_mark_raw_messages_processed(raw_messages)
 			return {"ok": True, "chat_id": chat_id}
 
-		ui_dispatched = _response_used_telegram_ui(response_messages)
-		reply = _extract_text_content(response_messages[-1].content)
-		if not reply:
-			reply = "Recebi suas mensagens, mas não consegui gerar uma resposta em texto."
-
-		if not ui_dispatched:
+		except Exception as e:
+			_log_error(f"ERRO ao processar resposta do graph - chat_id={chat_id}: {e}", exc_info=True)
+			_mark_raw_messages_error(raw_messages, str(e))
 			try:
-				send_message(chat_id, reply)
-			except Exception as e:
-				_log_error(f"ERRO ao enviar mensagem - chat_id={chat_id}: {e}", exc_info=True)
-				_mark_raw_messages_error(raw_messages, f"erro_envio: {e}")
-				return {"ok": False, "chat_id": chat_id, "reason": "erro_envio", "error": str(e)}
-
-		_mark_raw_messages_processed(raw_messages)
-		return {"ok": True, "chat_id": chat_id}
-
-	except Exception as e:
-		_log_error(f"ERRO ao processar resposta do graph - chat_id={chat_id}: {e}", exc_info=True)
-		_mark_raw_messages_error(raw_messages, str(e))
-		try:
-			send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
-		except Exception as send_error:
-			logger.error(f"[TELEGRAM] Falha ao enviar mensagem de erro - chat_id={chat_id}: {send_error}")
-		return {"ok": False, "chat_id": chat_id, "reason": "erro_resposta", "error": str(e)}
+				send_message(chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente.")
+			except Exception as send_error:
+				logger.error(f"[TELEGRAM] Falha ao enviar mensagem de erro - chat_id={chat_id}: {send_error}")
+			return {"ok": False, "chat_id": chat_id, "reason": "erro_resposta", "error": str(e)}
+	finally:
+		typing_indicator_stop()
 
 
 def _flush_queued_updates(chat_key: str) -> None:
@@ -805,15 +901,20 @@ def _enqueue_update_for_batch(update: dict) -> dict:
 	}
 
 
-def handle_telegram_update(update: dict) -> dict:
+def handle_telegram_update(update: dict, *, typing_already_sent: bool = False) -> dict:
 	poll_answer = update.get("poll_answer")
 	if poll_answer:
 		return _handle_poll_answer_update(poll_answer)
+	if update.get("edited_message") and not update.get("message"):
+		return {"ok": True, "ignored": True, "reason": "edited_message_ignored"}
+	if not typing_already_sent:
+		_send_immediate_typing_for_update(update)
 	return _enqueue_update_for_batch(update)
 
 def start_polling() -> None:
 	"""Inicia polling do Telegram usando async."""
 	global _POLLING_STARTED
+	_configure_polling_debug_logging()
 
 	with _POLLING_LOCK:
 		if _POLLING_STARTED:
@@ -846,7 +947,8 @@ async def _start_polling_async() -> None:
 			
 			for update in updates:
 				try:
-					handle_telegram_update(update)
+					typing_sent = _send_immediate_typing_for_update(update)
+					handle_telegram_update(update, typing_already_sent=typing_sent)
 					offset = update.get("update_id", 0) + 1
 				except Exception as e:
 					logger.error(f"Erro ao processar update: {e}", exc_info=True)

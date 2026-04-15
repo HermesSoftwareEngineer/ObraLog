@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import unicodedata
+from typing import Literal
 
 from langchain_core.tools import tool
 
@@ -22,6 +23,62 @@ from backend.agents.gateway.mappers import (
 from backend.agents.gateway.rag_service import BusinessRAGService
 
 from .database_tools import get_database_tools
+
+
+ALLOWED_EXECUTION_INTENTS = {
+    "registrar_producao",
+    "registrar_alerta",
+    "atualizar_registro",
+    "consolidar_registro",
+    "gerenciar_frente_servico",
+}
+
+EXECUTION_INTENT_ALIASES = {
+    "criar_parcial": "registrar_producao",
+    "criar_registro_parcial": "registrar_producao",
+    "criar_registro": "registrar_producao",
+    "abrir_registro": "registrar_producao",
+    "registrar_parcial": "registrar_producao",
+    "atualizar_parcial": "atualizar_registro",
+    "anexar_imagem": "atualizar_registro",
+    "anexar_foto": "atualizar_registro",
+    "vincular_imagem": "atualizar_registro",
+    "criar_frente": "gerenciar_frente_servico",
+    "cadastrar_frente": "gerenciar_frente_servico",
+    "atualizar_frente": "gerenciar_frente_servico",
+    "editar_frente": "gerenciar_frente_servico",
+    "deletar_frente": "gerenciar_frente_servico",
+    "remover_frente": "gerenciar_frente_servico",
+    "consolidar": "consolidar_registro",
+}
+
+
+def _normalize_execution_intent(intent: str | None, *, default: str) -> str:
+    if not intent or not str(intent).strip():
+        return default
+
+    normalized = str(intent).strip().lower()
+    normalized = EXECUTION_INTENT_ALIASES.get(normalized, normalized)
+    if normalized in ALLOWED_EXECUTION_INTENTS:
+        return normalized
+    return default
+
+
+def _requires_confirmation_for_status_change(status: str | None, *, intent: str | None = None) -> bool:
+    normalized_status = (status or "").strip().lower()
+    if normalized_status == "consolidado":
+        return True
+    normalized_intent = _normalize_execution_intent(intent, default="atualizar_registro")
+    return normalized_intent == "consolidar_registro"
+
+
+ExecutionIntentLiteral = Literal[
+    "registrar_producao",
+    "atualizar_registro",
+    "consolidar_registro",
+    "registrar_alerta",
+    "gerenciar_frente_servico",
+]
 
 
 def _normalize_text(value: str) -> str:
@@ -195,6 +252,142 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
         return router.consulta(request, handler).to_dict()
 
     @tool
+    def listar_frentes_servico_operacional() -> dict:
+        """Lista frentes de servico em linguagem de negocio para apoiar cadastro e filtros."""
+        request = _request(
+            "listar_frentes_servico_operacional",
+            payload={},
+            action_route="consulta",
+            business_tool="listar_frentes_servico_operacional",
+            technical_operation="listar_frentes_servico",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            items = _invoke_internal("listar_frentes_servico", {})
+            if not isinstance(items, list):
+                return {"ok": True, "total": 0, "frentes_servico": []}
+            normalized_items = [item for item in items if isinstance(item, dict)]
+            return {
+                "ok": True,
+                "total": len(normalized_items),
+                "frentes_servico": strip_technical_keys(normalized_items),
+            }
+
+        return router.consulta(request, handler).to_dict()
+
+    @tool
+    def criar_frente_servico_operacional(
+        nome: str,
+        encarregado_responsavel: int | None = None,
+        observacao: str | None = None,
+        intencao: ExecutionIntentLiteral = "gerenciar_frente_servico",
+    ) -> dict:
+        """Cria frente de servico no gateway (administrador e gerente)."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="gerenciar_frente_servico")
+        request = _request(
+            "criar_frente_servico_operacional",
+            payload={
+                "nome": nome,
+                "encarregado_responsavel": encarregado_responsavel,
+                "observacao": observacao,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="criar_frente_servico_operacional",
+            technical_operation="criar_frente_servico",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal(
+                "criar_frente_servico",
+                {
+                    "nome": nome,
+                    "encarregado_responsavel": encarregado_responsavel,
+                    "observacao": observacao,
+                },
+            )
+            if isinstance(result, dict):
+                frente = result.get("frente_servico", result)
+                return {"ok": True, "frente_servico": strip_technical_keys(frente)}
+            return {"ok": True, "resultado": result}
+
+        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+
+    @tool
+    def atualizar_frente_servico_operacional(
+        frente_id: int,
+        nome: str | None = None,
+        encarregado_responsavel: int | None = None,
+        observacao: str | None = None,
+        intencao: ExecutionIntentLiteral = "gerenciar_frente_servico",
+    ) -> dict:
+        """Atualiza frente de servico no gateway (administrador e gerente)."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="gerenciar_frente_servico")
+        request = _request(
+            "atualizar_frente_servico_operacional",
+            payload={
+                "frente_id": frente_id,
+                "nome": nome,
+                "encarregado_responsavel": encarregado_responsavel,
+                "observacao": observacao,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="atualizar_frente_servico_operacional",
+            technical_operation="atualizar_frente_servico",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal(
+                "atualizar_frente_servico",
+                {
+                    "frente_id": int(frente_id),
+                    "nome": nome,
+                    "encarregado_responsavel": encarregado_responsavel,
+                    "observacao": observacao,
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+
+    @tool
+    def deletar_frente_servico_operacional(
+        frente_id: int,
+        intencao: ExecutionIntentLiteral = "gerenciar_frente_servico",
+    ) -> dict:
+        """Remove frente de servico no gateway (administrador e gerente)."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="gerenciar_frente_servico")
+        request = _request(
+            "deletar_frente_servico_operacional",
+            payload={
+                "frente_id": frente_id,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="deletar_frente_servico_operacional",
+            technical_operation="deletar_frente_servico",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal(
+                "deletar_frente_servico",
+                {
+                    "frente_id": int(frente_id),
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": bool(result)}
+
+        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+
+    @tool
     def consultar_producao_periodo(
         data_inicio: str,
         data_fim: str,
@@ -317,11 +510,10 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
         observacao: str | None = None,
         lado_pista: str | None = None,
         confirmado: bool = False,
-        intencao: str = "registrar_producao",
+        intencao: ExecutionIntentLiteral = "registrar_producao",
     ) -> dict:
-        """Executa registro de producao diaria com confirmacao explicita obrigatoria."""
-        if not bool(confirmado):
-            return _confirmation_required_response("registrar_producao_diaria", intencao)
+        """Executa registro de producao diaria sem exigir confirmacao explicita."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="registrar_producao")
 
         request = _request(
             "registrar_producao_diaria",
@@ -335,10 +527,10 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 "observacao": observacao,
                 "lado_pista": lado_pista,
                 "confirmado": confirmado,
-                "intencao": intencao,
+                "intencao": intencao_resolvida,
             },
             action_route="execucao",
-            intent=intencao,
+            intent=intencao_resolvida,
             business_tool="registrar_producao_diaria",
             technical_operation="criar_registro",
         )
@@ -366,7 +558,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return {"registro": result}
             return {"registro": {"resultado": result}}
 
-        return router.execucao(request, handler, intent=intencao, confirmed=bool(confirmado)).to_dict()
+        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
 
     @tool
     def registrar_alerta_operacional(
@@ -376,11 +568,10 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
         local: str | None = None,
         equipamento: str | None = None,
         confirmado: bool = False,
-        intencao: str = "registrar_alerta",
+        intencao: ExecutionIntentLiteral = "registrar_alerta",
     ) -> dict:
-        """Executa abertura de alerta operacional com confirmacao explicita obrigatoria."""
-        if not bool(confirmado):
-            return _confirmation_required_response("registrar_alerta_operacional", intencao)
+        """Executa abertura de alerta operacional sem exigir confirmacao explicita."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="registrar_alerta")
 
         request = _request(
             "registrar_alerta_operacional",
@@ -391,10 +582,10 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 "local": local,
                 "equipamento": equipamento,
                 "confirmado": confirmado,
-                "intencao": intencao,
+                "intencao": intencao_resolvida,
             },
             action_route="execucao",
-            intent=intencao,
+            intent=intencao_resolvida,
             business_tool="registrar_alerta_operacional",
             technical_operation="criar_alerta",
         )
@@ -414,18 +605,20 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return {"alerta": result.get("alerta", result)}
             return {"alerta": {"resultado": result}}
 
-        return router.execucao(request, handler, intent=intencao, confirmed=bool(confirmado)).to_dict()
+        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
 
     @tool
     def atualizar_status_registro_operacional(
         registro_id: int,
         status: str,
         confirmado: bool = False,
-        intencao: str = "atualizar_registro",
+        intencao: ExecutionIntentLiteral = "atualizar_registro",
     ) -> dict:
-        """Atualiza status do registro operacional por regra de negocio."""
-        if not bool(confirmado):
-            return _confirmation_required_response("atualizar_status_registro_operacional", intencao)
+        """Atualiza status do registro; confirmacao explicita e exigida apenas para consolidacao."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="atualizar_registro")
+        requires_confirmation = _requires_confirmation_for_status_change(status, intent=intencao_resolvida)
+        if requires_confirmation and not bool(confirmado):
+            return _confirmation_required_response("atualizar_status_registro_operacional", intencao_resolvida)
 
         request = _request(
             "atualizar_status_registro_operacional",
@@ -433,10 +626,10 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 "registro_id": registro_id,
                 "status": status,
                 "confirmado": confirmado,
-                "intencao": intencao,
+                "intencao": intencao_resolvida,
             },
             action_route="execucao",
-            intent=intencao,
+            intent=intencao_resolvida,
             business_tool="atualizar_status_registro_operacional",
             technical_operation="atualizar_status_registro",
         )
@@ -453,7 +646,47 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return strip_technical_keys({"registro": result.get("registro", result)})
             return strip_technical_keys({"registro": {"resultado": result}})
 
-        return router.execucao(request, handler, intent=intencao, confirmed=bool(confirmado)).to_dict()
+        if requires_confirmation:
+            return router.execucao(request, handler, intent=intencao_resolvida, confirmed=True).to_dict()
+        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+
+    @tool
+    def anexar_imagem_registro_operacional(
+        registro_id: int,
+        imagem_url: str,
+        confirmado: bool = False,
+        intencao: ExecutionIntentLiteral = "atualizar_registro",
+    ) -> dict:
+        """Anexa imagem (URL externa) a um registro operacional, incluindo registros consolidados, sem confirmacao explicita."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="atualizar_registro")
+
+        request = _request(
+            "anexar_imagem_registro_operacional",
+            payload={
+                "registro_id": registro_id,
+                "imagem_url": imagem_url,
+                "confirmado": confirmado,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="anexar_imagem_registro_operacional",
+            technical_operation="anexar_imagem_registro",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal(
+                "anexar_imagem_registro",
+                {
+                    "registro_id": int(registro_id),
+                    "imagem_url": imagem_url,
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
 
     @tool
     def buscar_contexto_operacional(pergunta: str, k: int = 3) -> dict:
@@ -479,12 +712,17 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
 
     return [
         consultar_diario_obra,
+        listar_frentes_servico_operacional,
         consultar_producao_periodo,
         consultar_alertas_operacionais,
         consultar_padroes_operacionais,
         sugerir_campos_faltantes,
+        criar_frente_servico_operacional,
+        atualizar_frente_servico_operacional,
+        deletar_frente_servico_operacional,
         registrar_producao_diaria,
         registrar_alerta_operacional,
         atualizar_status_registro_operacional,
+        anexar_imagem_registro_operacional,
         buscar_contexto_operacional,
     ]

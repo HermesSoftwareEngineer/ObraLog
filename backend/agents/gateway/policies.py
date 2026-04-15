@@ -35,6 +35,7 @@ class GatewayPolicyService:
         "registrar_alerta",
         "atualizar_registro",
         "consolidar_registro",
+        "gerenciar_frente_servico",
     }
 
     def assert_can_read(self, actor_level: str) -> None:
