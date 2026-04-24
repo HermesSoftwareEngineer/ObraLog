@@ -14,7 +14,6 @@ import os
 
 from backend.services.telegram_client import bot_client
 from backend.services.telegram_processor import MessageProcessor
-from backend.services.telegram_batch import BatchQueue
 from backend.services.telegram_poll import PollAnswerHandler
 from backend.services.telegram_poller import Poller
 
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _processor = MessageProcessor(bot_client)
-_queue = BatchQueue(_processor)
 _poll_handler = PollAnswerHandler(bot_client)
 
 
@@ -38,12 +36,16 @@ def handle_telegram_update(update: dict, *, typing_already_sent: bool = False) -
         return _poll_handler.handle(poll_answer)
     if update.get("edited_message") and not update.get("message"):
         return {"ok": True, "ignored": True, "reason": "edited_message_ignored"}
+
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    if chat.get("id") is None:
+        return {"ok": True, "ignored": True, "reason": "update_sem_chat_id"}
+
     if not typing_already_sent:
-        message = update.get("message") or {}
-        chat = message.get("chat") or {}
         if cid := chat.get("id"):
             bot_client.send_typing(cid, message.get("message_thread_id"))
-    return _queue.enqueue(update)
+    return _processor.process([update])
 
 
 def set_webhook(base_url: str) -> None:

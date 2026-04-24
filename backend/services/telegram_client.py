@@ -70,7 +70,18 @@ class BotClient:
         return [u.to_dict() for u in updates]
 
     async def send_message_async(self, chat_id, text: str) -> None:
-        await self.bot.send_message(chat_id=chat_id, text=text)
+        from telegram.error import BadRequest as TgBadRequest
+        try:
+            await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        except TgBadRequest as e:
+            if "can't parse" in str(e).lower() or "parse entities" in str(e).lower():
+                logger.warning(
+                    "Markdown inválido na mensagem para chat_id=%s, reenviando sem formatação. Erro: %s",
+                    chat_id, e,
+                )
+                await self.bot.send_message(chat_id=chat_id, text=text)
+            else:
+                raise
 
     async def send_typing_async(
         self, chat_id, message_thread_id: int | None = None

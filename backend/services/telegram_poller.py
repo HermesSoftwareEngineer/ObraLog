@@ -50,8 +50,12 @@ class Poller:
                 for update in updates:
                     try:
                         await self._send_typing(update)
-                        # dispatch is sync (just enqueues); safe to call from async context.
-                        self._dispatch(update, typing_already_sent=True)
+                        # Dispatch runs sync and may call blocking wrappers; run it off-loop.
+                        await asyncio.to_thread(
+                            self._dispatch,
+                            update,
+                            typing_already_sent=True,
+                        )
                         offset = update.get("update_id", 0) + 1
                     except Exception as exc:
                         logger.error(
