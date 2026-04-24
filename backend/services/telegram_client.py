@@ -13,12 +13,81 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
 
 from telegram import Bot
+from telegram.constants import ParseMode
 from telegram.request import HTTPXRequest
 
+try:
+    import telegramify_markdown
+except ImportError:  # pragma: no cover - optional dependency in some environments
+    telegramify_markdown = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+
+def _normalize_markdown_bullets(text: str) -> str:
+    """Replace leading markdown list markers with a neutral bullet.
+
+    Telegram markdown parser can treat leading '*' as formatting delimiters,
+    which frequently breaks when the model outputs list items like
+    '*   *Titulo:* ...'.
+    """
+
+    lines = text.splitlines()
+    normalized: list[str] = []
+    for line in lines:
+        normalized.append(re.sub(r"^\s*[*-]\s+", "• ", line, count=1))
+    return "\n".join(normalized)
+
+
+def _escape_unbalanced_delimiter(text: str, delimiter: str) -> str:
+    """Escapes delimiter if it appears unbalanced in the final text."""
+
+    pattern = rf"(?<!\\){re.escape(delimiter)}"
+    matches = list(re.finditer(pattern, text))
+    if len(matches) % 2 == 0:
+        return text
+    return re.sub(pattern, rf"\\{delimiter}", text)
+
+
+def _sanitize_markdown_for_telegram(text: str) -> str:
+    sanitized = _normalize_markdown_bullets(text)
+    sanitized = _escape_unbalanced_delimiter(sanitized, "*")
+    sanitized = _escape_unbalanced_delimiter(sanitized, "_")
+    sanitized = _escape_unbalanced_delimiter(sanitized, "`")
+    return sanitized
+
+
+def _convert_markdown_with_library(text: str) -> str | None:
+    if telegramify_markdown is None:
+        return None
+    try:
+        converted = telegramify_markdown.markdownify(text)
+    except Exception:
+        return None
+    if not isinstance(converted, str):
+        return None
+    converted = converted.strip()
+    return converted or None
+
+
+def _build_markdown_candidates(text: str) -> list[tuple[str, str, str]]:
+    candidates: list[tuple[str, str, str]] = []
+
+    converted = _convert_markdown_with_library(text)
+    if converted:
+        candidates.append((converted, ParseMode.MARKDOWN_V2, "library_markdown_v2"))
+
+    candidates.append((text, ParseMode.MARKDOWN, "raw_markdown"))
+
+    sanitized = _sanitize_markdown_for_telegram(text)
+    if sanitized != text:
+        candidates.append((sanitized, ParseMode.MARKDOWN, "sanitized_markdown"))
+
+    return candidates
 
 
 class BotClient:
@@ -71,17 +140,32 @@ class BotClient:
 
     async def send_message_async(self, chat_id, text: str) -> None:
         from telegram.error import BadRequest as TgBadRequest
-        try:
-            await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-        except TgBadRequest as e:
-            if "can't parse" in str(e).lower() or "parse entities" in str(e).lower():
-                logger.warning(
-                    "Markdown inválido na mensagem para chat_id=%s, reenviando sem formatação. Erro: %s",
-                    chat_id, e,
-                )
-                await self.bot.send_message(chat_id=chat_id, text=text)
-            else:
+        parse_errors: list[str] = []
+        for candidate_text, mode, strategy in _build_markdown_candidates(text):
+            try:
+                await self.bot.send_message(chat_id=chat_id, text=candidate_text, parse_mode=mode)
+                if strategy != "raw_markdown":
+                    logger.info(
+                        "Mensagem enviada com estratégia %s para chat_id=%s.",
+                        strategy,
+                        chat_id,
+                    )
+                return
+            except TgBadRequest as exc:
+                msg = str(exc)
+                lowered = msg.lower()
+                if "can't parse" in lowered or "parse entities" in lowered:
+                    parse_errors.append(f"{strategy}: {msg}")
+                    continue
                 raise
+
+        if parse_errors:
+            logger.warning(
+                "Falha ao enviar com markdown para chat_id=%s. Tentativas: %s. Reenviando sem formatação.",
+                chat_id,
+                " | ".join(parse_errors),
+            )
+        await self.bot.send_message(chat_id=chat_id, text=text)
 
     async def send_typing_async(
         self, chat_id, message_thread_id: int | None = None
