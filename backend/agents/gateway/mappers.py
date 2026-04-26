@@ -249,6 +249,26 @@ def map_consultar_producao_periodo_output(
     return strip_technical_keys(payload)
 
 
+def map_alerta_to_business(alerta: dict[str, Any]) -> dict[str, Any]:
+    """Converte um dict tecnico de alerta para chaves de negocio em PT-BR."""
+    return {
+        "codigo": alerta.get("code") or alerta.get("codigo"),
+        "tipo": alerta.get("type") or alerta.get("tipo"),
+        "severidade": alerta.get("severity") or alerta.get("severidade"),
+        "status": alerta.get("status"),
+        "titulo": alerta.get("title") or alerta.get("titulo"),
+        "descricao": alerta.get("description") or alerta.get("descricao"),
+        "local": alerta.get("location_detail") or alerta.get("local"),
+        "equipamento": alerta.get("equipment_name") or alerta.get("equipamento"),
+        "datas": {
+            "criado_em": alerta.get("created_at"),
+            "atualizado_em": alerta.get("updated_at"),
+            "resolvido_em": alerta.get("resolved_at"),
+            "lido_em": alerta.get("read_at"),
+        },
+    }
+
+
 def map_consultar_alertas_operacionais_output(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {"ok": False, "message": "Resposta invalida da consulta de alertas."}
@@ -261,24 +281,7 @@ def map_consultar_alertas_operacionais_output(raw: dict[str, Any]) -> dict[str, 
     for alerta in alertas_raw:
         if not isinstance(alerta, dict):
             continue
-        alertas.append(
-            {
-                "codigo": alerta.get("code"),
-                "tipo": alerta.get("type"),
-                "severidade": alerta.get("severity"),
-                "status": alerta.get("status"),
-                "titulo": alerta.get("title"),
-                "descricao": alerta.get("description"),
-                "local": alerta.get("location_detail"),
-                "equipamento": alerta.get("equipment_name"),
-                "datas": {
-                    "criado_em": alerta.get("created_at"),
-                    "atualizado_em": alerta.get("updated_at"),
-                    "resolvido_em": alerta.get("resolved_at"),
-                    "lido_em": alerta.get("read_at"),
-                },
-            }
-        )
+        alertas.append(map_alerta_to_business(alerta))
 
     payload = {
         "ok": True,

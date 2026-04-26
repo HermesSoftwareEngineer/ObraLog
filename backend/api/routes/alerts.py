@@ -6,9 +6,10 @@ import unicodedata
 
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import desc, func
+from sqlalchemy.exc import IntegrityError
 
 from backend.api.routes.auth import require_auth
-from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, AlertType, NivelAcesso
+from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, AlertType, AlertTypeAlias, NivelAcesso
 from backend.db.session import SessionLocal
 
 
@@ -56,6 +57,33 @@ def _parse_alert_type(value: str) -> AlertType:
     if parsed is None:
         raise ValueError("type inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro.")
     return parsed
+
+
+def _parse_canonical_alert_type(value: str) -> AlertType:
+    if not value:
+        raise ValueError("Campo obrigatório: tipo_canonico")
+    return _parse_alert_type(value)
+
+
+def _resolve_alert_type(db, value: str) -> AlertType:
+    try:
+        return _parse_alert_type(value)
+    except ValueError:
+        normalized = _normalize_text(value or "")
+        if not normalized:
+            raise
+        alias = (
+            db.query(AlertTypeAlias)
+            .filter(AlertTypeAlias.normalized_alias == normalized)
+            .filter(AlertTypeAlias.ativo.is_(True))
+            .first()
+        )
+        if not alias:
+            raise ValueError(
+                "type inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro. "
+                "Se necessário, cadastre um novo alias em /api/v1/alertas/tipos."
+            )
+        return alias.canonical_type
 
 
 def _parse_alert_severity(value: str) -> AlertSeverity:
@@ -171,7 +199,6 @@ def criar_alerta():
     data = request.get_json(silent=True) or {}
     try:
         title = data["title"]
-        type_value = _parse_alert_type(data["type"])
         severity_value = _parse_alert_severity(data["severity"])
     except KeyError as exc:
         return _json_error(f"Campo obrigatório ausente: {exc.args[0]}")
@@ -187,6 +214,13 @@ def criar_alerta():
         )
 
     with SessionLocal() as db:
+        try:
+            type_value = _resolve_alert_type(db, data["type"])
+        except KeyError as exc:
+            return _json_error(f"Campo obrigatório ausente: {exc.args[0]}")
+        except ValueError as exc:
+            return _json_error(str(exc), 422)
+
         alert = Alert(
             code=_generate_alert_code(db),
             type=type_value,
@@ -302,3 +336,152 @@ def marcar_como_nao_lido(alert_id):
         db.commit()
         db.refresh(alert)
         return jsonify({"ok": True, "alerta": _to_dict(alert)})
+
+
+@router.get("/codigo/<string:code>")
+@require_auth
+def obter_alerta_por_codigo(code: str):
+    with SessionLocal() as db:
+        alert = db.query(Alert).filter(Alert.code == code.upper()).first()
+        if not alert:
+            return _json_error("Alerta não encontrado.", 404)
+        return jsonify({"ok": True, "alerta": _to_dict(alert)})
+
+
+@router.delete("/<uuid:alert_id>")
+@require_auth
+def deletar_alerta(alert_id):
+    if not _is_admin_or_gerente():
+        return _json_error("Apenas administrador/gerente pode remover alertas.", 403)
+
+    with SessionLocal() as db:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        if not alert:
+            return _json_error("Alerta não encontrado.", 404)
+
+        db.delete(alert)
+        db.commit()
+        return jsonify({"ok": True, "message": "Alerta removido com sucesso."})
+
+
+@router.get("/tipos")
+@require_auth
+def listar_tipos_alerta():
+    ativos_apenas = request.args.get("ativos_apenas", "false").lower() in {"1", "true", "yes", "on"}
+    with SessionLocal() as db:
+        query = db.query(AlertTypeAlias)
+        if ativos_apenas:
+            query = query.filter(AlertTypeAlias.ativo.is_(True))
+        items = query.order_by(AlertTypeAlias.alias.asc()).limit(500).all()
+        return jsonify(
+            {
+                "ok": True,
+                "total": len(items),
+                "tipos_alerta": [_to_dict(item) for item in items],
+                "tipos_canonicos": [item.value for item in AlertType],
+            }
+        )
+
+
+@router.get("/tipos/<uuid:tipo_id>")
+@require_auth
+def obter_tipo_alerta(tipo_id):
+    with SessionLocal() as db:
+        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
+        if not item:
+            return _json_error("Tipo de alerta não encontrado.", 404)
+        return jsonify({"ok": True, "tipo_alerta": _to_dict(item)})
+
+
+@router.post("/tipos")
+@require_auth
+def criar_tipo_alerta():
+    if not _is_admin_or_gerente():
+        return _json_error("Apenas administrador/gerente pode cadastrar tipo de alerta.", 403)
+
+    data = request.get_json(silent=True) or {}
+    try:
+        alias = (data.get("alias") or "").strip()
+        if not alias:
+            return _json_error("Campo obrigatório: alias")
+        canonical_type = _parse_canonical_alert_type(data.get("tipo_canonico"))
+    except ValueError as exc:
+        return _json_error(str(exc), 422)
+
+    with SessionLocal() as db:
+        item = AlertTypeAlias(
+            alias=alias,
+            normalized_alias=_normalize_text(alias),
+            canonical_type=canonical_type,
+            descricao=(data.get("descricao") or "").strip() or None,
+            ativo=bool(data.get("ativo", True)),
+            created_by=g.current_user.id,
+            updated_by=g.current_user.id,
+        )
+        db.add(item)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return _json_error("Já existe um tipo de alerta com este alias.", 409)
+        db.refresh(item)
+        return jsonify({"ok": True, "tipo_alerta": _to_dict(item)}), 201
+
+
+@router.patch("/tipos/<uuid:tipo_id>")
+@require_auth
+def atualizar_tipo_alerta(tipo_id):
+    if not _is_admin_or_gerente():
+        return _json_error("Apenas administrador/gerente pode atualizar tipo de alerta.", 403)
+
+    data = request.get_json(silent=True) or {}
+    with SessionLocal() as db:
+        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
+        if not item:
+            return _json_error("Tipo de alerta não encontrado.", 404)
+
+        if "alias" in data:
+            alias = (data.get("alias") or "").strip()
+            if not alias:
+                return _json_error("alias não pode ser vazio.", 422)
+            item.alias = alias
+            item.normalized_alias = _normalize_text(alias)
+
+        if "tipo_canonico" in data:
+            try:
+                item.canonical_type = _parse_canonical_alert_type(data.get("tipo_canonico"))
+            except ValueError as exc:
+                return _json_error(str(exc), 422)
+
+        if "descricao" in data:
+            item.descricao = (data.get("descricao") or "").strip() or None
+
+        if "ativo" in data:
+            item.ativo = bool(data.get("ativo"))
+
+        item.updated_by = g.current_user.id
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return _json_error("Não foi possível atualizar: alias já existe.", 409)
+
+        db.refresh(item)
+        return jsonify({"ok": True, "tipo_alerta": _to_dict(item)})
+
+
+@router.delete("/tipos/<uuid:tipo_id>")
+@require_auth
+def deletar_tipo_alerta(tipo_id):
+    if not _is_admin_or_gerente():
+        return _json_error("Apenas administrador/gerente pode remover tipo de alerta.", 403)
+
+    with SessionLocal() as db:
+        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
+        if not item:
+            return _json_error("Tipo de alerta não encontrado.", 404)
+
+        db.delete(item)
+        db.commit()
+        return jsonify({"ok": True, "message": "Tipo de alerta removido com sucesso."})

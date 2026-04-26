@@ -318,9 +318,8 @@ class GatewayBusinessOutputTests(unittest.TestCase):
                 }
             )
 
-            self.assertFalse(response.get("ok"))
-            self.assertIn("confirmacao explicita", response.get("message", "").lower())
-            self.assertIn("next_steps", response)
+            self.assertTrue(response.get("ok"))
+            self.assertIn("registro", response)
         finally:
             gateway_tools_module.get_database_tools = original_get_database_tools
 

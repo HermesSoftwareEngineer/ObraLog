@@ -3,7 +3,7 @@ import uuid
 
 from langchain_core.tools import tool
 
-from backend.db.models import Alert, AlertRead, AlertStatus
+from backend.db.models import Alert, AlertRead, AlertStatus, AlertTypeAlias
 from backend.db.session import SessionLocal
 
 from .common import (
@@ -16,10 +16,39 @@ from .common import (
     parse_alert_type,
     sync_alert_read_flags,
     to_dict,
+    normalize_text,
 )
 
 
 def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
+    def _get_alert(db, alert_id: str | None = None, alert_code: str | None = None):
+        if alert_id:
+            alert_uuid = uuid.UUID(alert_id)
+            return db.query(Alert).filter(Alert.id == alert_uuid).first()
+        if alert_code:
+            return db.query(Alert).filter(Alert.code == str(alert_code).strip()).first()
+        raise ValueError("Informe alert_id ou alert_code para identificar o alerta.")
+
+    def _resolve_alert_type(db, value: str):
+        try:
+            return parse_alert_type(value)
+        except ValueError:
+            normalized = normalize_text(value or "")
+            if not normalized:
+                raise
+            alias = (
+                db.query(AlertTypeAlias)
+                .filter(AlertTypeAlias.normalized_alias == normalized)
+                .filter(AlertTypeAlias.ativo.is_(True))
+                .first()
+            )
+            if not alias:
+                raise ValueError(
+                    "type inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro. "
+                    "Se necessário, cadastre um novo alias com criar_tipo_alerta."
+                )
+            return alias.canonical_type
+
     @tool
     def criar_alerta(
         type: str,
@@ -37,7 +66,7 @@ def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
         """Cria alerta operacional."""
         assert_permission(actor_level, "create", "alerts")
         with SessionLocal() as db:
-            alert_type = parse_alert_type(type)
+            alert_type = _resolve_alert_type(db, type)
             alert_severity = parse_alert_severity(severity)
             normalized_description = (description or "").strip()
             used_description_suggestion = not bool(normalized_description)
@@ -71,6 +100,16 @@ def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
             if used_description_suggestion:
                 payload["description_sugerida"] = normalized_description
             return payload
+
+    @tool
+    def obter_alerta(alert_id: str | None = None, alert_code: str | None = None) -> dict:
+        """Obtém um alerta por UUID técnico ou código de negócio."""
+        assert_permission(actor_level, "read", "alerts")
+        with SessionLocal() as db:
+            alert = _get_alert(db, alert_id=alert_id, alert_code=alert_code)
+            if not alert:
+                return {"ok": False, "message": "Alerta não encontrado."}
+            return {"ok": True, "alerta": to_dict(alert)}
 
     @tool
     def listar_alertas(
@@ -111,14 +150,20 @@ def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
             return {"ok": True, "total": len(items), "alertas": [to_dict(item) for item in items]}
 
     @tool
-    def atualizar_status_alerta(alert_id: str, status: str, resolution_notes: str | None = None) -> dict:
+    def atualizar_status_alerta(
+        alert_id: str | None = None,
+        status: str | None = None,
+        resolution_notes: str | None = None,
+        alert_code: str | None = None,
+    ) -> dict:
         """Atualiza status de um alerta e registra dados de resolução quando aplicável."""
         assert_permission(actor_level, "update", "alerts")
-        alert_uuid = uuid.UUID(alert_id)
+        if not status:
+            raise ValueError("status é obrigatório para atualizar o alerta.")
         new_status = parse_alert_status(status)
 
         with SessionLocal() as db:
-            alert = db.query(Alert).filter(Alert.id == alert_uuid).first()
+            alert = _get_alert(db, alert_id=alert_id, alert_code=alert_code)
             if not alert:
                 return {"ok": False, "message": "Alerta não encontrado."}
 
@@ -132,24 +177,23 @@ def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
             return {"ok": True, "alerta": to_dict(alert)}
 
     @tool
-    def marcar_alerta_como_lido(alert_id: str) -> dict:
+    def marcar_alerta_como_lido(alert_id: str | None = None, alert_code: str | None = None) -> dict:
         """Marca alerta como lido pelo usuário atual e registra trilha em alert_reads."""
         assert_permission(actor_level, "read", "alerts")
-        alert_uuid = uuid.UUID(alert_id)
 
         with SessionLocal() as db:
-            alert = db.query(Alert).filter(Alert.id == alert_uuid).first()
+            alert = _get_alert(db, alert_id=alert_id, alert_code=alert_code)
             if not alert:
                 return {"ok": False, "message": "Alerta não encontrado."}
 
             existing = (
                 db.query(AlertRead)
-                .filter(AlertRead.alert_id == alert_uuid)
+                .filter(AlertRead.alert_id == alert.id)
                 .filter(AlertRead.worker_id == actor_user_id)
                 .first()
             )
             if not existing:
-                existing = AlertRead(alert_id=alert_uuid, worker_id=actor_user_id)
+                existing = AlertRead(alert_id=alert.id, worker_id=actor_user_id)
                 db.add(existing)
 
             alert.is_read = True
@@ -161,19 +205,18 @@ def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
             return {"ok": True, "alerta": to_dict(alert), "leitura": to_dict(existing)}
 
     @tool
-    def marcar_alerta_como_nao_lido(alert_id: str) -> dict:
+    def marcar_alerta_como_nao_lido(alert_id: str | None = None, alert_code: str | None = None) -> dict:
         """Marca alerta como não lido para o usuário atual."""
         assert_permission(actor_level, "read", "alerts")
-        alert_uuid = uuid.UUID(alert_id)
 
         with SessionLocal() as db:
-            alert = db.query(Alert).filter(Alert.id == alert_uuid).first()
+            alert = _get_alert(db, alert_id=alert_id, alert_code=alert_code)
             if not alert:
                 return {"ok": False, "message": "Alerta não encontrado."}
 
             existing = (
                 db.query(AlertRead)
-                .filter(AlertRead.alert_id == alert_uuid)
+                .filter(AlertRead.alert_id == alert.id)
                 .filter(AlertRead.worker_id == actor_user_id)
                 .first()
             )
@@ -186,10 +229,26 @@ def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
             db.refresh(alert)
             return {"ok": True, "alerta": to_dict(alert)}
 
+    @tool
+    def deletar_alerta(alert_id: str | None = None, alert_code: str | None = None) -> dict:
+        """Remove um alerta por UUID técnico ou código de negócio."""
+        assert_permission(actor_level, "delete", "alerts")
+        with SessionLocal() as db:
+            alert = _get_alert(db, alert_id=alert_id, alert_code=alert_code)
+            if not alert:
+                return {"ok": False, "message": "Alerta não encontrado."}
+
+            deleted_code = alert.code
+            db.delete(alert)
+            db.commit()
+            return {"ok": True, "message": "Alerta removido com sucesso.", "alert_code": deleted_code}
+
     return [
         criar_alerta,
+        obter_alerta,
         listar_alertas,
         atualizar_status_alerta,
         marcar_alerta_como_lido,
         marcar_alerta_como_nao_lido,
+        deletar_alerta,
     ]

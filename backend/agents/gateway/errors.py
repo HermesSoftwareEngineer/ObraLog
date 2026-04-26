@@ -9,6 +9,7 @@ class GatewayError(Exception):
     message: str
     status_code: int = 400
     details: dict | None = None
+    next_steps: list[str] | None = None
 
     def to_dict(self) -> dict:
         payload = {
@@ -18,16 +19,19 @@ class GatewayError(Exception):
         }
         if self.details:
             payload["details"] = self.details
+        if self.next_steps:
+            payload["next_steps"] = self.next_steps
         return payload
 
 
 class GatewayValidationError(GatewayError):
-    def __init__(self, message: str, details: dict | None = None):
+    def __init__(self, message: str, details: dict | None = None, next_steps: list[str] | None = None):
         super().__init__(
             code="gateway_validation_error",
             message=message,
             status_code=422,
             details=details,
+            next_steps=next_steps,
         )
 
 

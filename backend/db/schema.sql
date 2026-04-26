@@ -173,6 +173,19 @@ CREATE TABLE alert_reads (
   UNIQUE (alert_id, worker_id)
 );
 
+CREATE TABLE alert_type_aliases (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  alias VARCHAR(120) NOT NULL UNIQUE,
+  normalized_alias VARCHAR(120) NOT NULL UNIQUE,
+  canonical_type alert_type NOT NULL,
+  descricao TEXT,
+  ativo BOOLEAN NOT NULL DEFAULT true,
+  created_by INT REFERENCES usuarios(id) ON DELETE SET NULL,
+  updated_by INT REFERENCES usuarios(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- =====================
 -- INDEXES (performance)
 -- =====================
@@ -193,6 +206,10 @@ CREATE INDEX idx_alerts_code ON alerts(code);
 CREATE INDEX idx_alerts_reported_by ON alerts(reported_by);
 CREATE INDEX idx_alert_reads_alert_id ON alert_reads(alert_id);
 CREATE INDEX idx_alert_reads_worker_id ON alert_reads(worker_id);
+CREATE UNIQUE INDEX idx_alert_type_aliases_alias_unique ON alert_type_aliases(alias);
+CREATE UNIQUE INDEX idx_alert_type_aliases_normalized_alias_unique ON alert_type_aliases(normalized_alias);
+CREATE INDEX idx_alert_type_aliases_canonical_type ON alert_type_aliases(canonical_type);
+CREATE INDEX idx_alert_type_aliases_ativo ON alert_type_aliases(ativo);
 CREATE UNIQUE INDEX uq_mensagens_campo_telegram_msg ON mensagens_campo(canal, telegram_chat_id, telegram_message_id) WHERE telegram_message_id IS NOT NULL;
 CREATE INDEX idx_mensagens_campo_status ON mensagens_campo(status_processamento);
 CREATE INDEX idx_mensagens_campo_recebida_em ON mensagens_campo(recebida_em);

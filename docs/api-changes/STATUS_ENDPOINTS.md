@@ -77,6 +77,14 @@ Rastreamento do status e última atualização de cada endpoint da API.
 
 ---
 
+## Chat (Conversas do Agente)
+| Endpoint | Status | Última alteração |
+|----------|--------|------------------|
+| `GET /api/v1/chat/conversas` | ✅ | 2026-04-24 — Novo endpoint; acesso restrito a administradores |
+| `GET /api/v1/chat/conversas/{chat_id}/mensagens` | ✅ | 2026-04-24 — Novo endpoint; acesso restrito a administradores |
+
+---
+
 ## Healthcheck
 | Endpoint | Status | Última alteração |
 |----------|--------|------------------|

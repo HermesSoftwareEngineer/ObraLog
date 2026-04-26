@@ -356,10 +356,32 @@ def ensure_runtime_migrations() -> None:
                 """
             )
         )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS alert_type_aliases (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    alias VARCHAR(120) NOT NULL UNIQUE,
+                    normalized_alias VARCHAR(120) NOT NULL UNIQUE,
+                    canonical_type alert_type NOT NULL,
+                    descricao TEXT,
+                    ativo BOOLEAN NOT NULL DEFAULT true,
+                    created_by INT REFERENCES usuarios(id) ON DELETE SET NULL,
+                    updated_by INT REFERENCES usuarios(id) ON DELETE SET NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_code ON alerts(code)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_reported_by ON alerts(reported_by)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_reads_alert_id ON alert_reads(alert_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_reads_worker_id ON alert_reads(worker_id)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_type_aliases_alias_unique ON alert_type_aliases(alias)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_type_aliases_normalized_alias_unique ON alert_type_aliases(normalized_alias)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_type_aliases_canonical_type ON alert_type_aliases(canonical_type)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_type_aliases_ativo ON alert_type_aliases(ativo)"))
 
 
 ensure_runtime_migrations()

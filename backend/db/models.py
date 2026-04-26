@@ -329,3 +329,18 @@ class AlertRead(Base):
 
     alert = relationship("Alert", back_populates="reads")
     worker = relationship("Usuario", back_populates="alert_reads", foreign_keys=[worker_id])
+
+
+class AlertTypeAlias(Base):
+    __tablename__ = "alert_type_aliases"
+
+    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alias = Column(String(120), nullable=False, unique=True)
+    normalized_alias = Column(String(120), nullable=False, unique=True, index=True)
+    canonical_type = Column(SQLEnum(AlertType, values_callable=_enum_values, name="alert_type"), nullable=False)
+    descricao = Column(Text, nullable=True)
+    ativo = Column(Boolean, nullable=False, default=True)
+    created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
+    updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

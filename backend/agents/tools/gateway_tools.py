@@ -6,15 +6,21 @@ from typing import Literal
 
 from langchain_core.tools import tool
 
+from backend.db.models import AlertTypeAlias
+from backend.db.session import SessionLocal
+
 from backend.agents.context.vector_context import get_context_for_query
 from backend.agents.gateway import (
     ActorContext,
     GatewayActionRouter,
+    GatewayError,
     GatewayRequest,
     GatewayRequestMeta,
     GatewayService,
+    GatewayValidationError,
 )
 from backend.agents.gateway.mappers import (
+    map_alerta_to_business,
     map_consultar_alertas_operacionais_output,
     map_consultar_diario_obra_output,
     map_consultar_producao_periodo_output,
@@ -31,6 +37,7 @@ ALLOWED_EXECUTION_INTENTS = {
     "atualizar_registro",
     "consolidar_registro",
     "gerenciar_frente_servico",
+    "gerenciar_tipo_alerta",
 }
 
 EXECUTION_INTENT_ALIASES = {
@@ -49,6 +56,11 @@ EXECUTION_INTENT_ALIASES = {
     "editar_frente": "gerenciar_frente_servico",
     "deletar_frente": "gerenciar_frente_servico",
     "remover_frente": "gerenciar_frente_servico",
+    "cadastrar_tipo_alerta": "gerenciar_tipo_alerta",
+    "criar_tipo_alerta": "gerenciar_tipo_alerta",
+    "atualizar_tipo_alerta": "gerenciar_tipo_alerta",
+    "deletar_tipo_alerta": "gerenciar_tipo_alerta",
+    "remover_tipo_alerta": "gerenciar_tipo_alerta",
     "consolidar": "consolidar_registro",
 }
 
@@ -78,12 +90,141 @@ ExecutionIntentLiteral = Literal[
     "consolidar_registro",
     "registrar_alerta",
     "gerenciar_frente_servico",
+    "gerenciar_tipo_alerta",
 ]
 
 
 def _normalize_text(value: str) -> str:
     text = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     return " ".join(text.strip().lower().split())
+
+
+def _execute_gateway(action):
+    try:
+        return action().to_dict()
+    except GatewayError as exc:
+        return exc.to_dict()
+
+
+def _normalize_alert_type_for_gateway(value: str | None) -> str:
+    normalized = _normalize_text(value or "")
+    canonical_values = [
+        "maquina_quebrada",
+        "acidente",
+        "falta_material",
+        "risco_seguranca",
+        "outro",
+    ]
+    if not normalized:
+        raise GatewayValidationError(
+            "tipo_alerta é obrigatório para registrar o alerta.",
+            details={
+                "field": "tipo_alerta",
+                "accepted": canonical_values,
+            },
+            next_steps=[
+                "pedir ao usuario para informar o tipo do alerta",
+                "se nenhum tipo existente servir, usar 'outro' e descrever a ocorrencia",
+            ],
+        )
+
+    aliases = {
+        "maquina quebrada": "maquina_quebrada",
+        "maquina quebrado": "maquina_quebrada",
+        "maquina quebrou": "maquina_quebrada",
+        "maquina parada": "maquina_quebrada",
+        "maquina com defeito": "maquina_quebrada",
+        "maquina com falha": "maquina_quebrada",
+        "maquina_quebrada": "maquina_quebrada",
+        "equipamento quebrado": "maquina_quebrada",
+        "equipamento quebrou": "maquina_quebrada",
+        "equipamento com defeito": "maquina_quebrada",
+        "equipamento com falha": "maquina_quebrada",
+        "falha de equipamento": "maquina_quebrada",
+        "quebra de maquina": "maquina_quebrada",
+        "acidente": "acidente",
+        "colisao": "acidente",
+        "atropelamento": "acidente",
+        "queda": "acidente",
+        "incidente": "acidente",
+        "falta material": "falta_material",
+        "falta de material": "falta_material",
+        "falta de insumo": "falta_material",
+        "falta insumo": "falta_material",
+        "material nao chegou": "falta_material",
+        "material nao veio": "falta_material",
+        "atraso de material": "falta_material",
+        "atraso material": "falta_material",
+        "falta_material": "falta_material",
+        "risco seguranca": "risco_seguranca",
+        "risco de seguranca": "risco_seguranca",
+        "alerta de seguranca": "risco_seguranca",
+        "risco": "risco_seguranca",
+        "inseguranca": "risco_seguranca",
+        "condicao insegura": "risco_seguranca",
+        "risco_seguranca": "risco_seguranca",
+        "outro": "outro",
+        "ocorrencia": "outro",
+        "ocorrencia operacional": "outro",
+        "alerta operacional": "outro",
+    }
+    parsed = aliases.get(normalized)
+    if parsed:
+        return parsed
+
+    try:
+        with SessionLocal() as db:
+            alias_entry = (
+                db.query(AlertTypeAlias)
+                .filter(AlertTypeAlias.normalized_alias == normalized)
+                .filter(AlertTypeAlias.ativo.is_(True))
+                .first()
+            )
+            if alias_entry and alias_entry.canonical_type:
+                if hasattr(alias_entry.canonical_type, "value"):
+                    return alias_entry.canonical_type.value
+                return str(alias_entry.canonical_type)
+    except Exception:
+        # Falha de acesso ao banco não deve mascarar a validação do tipo.
+        pass
+
+    suggestions = difflib.get_close_matches(normalized, list(aliases.keys()), n=3, cutoff=0.45)
+    suggested_types: list[str] = []
+    for suggestion in suggestions:
+        parsed = aliases.get(suggestion)
+        if parsed and parsed not in suggested_types:
+            suggested_types.append(parsed)
+
+    raise GatewayValidationError(
+        "tipo_alerta inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro.",
+        details={
+            "field": "tipo_alerta",
+            "received": value,
+            "accepted": canonical_values,
+            "suggested_types": suggested_types,
+        },
+        next_steps=[
+            "pedir ao usuario para escolher um dos tipos aceitos",
+            "se o tipo desejado ainda nao existir, usar 'outro' e registrar a descricao do novo tipo desejado",
+            "se o usuario quiser manter esse tipo para proximos usos, cadastrar alias com criar_tipo_alerta_operacional",
+            "se fizer sentido, reapresentar as opcoes: maquina_quebrada, acidente, falta_material, risco_seguranca, outro",
+        ],
+    )
+
+
+def _resolve_alert_identifier(codigo_alerta: str | None = None, alert_id: str | None = None) -> dict:
+    if alert_id:
+        return {"ok": True, "alert_id": str(alert_id), "alert_code": codigo_alerta}
+    if not codigo_alerta:
+        return {
+            "ok": False,
+            "message": "Informe codigo_alerta ou alert_id para identificar o alerta.",
+            "next_steps": [
+                "pedir ao usuario o codigo do alerta, por exemplo ALT-2026-0001",
+                "consultar alertas operacionais para localizar o codigo correto",
+            ],
+        }
+    return {"ok": True, "alert_code": str(codigo_alerta).strip(), "alert_id": alert_id}
 
 
 def get_gateway_tools(actor_user_id: int, actor_level: str):
@@ -249,7 +390,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
             )
             return strip_technical_keys(mapped)
 
-        return router.consulta(request, handler).to_dict()
+        return _execute_gateway(lambda: router.consulta(request, handler))
 
     @tool
     def listar_frentes_servico_operacional() -> dict:
@@ -273,7 +414,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 "frentes_servico": strip_technical_keys(normalized_items),
             }
 
-        return router.consulta(request, handler).to_dict()
+        return _execute_gateway(lambda: router.consulta(request, handler))
 
     @tool
     def criar_frente_servico_operacional(
@@ -312,7 +453,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return {"ok": True, "frente_servico": strip_technical_keys(frente)}
             return {"ok": True, "resultado": result}
 
-        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
     @tool
     def atualizar_frente_servico_operacional(
@@ -353,7 +494,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return strip_technical_keys(result)
             return {"ok": True, "resultado": result}
 
-        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
     @tool
     def deletar_frente_servico_operacional(
@@ -385,7 +526,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return strip_technical_keys(result)
             return {"ok": bool(result)}
 
-        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
     @tool
     def consultar_producao_periodo(
@@ -427,7 +568,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
             mapped = map_consultar_producao_periodo_output(raw, frentes_by_id=_build_frentes_by_id())
             return strip_technical_keys(mapped)
 
-        return router.consulta(request, handler).to_dict()
+        return _execute_gateway(lambda: router.consulta(request, handler))
 
     @tool
     def consultar_alertas_operacionais(
@@ -464,7 +605,198 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
             mapped = map_consultar_alertas_operacionais_output(raw)
             return strip_technical_keys(mapped)
 
-        return router.consulta(request, handler).to_dict()
+        return _execute_gateway(lambda: router.consulta(request, handler))
+
+    @tool
+    def consultar_alerta_operacional(codigo_alerta: str | None = None, alert_id: str | None = None) -> dict:
+        """Consulta um alerta operacional especifico por codigo de negocio ou UUID."""
+        request = _request(
+            "consultar_alerta_operacional",
+            payload={"codigo_alerta": codigo_alerta, "alert_id": alert_id},
+            action_route="consulta",
+            business_tool="consultar_alerta_operacional",
+            technical_operation="obter_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
+            if not resolved.get("ok"):
+                return resolved
+
+            result = _invoke_internal(
+                "obter_alerta",
+                {
+                    "alert_id": resolved.get("alert_id"),
+                    "alert_code": resolved.get("alert_code"),
+                },
+            )
+            if isinstance(result, dict):
+                alerta_raw = result.get("alerta", result)
+                return {"ok": True, "alerta": map_alerta_to_business(alerta_raw) if isinstance(alerta_raw, dict) else alerta_raw}
+            return {"ok": True, "alerta": {"resultado": result}}
+
+        return _execute_gateway(lambda: router.consulta(request, handler))
+
+    @tool
+    def listar_tipos_alerta_operacional(ativos_apenas: bool = False) -> dict:
+        """Lista aliases de tipos de alerta e os tipos canônicos disponíveis."""
+        request = _request(
+            "listar_tipos_alerta_operacional",
+            payload={"ativos_apenas": ativos_apenas},
+            action_route="consulta",
+            business_tool="listar_tipos_alerta_operacional",
+            technical_operation="listar_tipos_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal("listar_tipos_alerta", {"ativos_apenas": bool(ativos_apenas)})
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return _execute_gateway(lambda: router.consulta(request, handler))
+
+    @tool
+    def consultar_tipo_alerta_operacional(tipo_id: str | None = None, alias: str | None = None) -> dict:
+        """Consulta um tipo de alerta cadastrado por UUID técnico ou alias de negócio."""
+        request = _request(
+            "consultar_tipo_alerta_operacional",
+            payload={"tipo_id": tipo_id, "alias": alias},
+            action_route="consulta",
+            business_tool="consultar_tipo_alerta_operacional",
+            technical_operation="obter_tipo_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal("obter_tipo_alerta", {"tipo_id": tipo_id, "alias": alias})
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return _execute_gateway(lambda: router.consulta(request, handler))
+
+    @tool
+    def criar_tipo_alerta_operacional(
+        alias: str,
+        tipo_canonico: str,
+        descricao: str | None = None,
+        ativo: bool = True,
+        confirmado: bool = False,
+        intencao: ExecutionIntentLiteral = "gerenciar_tipo_alerta",
+    ) -> dict:
+        """Cria alias de tipo de alerta para mapear linguagem de negócio para tipo canônico."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="gerenciar_tipo_alerta")
+        request = _request(
+            "criar_tipo_alerta_operacional",
+            payload={
+                "alias": alias,
+                "tipo_canonico": tipo_canonico,
+                "descricao": descricao,
+                "ativo": ativo,
+                "confirmado": confirmado,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="criar_tipo_alerta_operacional",
+            technical_operation="criar_tipo_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal(
+                "criar_tipo_alerta",
+                {
+                    "alias": alias,
+                    "tipo_canonico": tipo_canonico,
+                    "descricao": descricao,
+                    "ativo": bool(ativo),
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
+
+    @tool
+    def atualizar_tipo_alerta_operacional(
+        tipo_id: str | None = None,
+        alias: str | None = None,
+        novo_alias: str | None = None,
+        tipo_canonico: str | None = None,
+        descricao: str | None = None,
+        ativo: bool | None = None,
+        confirmado: bool = False,
+        intencao: ExecutionIntentLiteral = "gerenciar_tipo_alerta",
+    ) -> dict:
+        """Atualiza alias, tipo canônico, descrição ou status de um tipo de alerta."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="gerenciar_tipo_alerta")
+        request = _request(
+            "atualizar_tipo_alerta_operacional",
+            payload={
+                "tipo_id": tipo_id,
+                "alias": alias,
+                "novo_alias": novo_alias,
+                "tipo_canonico": tipo_canonico,
+                "descricao": descricao,
+                "ativo": ativo,
+                "confirmado": confirmado,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="atualizar_tipo_alerta_operacional",
+            technical_operation="atualizar_tipo_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal(
+                "atualizar_tipo_alerta",
+                {
+                    "tipo_id": tipo_id,
+                    "alias": alias,
+                    "novo_alias": novo_alias,
+                    "tipo_canonico": tipo_canonico,
+                    "descricao": descricao,
+                    "ativo": ativo,
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
+
+    @tool
+    def deletar_tipo_alerta_operacional(
+        tipo_id: str | None = None,
+        alias: str | None = None,
+        confirmado: bool = False,
+        intencao: ExecutionIntentLiteral = "gerenciar_tipo_alerta",
+    ) -> dict:
+        """Remove alias de tipo de alerta cadastrado."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="gerenciar_tipo_alerta")
+        request = _request(
+            "deletar_tipo_alerta_operacional",
+            payload={
+                "tipo_id": tipo_id,
+                "alias": alias,
+                "confirmado": confirmado,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="deletar_tipo_alerta_operacional",
+            technical_operation="deletar_tipo_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal("deletar_tipo_alerta", {"tipo_id": tipo_id, "alias": alias})
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": bool(result)}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
 
     @tool
@@ -481,7 +813,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
         def handler(_: GatewayRequest) -> dict:
             return business_rag.consultar_padroes_operacionais(pergunta=pergunta, k=k)
 
-        return router.consulta(request, handler).to_dict()
+        return _execute_gateway(lambda: router.consulta(request, handler))
 
     @tool
     def sugerir_campos_faltantes(tipo_registro: str, dados_parciais: dict) -> dict:
@@ -497,7 +829,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
         def handler(_: GatewayRequest) -> dict:
             return business_rag.sugerir_campos_faltantes(tipo_registro=tipo_registro, dados_parciais=dados_parciais or {})
 
-        return router.consulta(request, handler).to_dict()
+        return _execute_gateway(lambda: router.consulta(request, handler))
 
     @tool
     def registrar_producao_diaria(
@@ -558,7 +890,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return {"registro": result}
             return {"registro": {"resultado": result}}
 
-        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
     @tool
     def registrar_alerta_operacional(
@@ -591,10 +923,11 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
         )
 
         def handler(_: GatewayRequest) -> dict:
+            alert_type = _normalize_alert_type_for_gateway(tipo_alerta)
             result = _invoke_internal(
                 "criar_alerta",
                 {
-                    "type": tipo_alerta,
+                    "type": alert_type,
                     "description": descricao,
                     "severity": severidade,
                     "location_detail": local,
@@ -602,10 +935,170 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 },
             )
             if isinstance(result, dict):
-                return {"alerta": result.get("alerta", result)}
+                alerta_raw = result.get("alerta", result)
+                return {"ok": True, "alerta": map_alerta_to_business(alerta_raw) if isinstance(alerta_raw, dict) else alerta_raw}
             return {"alerta": {"resultado": result}}
 
-        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
+
+    @tool
+    def atualizar_alerta_operacional(
+        status: str,
+        codigo_alerta: str | None = None,
+        alert_id: str | None = None,
+        observacoes_resolucao: str | None = None,
+        confirmado: bool = False,
+        intencao: ExecutionIntentLiteral = "registrar_alerta",
+    ) -> dict:
+        """Atualiza status de um alerta operacional por codigo de negocio ou UUID."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="registrar_alerta")
+        request = _request(
+            "atualizar_alerta_operacional",
+            payload={
+                "codigo_alerta": codigo_alerta,
+                "alert_id": alert_id,
+                "status": status,
+                "observacoes_resolucao": observacoes_resolucao,
+                "confirmado": confirmado,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="atualizar_alerta_operacional",
+            technical_operation="atualizar_status_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
+            if not resolved.get("ok"):
+                return resolved
+
+            result = _invoke_internal(
+                "atualizar_status_alerta",
+                {
+                    "alert_id": resolved.get("alert_id"),
+                    "alert_code": resolved.get("alert_code"),
+                    "status": status,
+                    "resolution_notes": observacoes_resolucao,
+                },
+            )
+            if isinstance(result, dict):
+                alerta_raw = result.get("alerta", result)
+                return {"ok": True, "alerta": map_alerta_to_business(alerta_raw) if isinstance(alerta_raw, dict) else alerta_raw}
+            return {"ok": True, "alerta": {"resultado": result}}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
+
+    @tool
+    def marcar_alerta_como_lido_operacional(
+        codigo_alerta: str | None = None,
+        alert_id: str | None = None,
+        intencao: ExecutionIntentLiteral = "registrar_alerta",
+    ) -> dict:
+        """Marca um alerta operacional como lido por codigo de negocio ou UUID."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="registrar_alerta")
+        request = _request(
+            "marcar_alerta_como_lido_operacional",
+            payload={"codigo_alerta": codigo_alerta, "alert_id": alert_id, "intencao": intencao_resolvida},
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="marcar_alerta_como_lido_operacional",
+            technical_operation="marcar_alerta_como_lido",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
+            if not resolved.get("ok"):
+                return resolved
+
+            result = _invoke_internal(
+                "marcar_alerta_como_lido",
+                {
+                    "alert_id": resolved.get("alert_id"),
+                    "alert_code": resolved.get("alert_code"),
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
+
+    @tool
+    def marcar_alerta_como_nao_lido_operacional(
+        codigo_alerta: str | None = None,
+        alert_id: str | None = None,
+        intencao: ExecutionIntentLiteral = "registrar_alerta",
+    ) -> dict:
+        """Marca um alerta operacional como não lido por codigo de negocio ou UUID."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="registrar_alerta")
+        request = _request(
+            "marcar_alerta_como_nao_lido_operacional",
+            payload={"codigo_alerta": codigo_alerta, "alert_id": alert_id, "intencao": intencao_resolvida},
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="marcar_alerta_como_nao_lido_operacional",
+            technical_operation="marcar_alerta_como_nao_lido",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
+            if not resolved.get("ok"):
+                return resolved
+
+            result = _invoke_internal(
+                "marcar_alerta_como_nao_lido",
+                {
+                    "alert_id": resolved.get("alert_id"),
+                    "alert_code": resolved.get("alert_code"),
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": True, "resultado": result}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
+
+    @tool
+    def deletar_alerta_operacional(
+        codigo_alerta: str | None = None,
+        alert_id: str | None = None,
+        confirmado: bool = False,
+        intencao: ExecutionIntentLiteral = "registrar_alerta",
+    ) -> dict:
+        """Remove um alerta operacional por codigo de negocio ou UUID."""
+        intencao_resolvida = _normalize_execution_intent(intencao, default="registrar_alerta")
+        request = _request(
+            "deletar_alerta_operacional",
+            payload={
+                "codigo_alerta": codigo_alerta,
+                "alert_id": alert_id,
+                "confirmado": confirmado,
+                "intencao": intencao_resolvida,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="deletar_alerta_operacional",
+            technical_operation="deletar_alerta",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
+            if not resolved.get("ok"):
+                return resolved
+
+            result = _invoke_internal(
+                "deletar_alerta",
+                {
+                    "alert_id": resolved.get("alert_id"),
+                    "alert_code": resolved.get("alert_code"),
+                },
+            )
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": bool(result)}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
     @tool
     def atualizar_status_registro_operacional(
@@ -647,8 +1140,8 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
             return strip_technical_keys({"registro": {"resultado": result}})
 
         if requires_confirmation:
-            return router.execucao(request, handler, intent=intencao_resolvida, confirmed=True).to_dict()
-        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+            return _execute_gateway(lambda: router.execucao(request, handler, intent=intencao_resolvida, confirmed=True))
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
     @tool
     def anexar_imagem_registro_operacional(
@@ -686,7 +1179,7 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 return strip_technical_keys(result)
             return {"ok": True, "resultado": result}
 
-        return router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida).to_dict()
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
 
     @tool
     def buscar_contexto_operacional(pergunta: str, k: int = 3) -> dict:
@@ -708,13 +1201,16 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
                 "encontrado": bool(context.strip()),
             }
 
-        return router.consulta(request, handler).to_dict()
+        return _execute_gateway(lambda: router.consulta(request, handler))
 
     return [
         consultar_diario_obra,
         listar_frentes_servico_operacional,
         consultar_producao_periodo,
         consultar_alertas_operacionais,
+        consultar_alerta_operacional,
+        listar_tipos_alerta_operacional,
+        consultar_tipo_alerta_operacional,
         consultar_padroes_operacionais,
         sugerir_campos_faltantes,
         criar_frente_servico_operacional,
@@ -722,6 +1218,13 @@ def get_gateway_tools(actor_user_id: int, actor_level: str):
         deletar_frente_servico_operacional,
         registrar_producao_diaria,
         registrar_alerta_operacional,
+        atualizar_alerta_operacional,
+        marcar_alerta_como_lido_operacional,
+        marcar_alerta_como_nao_lido_operacional,
+        deletar_alerta_operacional,
+        criar_tipo_alerta_operacional,
+        atualizar_tipo_alerta_operacional,
+        deletar_tipo_alerta_operacional,
         atualizar_status_registro_operacional,
         anexar_imagem_registro_operacional,
         buscar_contexto_operacional,
