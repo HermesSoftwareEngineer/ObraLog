@@ -80,6 +80,27 @@ class MessageProcessor:
         self._typing = TypingIndicator(client)
         self._linker = UserLinker(client)
 
+    def _send_reply(self, chat_id, reply: str) -> None:
+        """Send and persist an agent response message."""
+        if not reply:
+            return
+        result = self._client.send_message(chat_id, reply)
+        if result and result.get("message_id"):
+            try:
+                with SessionLocal() as db:
+                    Repository.mensagens_campo.criar_agent_response(
+                        db,
+                        telegram_chat_id=str(chat_id),
+                        telegram_message_id=result["message_id"],
+                        texto=reply,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Falha ao persistir resposta do agente para chat_id=%s: %s",
+                    chat_id,
+                    exc,
+                )
+
     def process(self, updates: list[dict]) -> dict:
         if not updates:
             return {"ok": True, "ignored": True, "reason": "batch_vazio"}
@@ -174,7 +195,7 @@ class MessageProcessor:
             u = Repository.usuarios.obter_por_id(db, usuario.id)
             if not u:
                 persistence.mark_error(raw_messages, "usuario_nao_encontrado_reset")
-                self._client.send_message(
+                self._send_reply(
                     chat_id, "Não encontrei seu usuário para reiniciar o contexto."
                 )
                 return {"ok": False, "chat_id": chat_id, "reason": "usuario_nao_encontrado_reset"}
@@ -183,7 +204,7 @@ class MessageProcessor:
 
         persistence.set_user(raw_messages, usuario.id)
         persistence.mark_processed(raw_messages)
-        self._client.send_message(
+        self._send_reply(
             chat_id,
             "Contexto da conversa reiniciado com sucesso. Vamos começar uma nova thread aqui.\n"
             "Se quiser, me diga seu próximo registro ou dúvida.",
@@ -198,14 +219,14 @@ class MessageProcessor:
         except Exception as exc:
             logger.error("Erro ao invocar graph - chat_id=%s: %s", chat_id, exc, exc_info=True)
             persistence.mark_error(raw_messages, str(exc))
-            self._client.send_message(
+            self._send_reply(
                 chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente."
             )
             return {"ok": False, "chat_id": chat_id, "reason": "erro_graph", "error": str(exc)}
 
         msgs = response.get("messages", [])
         if not msgs:
-            self._client.send_message(
+            self._send_reply(
                 chat_id, "Recebi suas mensagens, mas não consegui gerar uma resposta."
             )
             persistence.mark_processed(raw_messages)
@@ -218,7 +239,7 @@ class MessageProcessor:
 
         if not response_used_telegram_ui(msgs):
             try:
-                self._client.send_message(chat_id, reply)
+                self._send_reply(chat_id, reply)
             except Exception as exc:
                 logger.error(
                     "Erro ao enviar mensagem - chat_id=%s: %s", chat_id, exc, exc_info=True

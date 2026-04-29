@@ -6,31 +6,17 @@ import uuid
 from langchain_core.tools import tool
 from sqlalchemy.exc import IntegrityError
 
-from backend.db.models import AlertType, AlertTypeAlias
+from backend.db.models import AlertTypeAlias
 from backend.db.session import SessionLocal
 
 from .common import assert_permission, normalize_text, to_dict
 
 
-def _canonical_type_aliases() -> dict[str, AlertType]:
-    return {
-        "maquina_quebrada": AlertType.MAQUINA_QUEBRADA,
-        "maquina quebrada": AlertType.MAQUINA_QUEBRADA,
-        "acidente": AlertType.ACIDENTE,
-        "falta_material": AlertType.FALTA_MATERIAL,
-        "falta material": AlertType.FALTA_MATERIAL,
-        "risco_seguranca": AlertType.RISCO_SEGURANCA,
-        "risco seguranca": AlertType.RISCO_SEGURANCA,
-        "outro": AlertType.OUTRO,
-    }
-
-
-def _parse_canonical_type(value: str | None) -> AlertType:
-    normalized = normalize_text(value or "")
-    parsed = _canonical_type_aliases().get(normalized)
-    if parsed is None:
-        raise ValueError("tipo_canonico inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro.")
-    return parsed
+def _parse_canonical_type(value: str | None, field_name: str = "tipo_canonico") -> str:
+    normalized = normalize_text((value or "").replace("_", " "))
+    if not normalized:
+        raise ValueError(f"{field_name} é obrigatório.")
+    return normalized.replace(" ", "_")
 
 
 def _get_alias(db, tipo_id: str | None = None, alias: str | None = None) -> AlertTypeAlias | None:
@@ -56,7 +42,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
                 {
                     "id": str(item.id),
                     "alias": item.alias,
-                    "tipo_canonico": item.canonical_type.value if hasattr(item.canonical_type, "value") else str(item.canonical_type),
+                    "tipo_canonico": str(item.canonical_type),
                     "descricao": item.descricao,
                     "ativo": bool(item.ativo),
                     "created_at": item.created_at,
@@ -64,11 +50,18 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
                 }
                 for item in items
             ]
+            canonical_types = [
+                row[0]
+                for row in db.query(AlertTypeAlias.canonical_type)
+                .distinct()
+                .order_by(AlertTypeAlias.canonical_type.asc())
+                .all()
+            ]
             return {
                 "ok": True,
                 "total": len(tipos),
                 "tipos_alerta": tipos,
-                "tipos_canonicos": [item.value for item in AlertType],
+                "tipos_canonicos": canonical_types,
             }
 
     @tool
@@ -80,8 +73,6 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
             if not item:
                 return {"ok": False, "message": "Tipo de alerta não encontrado."}
             payload = to_dict(item)
-            if isinstance(payload.get("canonical_type"), AlertType):
-                payload["canonical_type"] = payload["canonical_type"].value
             return {"ok": True, "tipo_alerta": payload}
 
     @tool
@@ -118,8 +109,6 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
                 raise ValueError("Já existe um tipo de alerta com este alias.") from exc
             db.refresh(item)
             payload = to_dict(item)
-            if isinstance(payload.get("canonical_type"), AlertType):
-                payload["canonical_type"] = payload["canonical_type"].value
             return {"ok": True, "tipo_alerta": payload}
 
     @tool
@@ -164,8 +153,6 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
                 raise ValueError("Não foi possível atualizar: alias já existe.") from exc
             db.refresh(item)
             payload = to_dict(item)
-            if isinstance(payload.get("canonical_type"), AlertType):
-                payload["canonical_type"] = payload["canonical_type"].value
             return {"ok": True, "tipo_alerta": payload}
 
     @tool

@@ -5,7 +5,6 @@
 Evolucao da API para consumo do frontend com foco no modelo de registro unico:
 
 - rastreabilidade de mensagens de campo (`mensagens-campo`)
-- auditoria de registros (`registros/{id}/auditoria`)
 - transicao explicita de status no proprio registro (`registros/{id}/status`)
 
 Tambem houve ajuste de contrato em `registros`:
@@ -17,7 +16,6 @@ Tambem houve ajuste de contrato em `registros`:
 
 - `GET /api/v1/mensagens-campo`
 - `GET /api/v1/mensagens-campo/{mensagem_id}`
-- `GET /api/v1/registros/{registro_id}/auditoria`
 - `PATCH /api/v1/registros/{registro_id}/status`
 
 ## Regras de Permissao
@@ -64,4 +62,3 @@ Ao definir `status=consolidado`, os campos basicos do registro devem estar preen
 2. Criar/editar registro (aceita payload parcial).
 3. Completar campos obrigatorios de consolidacao.
 4. Mudar status para `consolidado` em `registros/{id}/status`.
-5. Exibir trilha via `registros/{id}/auditoria`.

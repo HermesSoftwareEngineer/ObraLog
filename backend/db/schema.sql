@@ -5,7 +5,6 @@
 CREATE TYPE clima AS ENUM ('limpo', 'nublado', 'impraticavel');
 CREATE TYPE lado_pista_enum AS ENUM ('direito', 'esquerdo');
 CREATE TYPE nivel_acesso AS ENUM ('administrador', 'gerente', 'encarregado');
-CREATE TYPE alert_type AS ENUM ('maquina_quebrada', 'acidente', 'falta_material', 'risco_seguranca', 'outro');
 CREATE TYPE alert_severity AS ENUM ('baixa', 'media', 'alta', 'critica');
 CREATE TYPE alert_status AS ENUM ('aberto', 'em_atendimento', 'aguardando_peca', 'resolvido', 'cancelado');
 CREATE TYPE canal_origem_mensagem AS ENUM ('telegram');
@@ -128,20 +127,10 @@ ALTER TABLE registros
   ADD CONSTRAINT registros_source_message_id_fkey
   FOREIGN KEY (source_message_id) REFERENCES mensagens_campo(id) ON DELETE SET NULL;
 
-CREATE TABLE registro_auditoria (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  registro_id INT NOT NULL REFERENCES registros(id) ON DELETE CASCADE,
-  acao VARCHAR(30) NOT NULL,
-  diff_json TEXT NOT NULL,
-  actor_user_id INT REFERENCES usuarios(id) ON DELETE SET NULL,
-  actor_level VARCHAR(30),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE TABLE alerts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code VARCHAR(20) UNIQUE NOT NULL,
-  type alert_type NOT NULL,
+  type VARCHAR(120) NOT NULL,
   severity alert_severity NOT NULL,
   reported_by INT NOT NULL REFERENCES usuarios(id),
   telegram_message_id BIGINT,
@@ -177,7 +166,7 @@ CREATE TABLE alert_type_aliases (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   alias VARCHAR(120) NOT NULL UNIQUE,
   normalized_alias VARCHAR(120) NOT NULL UNIQUE,
-  canonical_type alert_type NOT NULL,
+  canonical_type VARCHAR(120) NOT NULL,
   descricao TEXT,
   ativo BOOLEAN NOT NULL DEFAULT true,
   created_by INT REFERENCES usuarios(id) ON DELETE SET NULL,
@@ -213,4 +202,3 @@ CREATE INDEX idx_alert_type_aliases_ativo ON alert_type_aliases(ativo);
 CREATE UNIQUE INDEX uq_mensagens_campo_telegram_msg ON mensagens_campo(canal, telegram_chat_id, telegram_message_id) WHERE telegram_message_id IS NOT NULL;
 CREATE INDEX idx_mensagens_campo_status ON mensagens_campo(status_processamento);
 CREATE INDEX idx_mensagens_campo_recebida_em ON mensagens_campo(recebida_em);
-CREATE INDEX idx_registro_auditoria_registro ON registro_auditoria(registro_id);

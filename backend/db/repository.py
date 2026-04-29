@@ -10,7 +10,6 @@ from backend.db.models import (
     RegistroImagem,
     TelegramLinkCode,
     MensagemCampo,
-    RegistroAuditoria,
     NivelAcesso,
     CanalOrigemMensagem,
     ConteudoMensagemTipo,
@@ -507,27 +506,35 @@ class MensagemCampoRepository:
         item.erro_processamento = erro
         db.commit()
 
-
-class RegistroAuditoriaRepository:
     @staticmethod
-    def registrar(
+    def criar_agent_response(
         db: Session,
         *,
-        registro_id: int,
-        acao: str,
-        diff_json: str,
-        actor_user_id: int | None = None,
-        actor_level: str | None = None,
-    ) -> RegistroAuditoria:
-        item = RegistroAuditoria(
-            registro_id=registro_id,
-            acao=acao,
-            diff_json=diff_json,
-            actor_user_id=actor_user_id,
-            actor_level=actor_level,
+        telegram_chat_id: str,
+        telegram_message_id: int,
+        texto: str,
+    ) -> MensagemCampo:
+        """Persist an agent response message."""
+        from backend.db.models import DirecaoMensagem
+        
+        item = MensagemCampo(
+            canal=CanalOrigemMensagem.TELEGRAM,
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
+            tipo_conteudo=ConteudoMensagemTipo.TEXTO,
+            texto_bruto=texto,
+            texto_normalizado=" ".join(str(texto or "").strip().split()) or None,
+            direcao=DirecaoMensagem.AGENT,
+            status_processamento=ProcessamentoMensagemStatus.PROCESSADA,
+            processada_em=datetime.utcnow(),
+            hash_idempotencia=f"agent:telegram:{telegram_chat_id}:{telegram_message_id}",
         )
         db.add(item)
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         db.refresh(item)
         return item
 
@@ -587,5 +594,4 @@ class Repository:
     registro_imagens = RegistroImagemRepository
     telegram_link_codes = TelegramLinkCodeRepository
     mensagens_campo = MensagemCampoRepository
-    registro_auditoria = RegistroAuditoriaRepository
 

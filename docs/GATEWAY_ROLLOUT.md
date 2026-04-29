@@ -23,15 +23,6 @@ Cada chamada do gateway gera log estruturado com:
 Implementacao:
 - `backend/agents/gateway/gateway_service.py`
 
-Persistencia opcional em arquivo JSONL:
-- Configure `GATEWAY_AUDIT_FILE` com caminho absoluto para o arquivo.
-
-Exemplo (Windows PowerShell):
-
-```powershell
-$env:GATEWAY_AUDIT_FILE="C:\Users\Hermes\projetos_dev\ObraLog\backend\agents\test_logs\gateway_audit.jsonl"
-```
-
 ## Paralelo para Validacao
 
 Durante validacao, rode duas instancias do backend:
@@ -41,7 +32,6 @@ Durante validacao, rode duas instancias do backend:
 
 2. Instancia B (candidate)
 - `AGENT_USE_GATEWAY=true`
-- `GATEWAY_AUDIT_FILE` habilitado
 
 Estrategia recomendada:
 - enviar parte do trafego para cada instancia

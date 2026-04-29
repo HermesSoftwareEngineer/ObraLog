@@ -51,7 +51,7 @@ Essa migration inclui:
 
 - Correção de integridade em `registros` (`usuario_registrador_id` com `ON DELETE RESTRICT`)
 - Remoção da coluna redundante `pista` (mantendo `lado_pista`)
-- Criação de `mensagens_campo`, `lancamentos_diario`, `lancamento_itens`, `lancamento_recursos`, `lancamento_midias`, `registro_auditoria`
+- Criação de `mensagens_campo`, `lancamentos_diario`, `lancamento_itens`, `lancamento_recursos`, `lancamento_midias`
 - Ajuste da constraint de campos obrigatórios sem exigir `observacao`
 
 ## Usar no Código

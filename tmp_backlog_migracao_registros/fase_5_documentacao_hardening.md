@@ -14,4 +14,4 @@ Fechar a migracao com comunicacao clara, testes e estabilidade operacional.
 ## Criterios de Aceite
 - [x] Toda documentacao oficial reflete modelo sem rascunhos.
 - [x] Testes de caminho critico de registro aprovados.
-- [x] Equipe consegue operar e auditar o fluxo apenas com registros.
+- [x] Equipe consegue operar e acompanhar o fluxo apenas com registros.

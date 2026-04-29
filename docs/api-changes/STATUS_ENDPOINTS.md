@@ -50,7 +50,6 @@ Rastreamento do status e última atualização de cada endpoint da API.
 | `POST /api/v1/registros` | 🔄 | 2026-04-14 — contrato atualizado: `pista` é alias legado e `lado_pista` é o campo técnico persistido |
 | `GET /api/v1/registros/{registro_id}` | ✅ | - |
 | `PUT/PATCH /api/v1/registros/{registro_id}` | 🔄 | 2026-04-14 — contrato atualizado: `pista` é alias legado e `lado_pista` é o campo técnico persistido |
-| `GET /api/v1/registros/{registro_id}/auditoria` | ✅ | 2026-04-14 — Novo endpoint para trilha de alterações |
 | `DELETE /api/v1/registros/{registro_id}` | ✅ | - |
 
 ---
@@ -77,11 +76,35 @@ Rastreamento do status e última atualização de cada endpoint da API.
 
 ---
 
+## Alertas
+| Endpoint | Status | Última alteração |
+|----------|--------|------------------|
+| `GET /api/v1/alertas` | 🔄 | 2026-04-29 — Payload de lista simplificado e campo `reported_by_nome` adicionado |
+| `POST /api/v1/alertas` | 🔄 | 2026-04-29 — Resposta padronizada no payload de detalhe |
+| `GET /api/v1/alertas/{alert_id}` | 🔄 | 2026-04-29 — Payload de detalhe padronizado com `*_nome` |
+| `PATCH /api/v1/alertas/{alert_id}/status` | 🔄 | 2026-04-29 — Retorno inclui `resolved_by_nome`, `read_by_nome`, `reported_by_nome` |
+| `POST /api/v1/alertas/{alert_id}/read` | 🔄 | 2026-04-29 — Retorno inclui `leitura.worker_nome` e payload de detalhe |
+| `POST /api/v1/alertas/{alert_id}/unread` | 🔄 | 2026-04-29 — Retorno usa payload de detalhe padronizado |
+| `GET /api/v1/alertas/codigo/{code}` | 🔄 | 2026-04-29 — Payload de detalhe padronizado com `*_nome` |
+| `DELETE /api/v1/alertas/{alert_id}` | ✅ | - |
+| `GET /api/v1/alertas/tipos/simples` | 🔄 | 2026-04-29 — Novo endpoint simples para listagem de tipos |
+| `POST /api/v1/alertas/tipos/simples` | 🔄 | 2026-04-29 — Novo endpoint simples para cadastro de tipos |
+| `PATCH /api/v1/alertas/tipos/simples/{tipo_id}` | 🔄 | 2026-04-29 — Novo endpoint simples para atualização de tipos |
+| `DELETE /api/v1/alertas/tipos/simples/{tipo_id}` | 🔄 | 2026-04-29 — Novo endpoint simples para remoção de tipos |
+| `GET /api/v1/alertas/tipos` | ✅ | - |
+| `GET /api/v1/alertas/tipos/{tipo_id}` | ✅ | - |
+| `POST /api/v1/alertas/tipos` | ✅ | - |
+| `PATCH /api/v1/alertas/tipos/{tipo_id}` | ✅ | - |
+| `DELETE /api/v1/alertas/tipos/{tipo_id}` | ✅ | - |
+
+---
+
 ## Chat (Conversas do Agente)
 | Endpoint | Status | Última alteração |
 |----------|--------|------------------|
 | `GET /api/v1/chat/conversas` | ✅ | 2026-04-24 — Novo endpoint; acesso restrito a administradores |
-| `GET /api/v1/chat/conversas/{chat_id}/mensagens` | ✅ | 2026-04-24 — Novo endpoint; acesso restrito a administradores |
+| `GET /api/v1/chat/mensagens?chat_id={chat_id}` | ✅ | 2026-04-29 — Campo `direcao` (user\|agent) agora persistido; respostas do agente integradas |
+| `GET /api/v1/chat/conversas/{chat_id}/mensagens` | ✅ | 2026-04-29 — Compatibilidade mantida com clientes legados |
 
 ---
 

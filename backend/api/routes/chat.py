@@ -28,6 +28,21 @@ def _serialize_value(value):
     return value
 
 
+def _parse_pagination() -> tuple[int, int, int] | tuple[None, None, tuple]:
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 50, type=int)
+
+    if page is None or page < 1:
+        return None, None, _json_error("Parâmetro 'page' deve ser inteiro >= 1.", 400)
+
+    if per_page is None or per_page < 1:
+        return None, None, _json_error("Parâmetro 'per_page' deve ser inteiro >= 1.", 400)
+
+    per_page = min(per_page, 200)
+    offset = (page - 1) * per_page
+    return page, per_page, offset
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/chat/conversas
 # Lista todas as conversas distintas (agrupadas por telegram_chat_id),
@@ -39,9 +54,11 @@ def listar_conversas():
     if not _is_admin(g.current_user):
         return _json_error("Acesso restrito a administradores.", 403)
 
-    page = request.args.get("page", 1, type=int)
-    per_page = min(request.args.get("per_page", 50, type=int), 200)
-    offset = (page - 1) * per_page
+    page, per_page, offset_or_error = _parse_pagination()
+    if page is None:
+        return offset_or_error
+
+    offset = offset_or_error
 
     with SessionLocal() as db:
         # Subquery: última mensagem e contagem por chat_id
@@ -118,20 +135,7 @@ def listar_conversas():
     })
 
 
-# ---------------------------------------------------------------------------
-# GET /api/v1/chat/conversas/<chat_id>/mensagens
-# Lista as mensagens de um chat específico (paginado, mais recentes primeiro).
-# ---------------------------------------------------------------------------
-@router.get("/conversas/<chat_id>/mensagens")
-@require_auth
-def listar_mensagens(chat_id: str):
-    if not _is_admin(g.current_user):
-        return _json_error("Acesso restrito a administradores.", 403)
-
-    page = request.args.get("page", 1, type=int)
-    per_page = min(request.args.get("per_page", 50, type=int), 200)
-    offset = (page - 1) * per_page
-
+def _listar_mensagens_por_chat_id(chat_id: str, page: int, per_page: int, offset: int):
     with SessionLocal() as db:
         total = (
             db.query(func.count(MensagemCampo.id))
@@ -155,6 +159,7 @@ def listar_mensagens(chat_id: str):
                 "telegram_message_id": m.telegram_message_id,
                 "recebida_em": m.recebida_em.isoformat() if m.recebida_em else None,
                 "tipo_conteudo": _serialize_value(m.tipo_conteudo),
+                "direcao": _serialize_value(m.direcao),
                 "texto": m.texto_normalizado or m.texto_bruto,
                 "status_processamento": _serialize_value(m.status_processamento),
                 "erro_processamento": m.erro_processamento,
@@ -171,3 +176,41 @@ def listar_mensagens(chat_id: str):
         "total": total,
         "mensagens": mensagens,
     })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/chat/mensagens?chat_id=<telegram_chat_id>
+# Endpoint dedicado para mensagens de conversa (admin only).
+# ---------------------------------------------------------------------------
+@router.get("/mensagens")
+@require_auth
+def listar_mensagens_por_chat_id():
+    if not _is_admin(g.current_user):
+        return _json_error("Acesso restrito a administradores.", 403)
+
+    chat_id = (request.args.get("chat_id") or "").strip()
+    if not chat_id:
+        return _json_error("Parâmetro obrigatório: chat_id.", 400)
+
+    page, per_page, offset_or_error = _parse_pagination()
+    if page is None:
+        return offset_or_error
+
+    return _listar_mensagens_por_chat_id(chat_id, page, per_page, offset_or_error)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/chat/conversas/<chat_id>/mensagens
+# Compatibilidade com clientes antigos.
+# ---------------------------------------------------------------------------
+@router.get("/conversas/<chat_id>/mensagens")
+@require_auth
+def listar_mensagens(chat_id: str):
+    if not _is_admin(g.current_user):
+        return _json_error("Acesso restrito a administradores.", 403)
+
+    page, per_page, offset_or_error = _parse_pagination()
+    if page is None:
+        return offset_or_error
+
+    return _listar_mensagens_por_chat_id(chat_id, page, per_page, offset_or_error)

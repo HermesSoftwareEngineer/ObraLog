@@ -5,7 +5,7 @@
 Formalizar o fluxo de dados de campo recebido via Telegram em duas camadas:
 
 1. Ingestao bruta de mensagem
-2. Registro oficial com status e trilha de auditoria
+2. Registro oficial com status
 
 Nota de dominio: o papel tecnico de campo permanece **encarregado**.
 
@@ -37,18 +37,9 @@ Tabela para trilha completa de entrada de mensagens:
 
 Uso principal:
 
-- Auditoria e rastreabilidade
+- Rastreabilidade
 - Evitar duplicidade por reentrega de update
 - Diagnostico operacional
-
-### 3) Camada de auditoria: `registro_auditoria`
-
-Permite trilha de alteracoes no diario consolidado:
-
-- acao
-- diff_json
-- usuario/role autor da alteracao
-- timestamp
 
 ## Fluxo de Dados Atualizado
 
@@ -81,5 +72,4 @@ Permite trilha de alteracoes no diario consolidado:
 ## Proxima Evolucao Recomendada
 
 1. Registrar automaticamente `source_message_id` em `criar_registro` do agente/API.
-2. Consolidar eventos de auditoria para create/update/delete de registros oficiais.
-3. Expandir consultas analiticas por `status` em `registros`.
+2. Expandir consultas analiticas por `status` em `registros`.

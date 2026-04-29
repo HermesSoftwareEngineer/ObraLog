@@ -7,7 +7,7 @@ import unicodedata
 from sqlalchemy import desc, func
 
 from backend.db.diario_repository import agrupar_por_data, get_diario_do_dia, get_registros_por_periodo
-from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, AlertType, Clima, LadoPista, NivelAcesso
+from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, Clima, LadoPista, NivelAcesso
 from backend.db.repository import Repository
 
 
@@ -130,52 +130,11 @@ def parse_nivel_acesso(value: str | None) -> NivelAcesso | None:
     return parsed
 
 
-def parse_alert_type(value: str) -> AlertType:
-    normalized = normalize_text(value)
-    aliases = {
-        "maquina quebrada": AlertType.MAQUINA_QUEBRADA,
-        "maquina quebrado": AlertType.MAQUINA_QUEBRADA,
-        "maquina quebrou": AlertType.MAQUINA_QUEBRADA,
-        "maquina parada": AlertType.MAQUINA_QUEBRADA,
-        "maquina com defeito": AlertType.MAQUINA_QUEBRADA,
-        "maquina com falha": AlertType.MAQUINA_QUEBRADA,
-        "maquina_quebrada": AlertType.MAQUINA_QUEBRADA,
-        "equipamento quebrado": AlertType.MAQUINA_QUEBRADA,
-        "equipamento quebrou": AlertType.MAQUINA_QUEBRADA,
-        "equipamento com defeito": AlertType.MAQUINA_QUEBRADA,
-        "equipamento com falha": AlertType.MAQUINA_QUEBRADA,
-        "falha de equipamento": AlertType.MAQUINA_QUEBRADA,
-        "quebra de maquina": AlertType.MAQUINA_QUEBRADA,
-        "acidente": AlertType.ACIDENTE,
-        "colisao": AlertType.ACIDENTE,
-        "atropelamento": AlertType.ACIDENTE,
-        "queda": AlertType.ACIDENTE,
-        "incidente": AlertType.ACIDENTE,
-        "falta material": AlertType.FALTA_MATERIAL,
-        "falta de material": AlertType.FALTA_MATERIAL,
-        "falta insumo": AlertType.FALTA_MATERIAL,
-        "falta de insumo": AlertType.FALTA_MATERIAL,
-        "material nao chegou": AlertType.FALTA_MATERIAL,
-        "material nao veio": AlertType.FALTA_MATERIAL,
-        "atraso material": AlertType.FALTA_MATERIAL,
-        "atraso de material": AlertType.FALTA_MATERIAL,
-        "falta_material": AlertType.FALTA_MATERIAL,
-        "risco": AlertType.RISCO_SEGURANCA,
-        "risco seguranca": AlertType.RISCO_SEGURANCA,
-        "risco de seguranca": AlertType.RISCO_SEGURANCA,
-        "alerta de seguranca": AlertType.RISCO_SEGURANCA,
-        "inseguranca": AlertType.RISCO_SEGURANCA,
-        "condicao insegura": AlertType.RISCO_SEGURANCA,
-        "risco_seguranca": AlertType.RISCO_SEGURANCA,
-        "outro": AlertType.OUTRO,
-        "ocorrencia": AlertType.OUTRO,
-        "ocorrencia operacional": AlertType.OUTRO,
-        "alerta operacional": AlertType.OUTRO,
-    }
-    parsed = aliases.get(normalized)
-    if parsed is None:
-        raise ValueError("type inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro.")
-    return parsed
+def parse_alert_type(value: str) -> str:
+    normalized = normalize_text((value or "").replace("_", " "))
+    if not normalized:
+        raise ValueError("type é obrigatório.")
+    return normalized.replace(" ", "_")
 
 
 def parse_alert_severity(value: str | None) -> AlertSeverity:
@@ -215,30 +174,30 @@ def parse_alert_status(value: str) -> AlertStatus:
     return parsed
 
 
-def default_alert_title(alert_type: AlertType) -> str:
+def default_alert_title(alert_type: str) -> str:
     type_labels = {
-        AlertType.MAQUINA_QUEBRADA: "Máquina quebrada",
-        AlertType.ACIDENTE: "Acidente",
-        AlertType.FALTA_MATERIAL: "Falta de material",
-        AlertType.RISCO_SEGURANCA: "Risco de segurança",
-        AlertType.OUTRO: "Alerta operacional",
+        "maquina_quebrada": "Máquina quebrada",
+        "acidente": "Acidente",
+        "falta_material": "Falta de material",
+        "risco_seguranca": "Risco de segurança",
+        "outro": "Alerta operacional",
     }
-    return type_labels.get(alert_type, "Alerta operacional")
+    return type_labels.get(str(alert_type), "Alerta operacional")
 
 
 def default_alert_description(
-    alert_type: AlertType,
+    alert_type: str,
     location_detail: str | None = None,
     equipment_name: str | None = None,
 ) -> str:
     base_by_type = {
-        AlertType.MAQUINA_QUEBRADA: "Máquina/equipamento com falha operacional",
-        AlertType.ACIDENTE: "Ocorrência de acidente em campo",
-        AlertType.FALTA_MATERIAL: "Ocorrência de falta de material",
-        AlertType.RISCO_SEGURANCA: "Ocorrência de risco de segurança",
-        AlertType.OUTRO: "Ocorrência operacional reportada",
+        "maquina_quebrada": "Máquina/equipamento com falha operacional",
+        "acidente": "Ocorrência de acidente em campo",
+        "falta_material": "Ocorrência de falta de material",
+        "risco_seguranca": "Ocorrência de risco de segurança",
+        "outro": "Ocorrência operacional reportada",
     }
-    parts = [base_by_type.get(alert_type, "Ocorrência operacional reportada")]
+    parts = [base_by_type.get(str(alert_type), "Ocorrência operacional reportada")]
     if location_detail:
         parts.append(f"Local: {location_detail}")
     if equipment_name:

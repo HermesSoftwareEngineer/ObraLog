@@ -69,6 +69,11 @@ class ProcessamentoMensagemStatus(str, Enum):
     ERRO = "erro"
 
 
+class DirecaoMensagem(str, Enum):
+    USER = "user"
+    AGENT = "agent"
+
+
 class RegistroStatus(str, Enum):
     PENDENTE = "pendente"
     CONSOLIDADO = "consolidado"
@@ -134,7 +139,6 @@ class Usuario(Base):
         foreign_keys="AlertRead.worker_id",
     )
     mensagens_campo = relationship("MensagemCampo", back_populates="usuario")
-    auditorias_registro = relationship("RegistroAuditoria", back_populates="actor")
 
 class FrenteServico(Base):
     __tablename__ = "frentes_servico"
@@ -177,12 +181,6 @@ class Registro(Base):
     source_message = relationship("MensagemCampo", back_populates="registros")
     imagens = relationship(
         "RegistroImagem",
-        back_populates="registro",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    auditoria = relationship(
-        "RegistroAuditoria",
         back_populates="registro",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -239,24 +237,15 @@ class MensagemCampo(Base):
         index=True,
     )
     erro_processamento = Column(Text, nullable=True)
+    direcao = Column(
+        SQLEnum(DirecaoMensagem, values_callable=_enum_values, name="direcao_mensagem"),
+        nullable=False,
+        default=DirecaoMensagem.USER,
+        index=True,
+    )
 
     usuario = relationship("Usuario", back_populates="mensagens_campo")
     registros = relationship("Registro", back_populates="source_message")
-
-
-class RegistroAuditoria(Base):
-    __tablename__ = "registro_auditoria"
-
-    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    registro_id = Column(Integer, ForeignKey("registros.id", ondelete="CASCADE"), nullable=False, index=True)
-    acao = Column(String(30), nullable=False)
-    diff_json = Column(Text, nullable=False)
-    actor_user_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
-    actor_level = Column(String(30), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
-
-    registro = relationship("Registro", back_populates="auditoria")
-    actor = relationship("Usuario", back_populates="auditorias_registro")
 
 
 class TelegramLinkCode(Base):
@@ -278,7 +267,7 @@ class Alert(Base):
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code = Column(String(20), unique=True, nullable=False, index=True)
-    type = Column(SQLEnum(AlertType, values_callable=_enum_values, name="alert_type"), nullable=False)
+    type = Column(String(120), nullable=False, index=True)
     severity = Column(SQLEnum(AlertSeverity, values_callable=_enum_values, name="alert_severity"), nullable=False)
     reported_by = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
     telegram_message_id = Column(BigInteger, nullable=True)
@@ -337,7 +326,7 @@ class AlertTypeAlias(Base):
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     alias = Column(String(120), nullable=False, unique=True)
     normalized_alias = Column(String(120), nullable=False, unique=True, index=True)
-    canonical_type = Column(SQLEnum(AlertType, values_callable=_enum_values, name="alert_type"), nullable=False)
+    canonical_type = Column(String(120), nullable=False, index=True)
     descricao = Column(Text, nullable=True)
     ativo = Column(Boolean, nullable=False, default=True)
     created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)

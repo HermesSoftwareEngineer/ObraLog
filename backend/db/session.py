@@ -259,26 +259,10 @@ def ensure_runtime_migrations() -> None:
                 """
             )
         )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS registro_auditoria (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    registro_id INT NOT NULL REFERENCES registros(id) ON DELETE CASCADE,
-                    acao VARCHAR(30) NOT NULL,
-                    diff_json TEXT NOT NULL,
-                    actor_user_id INT REFERENCES usuarios(id) ON DELETE SET NULL,
-                    actor_level VARCHAR(30),
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-                """
-            )
-        )
         connection.execute(text("ALTER TABLE registros ADD CONSTRAINT registros_source_message_id_fkey FOREIGN KEY (source_message_id) REFERENCES mensagens_campo(id) ON DELETE SET NULL"))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_mensagens_campo_telegram_msg ON mensagens_campo(canal, telegram_chat_id, telegram_message_id) WHERE telegram_message_id IS NOT NULL"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_mensagens_campo_status ON mensagens_campo(status_processamento)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_mensagens_campo_recebida_em ON mensagens_campo(recebida_em)"))
-        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_registro_auditoria_registro ON registro_auditoria(registro_id)"))
         connection.execute(text("DROP INDEX IF EXISTS idx_lancamento_midias_lancamento"))
         connection.execute(text("DROP INDEX IF EXISTS idx_lancamento_recursos_lancamento"))
         connection.execute(text("DROP INDEX IF EXISTS idx_lancamento_itens_lancamento"))
@@ -296,10 +280,6 @@ def ensure_runtime_migrations() -> None:
                 """
                 DO $$
                 BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'alert_type') THEN
-                        CREATE TYPE alert_type AS ENUM ('maquina_quebrada', 'acidente', 'falta_material', 'risco_seguranca', 'outro');
-                    END IF;
-
                     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'alert_severity') THEN
                         CREATE TYPE alert_severity AS ENUM ('baixa', 'media', 'alta', 'critica');
                     END IF;
@@ -317,7 +297,7 @@ def ensure_runtime_migrations() -> None:
                 CREATE TABLE IF NOT EXISTS alerts (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     code VARCHAR(20) UNIQUE NOT NULL,
-                    type alert_type NOT NULL,
+                    type VARCHAR(120) NOT NULL,
                     severity alert_severity NOT NULL,
                     reported_by INT NOT NULL REFERENCES usuarios(id),
                     telegram_message_id BIGINT,
@@ -363,7 +343,7 @@ def ensure_runtime_migrations() -> None:
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     alias VARCHAR(120) NOT NULL UNIQUE,
                     normalized_alias VARCHAR(120) NOT NULL UNIQUE,
-                    canonical_type alert_type NOT NULL,
+                    canonical_type VARCHAR(120) NOT NULL,
                     descricao TEXT,
                     ativo BOOLEAN NOT NULL DEFAULT true,
                     created_by INT REFERENCES usuarios(id) ON DELETE SET NULL,

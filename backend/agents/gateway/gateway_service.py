@@ -4,7 +4,6 @@ from collections.abc import Callable
 from datetime import datetime
 import json
 import logging
-import os
 import time
 from typing import Any
 
@@ -26,7 +25,6 @@ class GatewayService:
 
     def __init__(self, *, policies: GatewayPolicyService | None = None):
         self.policies = policies or GatewayPolicyService()
-        self.audit_file_path = os.environ.get("GATEWAY_AUDIT_FILE", "").strip() or None
 
     def execute_consulta(
         self,
@@ -150,13 +148,3 @@ class GatewayService:
             event["error"] = error or "unknown_error"
 
         logger.info("gateway_call %s", json.dumps(event, ensure_ascii=False))
-        self._persist_audit_event(event)
-
-    def _persist_audit_event(self, event: dict[str, Any]) -> None:
-        if not self.audit_file_path:
-            return
-        try:
-            with open(self.audit_file_path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-        except Exception as exc:
-            logger.warning("Falha ao persistir trilha de auditoria do gateway: %s", str(exc))

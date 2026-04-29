@@ -6,6 +6,36 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/).
 
 ---
 
+## [2026-04-29] - Simplificação do Contrato da API de Alertas
+
+### 🔄 Alterado
+- `GET /api/v1/alertas` agora retorna payload de lista simplificado (focado em dados de card/tabela).
+- Endpoints de retorno de alerta passam a usar payload de detalhe padronizado.
+- Endpoints simples de tipos de alerta adicionados para consumo direto de frontend:
+  - `GET /api/v1/alertas/tipos/simples`
+  - `POST /api/v1/alertas/tipos/simples`
+  - `PATCH /api/v1/alertas/tipos/simples/{tipo_id}`
+  - `DELETE /api/v1/alertas/tipos/simples/{tipo_id}`
+- Campos de usuário nos alertas agora incluem nome além do ID:
+  - `reported_by_nome`
+  - `read_by_nome`
+  - `resolved_by_nome`
+- `POST /api/v1/alertas/{alert_id}/read` agora inclui `leitura.worker_nome`.
+- `POST /api/v1/alertas` agora exige `reported_at` em chamadas normais da API.
+- Em chamadas com `source` de agente, `reported_at` é calculado automaticamente na data/hora de cadastro.
+- Payloads de alerta passam a incluir o campo explícito `reported_at`.
+
+### 🐛 Corrigido
+- Fluxo de criação de alerta com `description` ausente agora resolve corretamente o `type` antes de montar descrição padrão.
+
+### 📚 Documentação Atualizada
+- `API_MAPEAMENTO.md`
+- `docs/api-changes/STATUS_ENDPOINTS.md`
+- `docs/api-changes/README.md`
+- `docs/api-changes/20260429_alertas_payload_simplificado.md`
+
+---
+
 ## [2026-04-14] - Fase 4 e 5: Remocao Definitiva e Hardening
 
 ### ✨ Adicionado
@@ -26,7 +56,7 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/).
 ## [2026-04-14] - Redesenho Técnico do Banco para Diário de Obra
 
 ### 📝 Descrição Geral
-Evolução do modelo de dados para suportar ingestão bruta de mensagens do Telegram, camada de lançamentos operacionais e trilha de auditoria, além de correções de integridade em `registros`.
+Evolução do modelo de dados para suportar ingestão bruta de mensagens do Telegram, camada de lançamentos operacionais e correções de integridade em `registros`.
 
 ### ✨ Adicionado
 - Novas tabelas:
@@ -35,7 +65,6 @@ Evolução do modelo de dados para suportar ingestão bruta de mensagens do Tele
   - `lancamento_itens`
   - `lancamento_recursos`
   - `lancamento_midias`
-  - `registro_auditoria`
 - Novos campos em `registros`:
   - `raw_text`
   - `source_message_id`
@@ -81,8 +110,6 @@ Evolução do modelo de dados para suportar ingestão bruta de mensagens do Tele
   - `POST /api/v1/lancamentos/{lancamento_id}/confirmar`
   - `POST /api/v1/lancamentos/{lancamento_id}/descartar`
   - `POST /api/v1/lancamentos/{lancamento_id}/consolidar`
-- Endpoint de trilha de alterações:
-  - `GET /api/v1/registros/{registro_id}/auditoria`
 
 ### 🔄 Alterado
 - Contrato de registros atualizado para frontend:

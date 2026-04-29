@@ -138,19 +138,20 @@ class BotClient:
         )
         return [u.to_dict() for u in updates]
 
-    async def send_message_async(self, chat_id, text: str) -> None:
+    async def send_message_async(self, chat_id, text: str) -> dict | None:
         from telegram.error import BadRequest as TgBadRequest
         parse_errors: list[str] = []
         for candidate_text, mode, strategy in _build_markdown_candidates(text):
             try:
-                await self.bot.send_message(chat_id=chat_id, text=candidate_text, parse_mode=mode)
+                msg = await self.bot.send_message(chat_id=chat_id, text=candidate_text, parse_mode=mode)
                 if strategy != "raw_markdown":
                     logger.info(
-                        "Mensagem enviada com estratégia %s para chat_id=%s.",
+                        "Mensagem enviada com estratégia %s para chat_id=%s (message_id=%s).",
                         strategy,
                         chat_id,
+                        msg.message_id,
                     )
-                return
+                return {"message_id": msg.message_id, "text": msg.text}
             except TgBadRequest as exc:
                 msg = str(exc)
                 lowered = msg.lower()
@@ -165,7 +166,8 @@ class BotClient:
                 chat_id,
                 " | ".join(parse_errors),
             )
-        await self.bot.send_message(chat_id=chat_id, text=text)
+        msg = await self.bot.send_message(chat_id=chat_id, text=text)
+        return {"message_id": msg.message_id, "text": msg.text}
 
     async def send_typing_async(
         self, chat_id, message_thread_id: int | None = None
@@ -193,8 +195,9 @@ class BotClient:
     # Sync wrappers — safe from Flask threads, timer callbacks, etc.
     # ------------------------------------------------------------------
 
-    def send_message(self, chat_id, text: str) -> None:
-        self.submit(self.send_message_async(chat_id, text))
+    def send_message(self, chat_id, text: str) -> dict | None:
+        """Send message and return {message_id, text} or None on failure."""
+        return self.submit(self.send_message_async(chat_id, text))
 
     def send_typing(self, chat_id, message_thread_id: int | None = None) -> None:
         try:

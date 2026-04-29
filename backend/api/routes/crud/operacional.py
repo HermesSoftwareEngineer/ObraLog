@@ -1,5 +1,5 @@
 from backend.api.routes.auth import require_auth
-from backend.db.models import MensagemCampo, RegistroAuditoria
+from backend.db.models import MensagemCampo
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 
@@ -56,19 +56,3 @@ def obter_mensagem_campo(mensagem_id: str):
         if not item:
             return _json_error("Mensagem nao encontrada.", 404)
         return {"ok": True, "item": _serialize_mensagem_campo(item)}
-
-@api_blueprint.route("/registros/<int:registro_id>/auditoria", methods=["GET"])
-@require_auth
-def listar_auditoria_registro(registro_id: int):
-    with SessionLocal() as db:
-        registro = Repository.registros.obter_por_id(db, registro_id)
-        if not registro:
-            return _json_error("Registro nao encontrado.", 404)
-
-        items = (
-            db.query(RegistroAuditoria)
-            .filter(RegistroAuditoria.registro_id == registro_id)
-            .order_by(RegistroAuditoria.created_at.desc())
-            .all()
-        )
-        return {"ok": True, "total": len(items), "items": [_to_dict(item) for item in items]}

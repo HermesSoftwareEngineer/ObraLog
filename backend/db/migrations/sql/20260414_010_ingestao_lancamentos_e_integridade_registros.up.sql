@@ -144,16 +144,6 @@ CREATE TABLE IF NOT EXISTS lancamento_midias (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS registro_auditoria (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    registro_id INT NOT NULL REFERENCES registros(id) ON DELETE CASCADE,
-    acao VARCHAR(30) NOT NULL,
-    diff_json TEXT NOT NULL,
-    actor_user_id INT REFERENCES usuarios(id) ON DELETE SET NULL,
-    actor_level VARCHAR(30),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 DO $$
 BEGIN
     IF EXISTS (
@@ -177,4 +167,3 @@ CREATE INDEX IF NOT EXISTS idx_lancamentos_diario_status ON lancamentos_diario(s
 CREATE INDEX IF NOT EXISTS idx_lancamento_itens_lancamento ON lancamento_itens(lancamento_id);
 CREATE INDEX IF NOT EXISTS idx_lancamento_recursos_lancamento ON lancamento_recursos(lancamento_id);
 CREATE INDEX IF NOT EXISTS idx_lancamento_midias_lancamento ON lancamento_midias(lancamento_id);
-CREATE INDEX IF NOT EXISTS idx_registro_auditoria_registro ON registro_auditoria(registro_id);

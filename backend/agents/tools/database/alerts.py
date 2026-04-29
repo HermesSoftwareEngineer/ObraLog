@@ -30,24 +30,20 @@ def build_alerts_tools(actor_user_id: int, actor_level: str) -> list:
         raise ValueError("Informe alert_id ou alert_code para identificar o alerta.")
 
     def _resolve_alert_type(db, value: str):
-        try:
-            return parse_alert_type(value)
-        except ValueError:
-            normalized = normalize_text(value or "")
-            if not normalized:
-                raise
-            alias = (
-                db.query(AlertTypeAlias)
-                .filter(AlertTypeAlias.normalized_alias == normalized)
-                .filter(AlertTypeAlias.ativo.is_(True))
-                .first()
-            )
-            if not alias:
-                raise ValueError(
-                    "type inválido. Use: maquina_quebrada, acidente, falta_material, risco_seguranca, outro. "
-                    "Se necessário, cadastre um novo alias com criar_tipo_alerta."
-                )
-            return alias.canonical_type
+        normalized = normalize_text((value or "").replace("_", " "))
+        if not normalized:
+            raise ValueError("type é obrigatório para criar alerta.")
+
+        alias = (
+            db.query(AlertTypeAlias)
+            .filter(AlertTypeAlias.normalized_alias == normalized)
+            .filter(AlertTypeAlias.ativo.is_(True))
+            .first()
+        )
+        if alias:
+            return str(alias.canonical_type)
+
+        return parse_alert_type(value)
 
     @tool
     def criar_alerta(

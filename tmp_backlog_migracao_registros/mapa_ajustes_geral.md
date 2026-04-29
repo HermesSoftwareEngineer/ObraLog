@@ -51,7 +51,7 @@ Consolidar os ajustes necessarios para remover o conceito de rascunho/lancamento
 - Criar endpoint para transicao de status de registro.
 - Permitir POST de registro parcial.
 - Aplicar regra: so consolidado exige dados basicos preenchidos.
-- Manter mensagens-campo e auditoria.
+- Manter mensagens-campo.
 
 ## 4) Agente e Gateway
 ### Como esta hoje

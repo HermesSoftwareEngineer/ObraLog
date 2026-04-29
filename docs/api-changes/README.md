@@ -12,10 +12,16 @@ Documentação de todas as mudanças realizadas na API do ObraLog.
   - 🔄 Campos `data` e `usuario_registrador_id` agora opcionais em Registros
 
 ### 2026-04-14
-- **[API frontend para mensagens e auditoria](./20260414_api_frontend_lancamentos_mensagens.md)**
-  - ✨ Endpoints para `mensagens-campo` e auditoria de registros
+- **[API frontend para mensagens e status de registros](./20260414_api_frontend_lancamentos_mensagens.md)**
+  - ✨ Endpoints para `mensagens-campo` e status de registros
   - ❌ Fluxo `/lancamentos/*` removido em favor de registro único com status
   - 🔄 Contrato de `pista` consolidado como alias legado para `lado_pista`
+
+### 2026-04-29
+- **[Simplificação dos payloads de alertas](./20260429_alertas_payload_simplificado.md)**
+  - 🔄 `GET /api/v1/alertas` agora retorna payload de lista simplificado
+  - ✨ Campos `*_nome` adicionados para usuários relacionados ao alerta
+  - 🔄 Payload de detalhe de alerta padronizado
 
 ## 📊 Status dos Endpoints
 

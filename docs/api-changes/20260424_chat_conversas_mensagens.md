@@ -8,6 +8,7 @@ Acesso restrito a `administrador`.
 ## Novos Endpoints
 
 - `GET /api/v1/chat/conversas`
+- `GET /api/v1/chat/mensagens?chat_id={chat_id}`
 - `GET /api/v1/chat/conversas/{chat_id}/mensagens`
 
 ---
@@ -61,18 +62,15 @@ Lista todas as conversas agrupadas por `telegram_chat_id`.
 
 ---
 
-## GET /api/v1/chat/conversas/{chat_id}/mensagens
+## GET /api/v1/chat/mensagens
 
 Lista as mensagens recebidas de um chat especifico.
 
-### Path param
+### Query params
 
 | Param | Tipo | Descricao |
 |-------|------|-----------|
 | `chat_id` | string | `telegram_chat_id` da conversa |
-
-### Query params
-
 | Param | Tipo | Default | Descricao |
 |-------|------|---------|-----------|
 | `page` | int | 1 | Pagina atual |
@@ -94,6 +92,7 @@ Lista as mensagens recebidas de um chat especifico.
       "telegram_message_id": 98,
       "recebida_em": "2026-04-24T14:30:00+00:00",
       "tipo_conteudo": "texto",
+      "direcao": "user",
       "texto": "Conteudo normalizado ou bruto da mensagem",
       "status_processamento": "processada",
       "erro_processamento": null,
@@ -107,8 +106,14 @@ Lista as mensagens recebidas de um chat especifico.
 - Ordenado por `recebida_em` decrescente (mensagens mais recentes primeiro).
 - `texto` retorna `texto_normalizado` com fallback para `texto_bruto`.
 - `tipo_conteudo`: `texto | foto | audio | misto`.
+- `direcao`: `user` (usuário) | `agent` (agente). Ambas as direções são agora persistidas no banco de dados.
 - `status_processamento`: `pendente | processada | erro`.
 - Somente mensagens dos **usuarios** sao armazenadas. As respostas do agente nao sao persistidas no banco.
+
+### Compatibilidade
+
+- `GET /api/v1/chat/conversas/{chat_id}/mensagens` permanece disponivel para clientes legados.
+- O retorno e equivalente ao endpoint dedicado `GET /api/v1/chat/mensagens`.
 
 ---
 

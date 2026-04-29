@@ -257,31 +257,6 @@ Authorization: Bearer <token>
 - Atualiza registro.
 - Campos aceitos: `data`, `frente_servico_id`, `usuario_registrador_id`, `estaca_inicial`, `estaca_final`, `resultado`, `tempo_manha`, `tempo_tarde`, `lado_pista`, `pista` (alias legado), `observacao`, `raw_text`, `source_message_id`.
 
-### GET `/api/v1/registros/{registro_id}/auditoria`
-- Lista trilha de auditoria do registro.
-- Header obrigatório:
-```text
-Authorization: Bearer <token>
-```
-- Resposta 200:
-```json
-{
-  "ok": true,
-  "total": 1,
-  "items": [
-    {
-      "id": "uuid",
-      "registro_id": 10,
-      "acao": "create_registro",
-      "diff_json": "{...}",
-      "actor_user_id": 1,
-      "actor_level": "gerente",
-      "created_at": "2026-04-14T18:20:11+00:00"
-    }
-  ]
-}
-```
-
 ## Mensagens de Campo
 ### GET `/api/v1/mensagens-campo`
 - Lista mensagens capturadas no fluxo operacional.
@@ -300,6 +275,82 @@ Authorization: Bearer <token>
 ```text
 Authorization: Bearer <token>
 ```
+
+## Chat (Conversas do Agente)
+### GET `/api/v1/chat/conversas`
+- Lista conversas agrupadas por `telegram_chat_id`.
+- Apenas administrador.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Query params opcionais:
+  - `page=1..N` (default `1`)
+  - `per_page=1..200` (default `50`)
+- Resposta `200`:
+```json
+{
+  "ok": true,
+  "page": 1,
+  "per_page": 50,
+  "total": 12,
+  "conversas": [
+    {
+      "telegram_chat_id": "123456789",
+      "total_mensagens": 34,
+      "ultima_mensagem_em": "2026-04-24T14:30:00+00:00",
+      "ultima_mensagem_texto": "Texto da última mensagem recebida",
+      "usuario": {
+        "id": 7,
+        "nome": "João Encarregado",
+        "nivel_acesso": "encarregado"
+      }
+    }
+  ]
+}
+```
+
+### GET `/api/v1/chat/mensagens`
+- Lista mensagens de uma conversa específica.
+- Apenas administrador.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Query params:
+  - `chat_id=string` (obrigatório)
+  - `page=1..N` (default `1`)
+  - `per_page=1..200` (default `50`)
+- Resposta `200`:
+```json
+{
+  "ok": true,
+  "telegram_chat_id": "123456789",
+  "page": 1,
+  "per_page": 50,
+  "total": 34,
+  "mensagens": [
+    {
+      "id": "uuid-da-mensagem",
+      "canal": "telegram",
+      "telegram_message_id": 98,
+      "recebida_em": "2026-04-24T14:30:00+00:00",
+      "tipo_conteudo": "texto",
+      "direcao": "user",
+      "texto": "Conteudo normalizado ou bruto da mensagem",
+      "status_processamento": "processada",
+      "erro_processamento": null,
+      "usuario_id": 7
+    }
+  ]
+}
+```
+- Regra: `texto` retorna `texto_normalizado` com fallback para `texto_bruto`.
+- Regra: `direcao` é `user` (mensagem do usuário) ou `agent` (resposta do agente). Ambas as direções são persistidas.
+
+### GET `/api/v1/chat/conversas/{chat_id}/mensagens`
+- Rota legada mantida por compatibilidade.
+- Retorna o mesmo payload de `GET /api/v1/chat/mensagens`.
 
 ## Fluxo Removido
 ### `/api/v1/lancamentos/*`
@@ -380,6 +431,29 @@ Content-Disposition: inline; filename="diario_YYYYMMDD_YYYYMMDD.json"
   - `status=aberto|em_atendimento|aguardando_peca|resolvido|cancelado`
   - `severity=baixa|media|alta|critica`
   - `apenas_nao_lidos=true|false`
+- Resposta `200` (payload de lista simplificado):
+```json
+{
+  "ok": true,
+  "total": 1,
+  "alertas": [
+    {
+      "id": "uuid",
+      "code": "ALT-2026-0001",
+      "type": "maquina_quebrada",
+      "severity": "alta",
+      "title": "Parada de escavadeira",
+      "status": "aberto",
+      "is_read": false,
+      "reported_at": "2026-04-29T10:00:00+00:00",
+      "created_at": "2026-04-29T10:00:00+00:00",
+      "location_detail": "km 12",
+      "reported_by": 5,
+      "reported_by_nome": "Carlos Silva"
+    }
+  ]
+}
+```
 
 ### POST `/api/v1/alertas`
 - Cria alerta operacional.
@@ -388,7 +462,8 @@ Content-Disposition: inline; filename="diario_YYYYMMDD_YYYYMMDD.json"
 {
   "type": "maquina_quebrada",
   "severity": "alta",
-  "title": "Parada de escavadeira"
+  "title": "Parada de escavadeira",
+  "reported_at": "2026-04-29T10:00:00-03:00"
 }
 ```
 - Body opcional:
@@ -401,13 +476,49 @@ Content-Disposition: inline; filename="diario_YYYYMMDD_YYYYMMDD.json"
   "equipment_name": "Escavadeira",
   "photo_urls": ["https://.../foto1.jpg"],
   "priority_score": 90,
-  "notified_channels": ["telegram", "email"]
+  "notified_channels": ["telegram", "email"],
+  "source": "agent_gateway_tool"
 }
 ```
-- Regra: se `description` não for enviada, o backend gera uma descrição sugerida automaticamente.
+- Regras:
+  - Se `description` não for enviada, o backend gera uma descrição sugerida automaticamente.
+  - Em chamadas normais da API, `reported_at` é obrigatório.
+  - Em chamadas com `source` de agente (`agent*`, `telegram_agent`, `ia`), `reported_at` pode ser omitido e o backend preenche automaticamente com a data/hora do cadastro.
 
 ### GET `/api/v1/alertas/{alert_id}`
 - Retorna um alerta por UUID.
+- Resposta `200` (payload de detalhe):
+```json
+{
+  "ok": true,
+  "alerta": {
+    "id": "uuid",
+    "code": "ALT-2026-0001",
+    "type": "maquina_quebrada",
+    "severity": "alta",
+    "title": "Parada de escavadeira",
+    "status": "em_atendimento",
+    "is_read": true,
+    "reported_at": "2026-04-29T10:00:00+00:00",
+    "created_at": "2026-04-29T10:00:00+00:00",
+    "location_detail": "km 12",
+    "reported_by": 5,
+    "reported_by_nome": "Carlos Silva",
+    "description": "Equipamento sem partida",
+    "equipment_name": "Escavadeira",
+    "photo_urls": ["https://.../foto1.jpg"],
+    "priority_score": 90,
+    "resolution_notes": null,
+    "resolved_by": null,
+    "resolved_by_nome": null,
+    "resolved_at": null,
+    "read_by": 7,
+    "read_by_nome": "Ana Souza",
+    "read_at": "2026-04-29T10:10:00+00:00",
+    "updated_at": "2026-04-29T10:10:00+00:00"
+  }
+}
+```
 
 ### PATCH `/api/v1/alertas/{alert_id}/status`
 - Atualiza status do alerta.
@@ -424,12 +535,70 @@ Content-Disposition: inline; filename="diario_YYYYMMDD_YYYYMMDD.json"
   "resolution_notes": "Troca de peça concluída"
 }
 ```
+- Resposta: retorna `alerta` no payload de detalhe (inclui `reported_by_nome`, `read_by_nome`, `resolved_by_nome`).
 
 ### POST `/api/v1/alertas/{alert_id}/read`
 - Marca alerta como lido para o usuário autenticado e registra trilha em `alert_reads`.
+- Resposta: retorna `alerta` no payload de detalhe e `leitura` com `worker_nome`.
 
 ### POST `/api/v1/alertas/{alert_id}/unread`
 - Marca alerta como não lido para o usuário autenticado e remove a trilha de leitura dele em `alert_reads`.
+- Resposta: retorna `alerta` no payload de detalhe.
+
+### GET `/api/v1/alertas/tipos/simples`
+- Lista tipos de alerta em payload enxuto para o frontend.
+- Query params opcionais:
+  - `ativos_apenas=true|false` (default `true`)
+- Resposta `200`:
+```json
+{
+  "ok": true,
+  "total": 2,
+  "tipos": [
+    {
+      "id": "uuid",
+      "nome": "pane eletrica",
+      "tipo_canonico": "maquina_quebrada",
+      "ativo": true
+    }
+  ]
+}
+```
+
+### POST `/api/v1/alertas/tipos/simples`
+- Cadastra tipo de alerta simplificado.
+- Apenas administrador/gerente.
+- Body obrigatório:
+```json
+{
+  "nome": "pane eletrica"
+}
+```
+- Body opcional:
+```json
+{
+  "tipo_canonico": "maquina_quebrada",
+  "ativo": true
+}
+```
+- Regra: se `tipo_canonico` for omitido, o backend usa `nome` normalizado (ex.: `"pane eletrica"` -> `"pane_eletrica"`).
+
+### PATCH `/api/v1/alertas/tipos/simples/{tipo_id}`
+- Atualiza tipo de alerta simplificado.
+- Apenas administrador/gerente.
+- Body opcional (parcial):
+```json
+{
+  "nome": "pane hidraulica",
+  "tipo_canonico": "pane_hidraulica",
+  "ativo": true
+}
+```
+- Regra: `tipo_canonico` é opcional também no update.
+
+### DELETE `/api/v1/alertas/tipos/simples/{tipo_id}`
+- Remove tipo de alerta simplificado.
+- Apenas administrador/gerente.
 
 ## Dashboard
 ### GET `/api/v1/dashboard/overview`
@@ -569,7 +738,13 @@ Para acompanhar as mudanças realizadas na API, consulte:
 - **[CHANGELOG.md](./CHANGELOG.md)** - Resumo de todas as alterações por data
 - **[docs/api-changes/](./docs/api-changes/)** - Documentação detalhada de cada alteração com guias de migração
 
-### Últimas Alterações (2026-04-07)
+### Últimas Alterações (2026-04-29)
+- ✅ **Persistência de mensagens do agent**: respostas do agente agora são armazenadas em `mensagens_campo` com `direcao=agent`.
+- ✅ Campo `direcao` adicionado aos endpoints de mensagens do chat (`user` | `agent`).
+- ✅ Estrutura de chat consolidada com endpoints separados:
+  - `GET /api/v1/chat/conversas`
+  - `GET /api/v1/chat/mensagens?chat_id=...`
+- ✅ Rota legada preservada para compatibilidade: `GET /api/v1/chat/conversas/{chat_id}/mensagens`
 - ✨ Campo `observacao` adicionado em Frentes de Serviço e Registros
 - 🔄 `frente_servico_id` agora obrigatório em Registros
 - ❌ Campo `hora_registro` removido de Registros

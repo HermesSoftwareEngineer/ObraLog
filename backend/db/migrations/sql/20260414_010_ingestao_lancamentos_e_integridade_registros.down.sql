@@ -1,4 +1,3 @@
-DROP INDEX IF EXISTS idx_registro_auditoria_registro;
 DROP INDEX IF EXISTS idx_lancamento_midias_lancamento;
 DROP INDEX IF EXISTS idx_lancamento_recursos_lancamento;
 DROP INDEX IF EXISTS idx_lancamento_itens_lancamento;
@@ -36,7 +35,6 @@ CHECK (
 ALTER TABLE registros ADD COLUMN IF NOT EXISTS pista lado_pista_enum;
 UPDATE registros SET pista = lado_pista WHERE pista IS NULL AND lado_pista IS NOT NULL;
 
-DROP TABLE IF EXISTS registro_auditoria;
 DROP TABLE IF EXISTS lancamento_midias;
 DROP TABLE IF EXISTS lancamento_recursos;
 DROP TABLE IF EXISTS lancamento_itens;
