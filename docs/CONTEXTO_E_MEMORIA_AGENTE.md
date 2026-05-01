@@ -2,6 +2,21 @@
 
 ## 📊 Limites Técnicos de Contexto
 
+## 🔧 Chaves de Contexto Runtime (Multi-tenant)
+
+No fluxo atual do Telegram -> grafo, o campo `configurable` inclui metadados de isolamento e localizacao:
+
+- `tenant_id`: tenant ativo do usuario autenticado.
+- `obra_id_ativa`: obra selecionada no runtime (quando aplicavel).
+- `location_profile`: perfil de localizacao (`estaca`, `km`, `texto`).
+- `location_required_fields`: lista de campos obrigatorios de local para o perfil.
+- `location_labels`: labels de negocio para perguntas do agente.
+
+Regras de uso:
+- Nunca misturar contexto de localizacao entre tenants.
+- Validar obrigatorios de local antes de consolidar registro.
+- Manter compatibilidade de entrada com `estaca_inicial`/`estaca_final` mesmo em perfis dinamicos.
+
 ### Limite por Sessão
 - **~100,000 tokens** de contexto disponível por sessão (LLM token budget)
 - Cada sessão começa quando o usuário inicia conversa e termina quando há inatividade

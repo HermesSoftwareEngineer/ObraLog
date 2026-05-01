@@ -24,8 +24,8 @@ def _serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret_key=_AUTH_SECRET_KEY, salt="obralog-auth")
 
 
-def _issue_token(user_id: int, email: str) -> str:
-    payload = {"sub": user_id, "email": email}
+def _issue_token(user_id: int, email: str, tenant_id: int) -> str:
+    payload = {"sub": user_id, "email": email, "tenant_id": tenant_id}
     return _serializer().dumps(payload)
 
 
@@ -87,11 +87,19 @@ def require_auth(handler):
         if user_id is None:
             return _json_error("Token inválido.", 401)
 
+        tenant_id = payload.get("tenant_id")
+        if tenant_id is not None:
+            g.tenant_id = tenant_id
+
         with SessionLocal() as db:
             user = Repository.usuarios.obter_por_id(db, int(user_id))
 
         if not user:
             return _json_error("Usuário não encontrado.", 401)
+
+        # Fallback in case token didn't have tenant_id but user exists
+        if not hasattr(g, "tenant_id") and hasattr(user, "tenant_id"):
+            g.tenant_id = user.tenant_id
 
         g.current_user = user
         return handler(*args, **kwargs)
@@ -124,7 +132,7 @@ def register():
             telegram_thread_id=None,
         )
 
-    token = _issue_token(user.id, user.email)
+    token = _issue_token(user.id, user.email, user.tenant_id)
     return jsonify({"ok": True, "token": token, "user": _user_payload(user)}), 201
 
 
@@ -149,7 +157,7 @@ def login():
         if user.senha and not user.senha.startswith(("pbkdf2:", "scrypt:")):
             user = Repository.usuarios.atualizar(db, user.id, senha=generate_password_hash(senha))
 
-    token = _issue_token(user.id, user.email)
+    token = _issue_token(user.id, user.email, user.tenant_id)
     return jsonify({"ok": True, "token": token, "user": _user_payload(user)})
 
 

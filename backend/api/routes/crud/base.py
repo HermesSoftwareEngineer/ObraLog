@@ -53,6 +53,14 @@ def _to_dict(model_instance):
         payload[key] = _to_json_value(getattr(model_instance, key))
     if getattr(model_instance, "__tablename__", None) == "registros":
         payload.setdefault("pista", payload.get("lado_pista"))
+        # Construir o hybrid schema localizacao no payload
+        localizacao = {"tipo": "ESTACA"}
+        if payload.get("metadata_json") and isinstance(payload["metadata_json"], dict):
+            localizacao["tipo"] = payload["metadata_json"].get("tipo", "ESTACA")
+        localizacao["detalhe_texto"] = payload.get("estaca")
+        localizacao["valor_inicial"] = payload.get("estaca_inicial")
+        localizacao["valor_final"] = payload.get("estaca_final")
+        payload["localizacao"] = localizacao
     return payload
 
 

@@ -9,7 +9,7 @@ from backend.db.session import SessionLocal
 from .common import assert_permission, to_dict
 
 
-def build_mensagens_campo_tools(actor_user_id: int, actor_level: str) -> list:
+def build_mensagens_campo_tools(actor_user_id: int, actor_level: str, tenant_id: int | None = None) -> list:
     del actor_user_id
 
     @tool
@@ -22,6 +22,8 @@ def build_mensagens_campo_tools(actor_user_id: int, actor_level: str) -> list:
         assert_permission(actor_level, "read", "registros")
         with SessionLocal() as db:
             query = db.query(MensagemCampo)
+            if tenant_id is not None:
+                query = query.filter(MensagemCampo.tenant_id == tenant_id)
 
             if status:
                 try:
@@ -57,7 +59,10 @@ def build_mensagens_campo_tools(actor_user_id: int, actor_level: str) -> list:
             raise ValueError("mensagem_id inválido. Use UUID válido.") from exc
 
         with SessionLocal() as db:
-            item = db.query(MensagemCampo).filter(MensagemCampo.id == parsed_id).first()
+            query = db.query(MensagemCampo).filter(MensagemCampo.id == parsed_id)
+            if tenant_id is not None:
+                query = query.filter(MensagemCampo.tenant_id == tenant_id)
+            item = query.first()
             if not item:
                 return {"ok": False, "message": "Mensagem de campo não encontrada."}
             data = to_dict(item)

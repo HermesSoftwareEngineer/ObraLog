@@ -5,11 +5,13 @@ from werkzeug.security import generate_password_hash
 
 from backend.db.models import (
     Usuario,
+    Obra,
     FrenteServico,
     Registro,
     RegistroImagem,
     TelegramLinkCode,
     MensagemCampo,
+    Tenant,
     NivelAcesso,
     CanalOrigemMensagem,
     ConteudoMensagemTipo,
@@ -18,6 +20,116 @@ from backend.db.models import (
     Clima,
     LadoPista,
 )
+
+# ---------------------------------------------------------------------------
+# TenantRepository
+# ---------------------------------------------------------------------------
+
+class TenantRepository:
+    @staticmethod
+    def criar(
+        db: Session,
+        nome: str,
+        slug: str,
+        tipo_negocio: str | None = None,
+        ativo: bool = True,
+    ) -> Tenant:
+        tenant = Tenant(nome=nome, slug=slug, tipo_negocio=tipo_negocio, ativo=ativo)
+        db.add(tenant)
+        db.commit()
+        db.refresh(tenant)
+        return tenant
+
+    @staticmethod
+    def obter_por_id(db: Session, tenant_id: int) -> Tenant | None:
+        return db.query(Tenant).filter(Tenant.id == tenant_id).first()
+
+    @staticmethod
+    def obter_por_slug(db: Session, slug: str) -> Tenant | None:
+        return db.query(Tenant).filter(Tenant.slug == slug).first()
+
+    @staticmethod
+    def listar(db: Session) -> list[Tenant]:
+        return db.query(Tenant).all()
+
+    @staticmethod
+    def get_default(db: Session) -> Tenant:
+        """Return the default tenant, raising if it does not exist."""
+        tenant = db.query(Tenant).filter(Tenant.slug == "default").first()
+        if not tenant:
+            raise RuntimeError("Default tenant not found – run migrations first.")
+        return tenant
+
+
+class ObraRepository:
+    @staticmethod
+    def criar(
+        db: Session,
+        nome: str,
+        codigo: str | None = None,
+        descricao: str | None = None,
+        ativo: bool = True,
+        tenant_id: int | None = None,
+    ) -> Obra:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        obra = Obra(
+            tenant_id=tenant_id,
+            nome=(nome or "").strip(),
+            codigo=(codigo or "").strip() or None,
+            descricao=(descricao or "").strip() or None,
+            ativo=bool(ativo),
+        )
+        db.add(obra)
+        db.commit()
+        db.refresh(obra)
+        return obra
+
+    @staticmethod
+    def obter_por_id(db: Session, obra_id: int, tenant_id: int | None = None) -> Obra | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Obra)
+            .filter(Obra.tenant_id == tenant_id, Obra.id == obra_id)
+            .first()
+        )
+
+    @staticmethod
+    def listar(db: Session, tenant_id: int | None = None) -> list[Obra]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return db.query(Obra).filter(Obra.tenant_id == tenant_id).all()
+
+    @staticmethod
+    def atualizar(db: Session, obra_id: int, tenant_id: int | None = None, **dados) -> Obra | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        obra = (
+            db.query(Obra)
+            .filter(Obra.tenant_id == tenant_id, Obra.id == obra_id)
+            .first()
+        )
+        if not obra:
+            return None
+
+        for chave, valor in dados.items():
+            if hasattr(obra, chave) and valor is not None:
+                setattr(obra, chave, valor)
+
+        db.commit()
+        db.refresh(obra)
+        return obra
+
+    @staticmethod
+    def deletar(db: Session, obra_id: int, tenant_id: int | None = None) -> bool:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        obra = (
+            db.query(Obra)
+            .filter(Obra.tenant_id == tenant_id, Obra.id == obra_id)
+            .first()
+        )
+        if not obra:
+            return False
+        db.delete(obra)
+        db.commit()
+        return True
 
 
 def _is_password_hashed(password: str) -> bool:
@@ -29,6 +141,14 @@ def _prepare_password(password: str) -> str:
         return password
     return generate_password_hash(password)
 
+
+def _resolve_tenant_id(db: Session, tenant_id: int | None) -> int:
+    """Resolve effective tenant_id. Defaults to slug='default' for legacy call sites."""
+    if tenant_id is not None:
+        return tenant_id
+    tenant = TenantRepository.get_default(db)
+    return tenant.id
+
 class UsuarioRepository:
     @staticmethod
     def criar(
@@ -39,8 +159,11 @@ class UsuarioRepository:
         nivel_acesso: NivelAcesso = NivelAcesso.ENCARREGADO,
         telefone: str | None = None,
         telegram_thread_id: str | None = None,
+        tenant_id: int | None = None,
     ) -> Usuario:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         usuario = Usuario(
+            tenant_id=tenant_id,
             nome=nome,
             email=email,
             senha=_prepare_password(senha),
@@ -63,8 +186,11 @@ class UsuarioRepository:
         nivel_acesso: NivelAcesso = NivelAcesso.ENCARREGADO,
         telefone: str | None = None,
         telegram_thread_id: str | None = None,
+        tenant_id: int | None = None,
     ) -> Usuario:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         usuario = Usuario(
+            tenant_id=tenant_id,
             nome=nome,
             email=email,
             senha=_prepare_password(senha),
@@ -79,28 +205,52 @@ class UsuarioRepository:
         return usuario
 
     @staticmethod
-    def obter_por_id(db: Session, usuario_id: int) -> Usuario | None:
-        return db.query(Usuario).filter(Usuario.id == usuario_id).first()
+    def obter_por_id(db: Session, usuario_id: int, tenant_id: int | None = None) -> Usuario | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Usuario)
+            .filter(Usuario.tenant_id == tenant_id, Usuario.id == usuario_id)
+            .first()
+        )
 
     @staticmethod
-    def obter_por_email(db: Session, email: str) -> Usuario | None:
-        return db.query(Usuario).filter(Usuario.email == email).first()
+    def obter_por_email(db: Session, email: str, tenant_id: int | None = None) -> Usuario | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Usuario)
+            .filter(Usuario.tenant_id == tenant_id, Usuario.email == email)
+            .first()
+        )
 
     @staticmethod
-    def obter_por_telefone(db: Session, telefone: str) -> Usuario | None:
-        return db.query(Usuario).filter(Usuario.telefone == telefone).first()
+    def obter_por_telefone(db: Session, telefone: str, tenant_id: int | None = None) -> Usuario | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        # telefone is globally unique but we still scope by tenant to avoid cross-tenant leakage
+        return (
+            db.query(Usuario)
+            .filter(Usuario.tenant_id == tenant_id, Usuario.telefone == telefone)
+            .first()
+        )
 
     @staticmethod
     def obter_por_telegram_chat_id(db: Session, chat_id: str) -> Usuario | None:
+        # telegram_chat_id is globally unique – no tenant scope here intentionally
+        # (one Telegram identity maps to one account across the system)
         return db.query(Usuario).filter(Usuario.telegram_chat_id == chat_id).first()
 
     @staticmethod
-    def listar(db: Session) -> list[Usuario]:
-        return db.query(Usuario).all()
+    def listar(db: Session, tenant_id: int | None = None) -> list[Usuario]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return db.query(Usuario).filter(Usuario.tenant_id == tenant_id).all()
 
     @staticmethod
-    def atualizar(db: Session, usuario_id: int, **dados) -> Usuario | None:
-        usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
+    def atualizar(db: Session, usuario_id: int, tenant_id: int | None = None, **dados) -> Usuario | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        usuario = (
+            db.query(Usuario)
+            .filter(Usuario.tenant_id == tenant_id, Usuario.id == usuario_id)
+            .first()
+        )
         if not usuario:
             return None
 
@@ -125,8 +275,13 @@ class UsuarioRepository:
         return usuario
 
     @staticmethod
-    def deletar(db: Session, usuario_id: int) -> bool:
-        usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
+    def deletar(db: Session, usuario_id: int, tenant_id: int | None = None) -> bool:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        usuario = (
+            db.query(Usuario)
+            .filter(Usuario.tenant_id == tenant_id, Usuario.id == usuario_id)
+            .first()
+        )
         if not usuario:
             return False
         db.delete(usuario)
@@ -135,24 +290,36 @@ class UsuarioRepository:
 
 class FrenteServicoRepository:
     @staticmethod
-    def criar(db: Session, nome: str, encarregado_responsavel: int | None = None, observacao: str | None = None) -> FrenteServico:
-        frente = FrenteServico(nome=nome, encarregado_responsavel=encarregado_responsavel, observacao=observacao)
+    def criar(db: Session, nome: str, encarregado_responsavel: int | None = None, observacao: str | None = None, tenant_id: int | None = None) -> FrenteServico:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        frente = FrenteServico(tenant_id=tenant_id, nome=nome, encarregado_responsavel=encarregado_responsavel, observacao=observacao)
         db.add(frente)
         db.commit()
         db.refresh(frente)
         return frente
 
     @staticmethod
-    def obter_por_id(db: Session, frente_id: int) -> FrenteServico | None:
-        return db.query(FrenteServico).filter(FrenteServico.id == frente_id).first()
+    def obter_por_id(db: Session, frente_id: int, tenant_id: int | None = None) -> FrenteServico | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(FrenteServico)
+            .filter(FrenteServico.tenant_id == tenant_id, FrenteServico.id == frente_id)
+            .first()
+        )
 
     @staticmethod
-    def listar(db: Session) -> list[FrenteServico]:
-        return db.query(FrenteServico).all()
+    def listar(db: Session, tenant_id: int | None = None) -> list[FrenteServico]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return db.query(FrenteServico).filter(FrenteServico.tenant_id == tenant_id).all()
 
     @staticmethod
-    def atualizar(db: Session, frente_id: int, **dados) -> FrenteServico | None:
-        frente = db.query(FrenteServico).filter(FrenteServico.id == frente_id).first()
+    def atualizar(db: Session, frente_id: int, tenant_id: int | None = None, **dados) -> FrenteServico | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        frente = (
+            db.query(FrenteServico)
+            .filter(FrenteServico.tenant_id == tenant_id, FrenteServico.id == frente_id)
+            .first()
+        )
         if not frente:
             return None
         for chave, valor in dados.items():
@@ -163,8 +330,13 @@ class FrenteServicoRepository:
         return frente
 
     @staticmethod
-    def deletar(db: Session, frente_id: int) -> bool:
-        frente = db.query(FrenteServico).filter(FrenteServico.id == frente_id).first()
+    def deletar(db: Session, frente_id: int, tenant_id: int | None = None) -> bool:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        frente = (
+            db.query(FrenteServico)
+            .filter(FrenteServico.tenant_id == tenant_id, FrenteServico.id == frente_id)
+            .first()
+        )
         if not frente:
             return False
         db.delete(frente)
@@ -189,11 +361,14 @@ class RegistroRepository:
     @staticmethod
     def criar(
         db: Session,
+        obra_id: int | None = None,
         frente_servico_id: int | None = None,
         data: date | None = None,
         usuario_registrador_id: int | None = None,
         estaca_inicial: float | None = None,
         estaca_final: float | None = None,
+        estaca: str | None = None,
+        metadata_json: dict | None = None,
         resultado: float | None = None,
         tempo_manha: Clima | None = None,
         tempo_tarde: Clima | None = None,
@@ -202,7 +377,15 @@ class RegistroRepository:
         raw_text: str | None = None,
         source_message_id=None,
         status: RegistroStatus = RegistroStatus.PENDENTE,
+        tenant_id: int | None = None,
     ) -> Registro:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+
+        if obra_id is not None:
+            obra = ObraRepository.obter_por_id(db, int(obra_id), tenant_id=tenant_id)
+            if not obra:
+                raise ValueError("obra_id inválido para este tenant.")
+
         observacao_normalizada = (observacao or "").strip() or None
 
         if resultado is None and estaca_inicial is not None and estaca_final is not None:
@@ -210,6 +393,7 @@ class RegistroRepository:
 
         payload = {
             "data": data,
+            "obra_id": obra_id,
             "frente_servico_id": frente_servico_id,
             "usuario_registrador_id": usuario_registrador_id,
             "estaca_inicial": estaca_inicial,
@@ -226,12 +410,16 @@ class RegistroRepository:
                 )
 
         registro = Registro(
+            tenant_id=tenant_id,
             status=status,
             data=data,
+            obra_id=obra_id,
             frente_servico_id=frente_servico_id,
             usuario_registrador_id=usuario_registrador_id,
             estaca_inicial=estaca_inicial,
             estaca_final=estaca_final,
+            estaca=estaca,
+            metadata_json=metadata_json,
             resultado=resultado,
             tempo_manha=tempo_manha,
             tempo_tarde=tempo_tarde,
@@ -246,28 +434,69 @@ class RegistroRepository:
         return registro
 
     @staticmethod
-    def obter_por_id(db: Session, registro_id: int) -> Registro | None:
-        return db.query(Registro).filter(Registro.id == registro_id).first()
+    def obter_por_id(db: Session, registro_id: int, tenant_id: int | None = None) -> Registro | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.id == registro_id)
+            .first()
+        )
 
     @staticmethod
-    def listar(db: Session) -> list[Registro]:
-        return db.query(Registro).all()
+    def listar(db: Session, tenant_id: int | None = None) -> list[Registro]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return db.query(Registro).filter(Registro.tenant_id == tenant_id).all()
 
     @staticmethod
-    def listar_por_data(db: Session, data: date) -> list[Registro]:
-        return db.query(Registro).filter(Registro.data == data).all()
+    def listar_por_data(db: Session, data: date, tenant_id: int | None = None) -> list[Registro]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.data == data)
+            .all()
+        )
 
     @staticmethod
-    def listar_por_frente(db: Session, frente_servico_id: int) -> list[Registro]:
-        return db.query(Registro).filter(Registro.frente_servico_id == frente_servico_id).all()
+    def listar_por_frente(db: Session, frente_servico_id: int, tenant_id: int | None = None) -> list[Registro]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.frente_servico_id == frente_servico_id)
+            .all()
+        )
 
     @staticmethod
-    def listar_por_usuario(db: Session, usuario_id: int) -> list[Registro]:
-        return db.query(Registro).filter(Registro.usuario_registrador_id == usuario_id).all()
+    def listar_por_obra(db: Session, obra_id: int, tenant_id: int | None = None) -> list[Registro]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.obra_id == obra_id)
+            .all()
+        )
 
     @staticmethod
-    def atualizar(db: Session, registro_id: int, **dados) -> Registro | None:
-        registro = db.query(Registro).filter(Registro.id == registro_id).first()
+    def listar_por_usuario(db: Session, usuario_id: int, tenant_id: int | None = None) -> list[Registro]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.usuario_registrador_id == usuario_id)
+            .all()
+        )
+
+    @staticmethod
+    def atualizar(db: Session, registro_id: int, tenant_id: int | None = None, **dados) -> Registro | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+
+        if "obra_id" in dados and dados.get("obra_id") is not None:
+            obra = ObraRepository.obter_por_id(db, int(dados["obra_id"]), tenant_id=tenant_id)
+            if not obra:
+                raise ValueError("obra_id inválido para este tenant.")
+
+        registro = (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.id == registro_id)
+            .first()
+        )
         if not registro:
             return None
         if "pista" in dados and dados.get("lado_pista") is None:
@@ -304,8 +533,13 @@ class RegistroRepository:
         return registro
 
     @staticmethod
-    def atualizar_status(db: Session, registro_id: int, status: RegistroStatus) -> Registro | None:
-        registro = db.query(Registro).filter(Registro.id == registro_id).first()
+    def atualizar_status(db: Session, registro_id: int, status: RegistroStatus, tenant_id: int | None = None) -> Registro | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        registro = (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.id == registro_id)
+            .first()
+        )
         if not registro:
             return None
 
@@ -332,8 +566,13 @@ class RegistroRepository:
         return registro
 
     @staticmethod
-    def deletar(db: Session, registro_id: int) -> bool:
-        registro = db.query(Registro).filter(Registro.id == registro_id).first()
+    def deletar(db: Session, registro_id: int, tenant_id: int | None = None) -> bool:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        registro = (
+            db.query(Registro)
+            .filter(Registro.tenant_id == tenant_id, Registro.id == registro_id)
+            .first()
+        )
         if not registro:
             return False
         db.delete(registro)
@@ -345,21 +584,32 @@ class RegistroImagemRepository:
     MAX_IMAGENS_POR_REGISTRO = 30
 
     @staticmethod
-    def contar_por_registro(db: Session, registro_id: int) -> int:
-        return db.query(RegistroImagem).filter(RegistroImagem.registro_id == registro_id).count()
-
-    @staticmethod
-    def listar_por_registro(db: Session, registro_id: int) -> list[RegistroImagem]:
+    def contar_por_registro(db: Session, registro_id: int, tenant_id: int | None = None) -> int:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         return (
             db.query(RegistroImagem)
-            .filter(RegistroImagem.registro_id == registro_id)
+            .filter(RegistroImagem.tenant_id == tenant_id, RegistroImagem.registro_id == registro_id)
+            .count()
+        )
+
+    @staticmethod
+    def listar_por_registro(db: Session, registro_id: int, tenant_id: int | None = None) -> list[RegistroImagem]:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(RegistroImagem)
+            .filter(RegistroImagem.tenant_id == tenant_id, RegistroImagem.registro_id == registro_id)
             .order_by(RegistroImagem.created_at.asc())
             .all()
         )
 
     @staticmethod
-    def obter_por_id(db: Session, imagem_id: int) -> RegistroImagem | None:
-        return db.query(RegistroImagem).filter(RegistroImagem.id == imagem_id).first()
+    def obter_por_id(db: Session, imagem_id: int, tenant_id: int | None = None) -> RegistroImagem | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(RegistroImagem)
+            .filter(RegistroImagem.tenant_id == tenant_id, RegistroImagem.id == imagem_id)
+            .first()
+        )
 
     @staticmethod
     def criar(
@@ -371,15 +621,18 @@ class RegistroImagemRepository:
         mime_type: str | None = None,
         file_size: int | None = None,
         origem: str = "api",
+        tenant_id: int | None = None,
     ) -> RegistroImagem:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         if not storage_path and not external_url:
             raise ValueError("Informe storage_path ou external_url para salvar imagem do registro.")
 
-        total = RegistroImagemRepository.contar_por_registro(db, registro_id)
+        total = RegistroImagemRepository.contar_por_registro(db, registro_id, tenant_id=tenant_id)
         if total >= RegistroImagemRepository.MAX_IMAGENS_POR_REGISTRO:
             raise ValueError("Limite de 30 imagens por registro atingido.")
 
         item = RegistroImagem(
+            tenant_id=tenant_id,
             registro_id=registro_id,
             storage_path=storage_path,
             external_url=external_url,
@@ -393,8 +646,13 @@ class RegistroImagemRepository:
         return item
 
     @staticmethod
-    def deletar(db: Session, imagem_id: int) -> bool:
-        item = db.query(RegistroImagem).filter(RegistroImagem.id == imagem_id).first()
+    def deletar(db: Session, imagem_id: int, tenant_id: int | None = None) -> bool:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        item = (
+            db.query(RegistroImagem)
+            .filter(RegistroImagem.tenant_id == tenant_id, RegistroImagem.id == imagem_id)
+            .first()
+        )
         if not item:
             return False
         db.delete(item)
@@ -407,12 +665,15 @@ class MensagemCampoRepository:
     def _obter_por_chave_natural(
         db: Session,
         *,
+        tenant_id: int | None,
         telegram_chat_id: str,
         telegram_message_id: int,
     ) -> MensagemCampo | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         return (
             db.query(MensagemCampo)
             .filter(MensagemCampo.canal == CanalOrigemMensagem.TELEGRAM)
+            .filter(MensagemCampo.tenant_id == tenant_id)
             .filter(MensagemCampo.telegram_chat_id == telegram_chat_id)
             .filter(MensagemCampo.telegram_message_id == telegram_message_id)
             .first()
@@ -421,6 +682,7 @@ class MensagemCampoRepository:
     @staticmethod
     def criar_telegram(
         db: Session,
+        tenant_id: int | None = None,
         *,
         telegram_chat_id: str,
         telegram_message_id: int | None,
@@ -432,9 +694,11 @@ class MensagemCampoRepository:
         tipo_conteudo: ConteudoMensagemTipo,
         usuario_id: int | None = None,
     ) -> MensagemCampo:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         if telegram_message_id is not None:
             existente = MensagemCampoRepository._obter_por_chave_natural(
                 db,
+                tenant_id=tenant_id,
                 telegram_chat_id=telegram_chat_id,
                 telegram_message_id=telegram_message_id,
             )
@@ -446,6 +710,7 @@ class MensagemCampoRepository:
             return existente
 
         item = MensagemCampo(
+            tenant_id=tenant_id,
             canal=CanalOrigemMensagem.TELEGRAM,
             telegram_chat_id=telegram_chat_id,
             telegram_message_id=telegram_message_id,
@@ -466,6 +731,7 @@ class MensagemCampoRepository:
             if telegram_message_id is not None:
                 existente = MensagemCampoRepository._obter_por_chave_natural(
                     db,
+                    tenant_id=tenant_id,
                     telegram_chat_id=telegram_chat_id,
                     telegram_message_id=telegram_message_id,
                 )
@@ -481,6 +747,7 @@ class MensagemCampoRepository:
 
     @staticmethod
     def marcar_processada(db: Session, mensagem_id) -> None:
+        # tenant scope not required here: caller already holds the id from a prior scoped query
         item = db.query(MensagemCampo).filter(MensagemCampo.id == mensagem_id).first()
         if not item:
             return
@@ -509,6 +776,7 @@ class MensagemCampoRepository:
     @staticmethod
     def criar_agent_response(
         db: Session,
+        tenant_id: int | None = None,
         *,
         telegram_chat_id: str,
         telegram_message_id: int,
@@ -516,8 +784,10 @@ class MensagemCampoRepository:
     ) -> MensagemCampo:
         """Persist an agent response message."""
         from backend.db.models import DirecaoMensagem
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         
         item = MensagemCampo(
+            tenant_id=tenant_id,
             canal=CanalOrigemMensagem.TELEGRAM,
             telegram_chat_id=telegram_chat_id,
             telegram_message_id=telegram_message_id,
@@ -547,8 +817,11 @@ class TelegramLinkCodeRepository:
         code: str,
         expires_at: datetime,
         generated_by_user_id: int | None = None,
+        tenant_id: int | None = None,
     ) -> TelegramLinkCode:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
         item = TelegramLinkCode(
+            tenant_id=tenant_id,
             user_id=user_id,
             code=code,
             generated_by_user_id=generated_by_user_id,
@@ -589,9 +862,11 @@ class TelegramLinkCodeRepository:
 
 class Repository:
     usuarios = UsuarioRepository
+    obras = ObraRepository
     frentes_servico = FrenteServicoRepository
     registros = RegistroRepository
     registro_imagens = RegistroImagemRepository
     telegram_link_codes = TelegramLinkCodeRepository
     mensagens_campo = MensagemCampoRepository
+    tenants = TenantRepository
 

@@ -28,6 +28,7 @@ from backend.services.telegram_extractor import (
 )
 from backend.services import telegram_persistence as persistence
 from backend.services.telegram_linker import UserLinker
+from backend.agents.gateway.location_profile import resolve_runtime_location_context
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,7 @@ class MessageProcessor:
                 "source_message_id": raw_source_id,
                 **_conversation_date_payload(),
                 "actor_user_id": usuario.id,
+                "tenant_id": getattr(usuario, "tenant_id", None),
                 "actor_level": (
                     usuario.nivel_acesso.value
                     if hasattr(usuario.nivel_acesso, "value")
@@ -180,6 +182,12 @@ class MessageProcessor:
                 "actor_chat_display_name": display_name,
             }
         }
+
+        runtime_location = resolve_runtime_location_context(
+            tenant_id=getattr(usuario, "tenant_id", None),
+            obra_id_ativa=None,
+        )
+        config["configurable"].update(runtime_location)
 
         typing_stop = self._typing.start(chat_id=chat_id, message_thread_id=thread_hint)
         try:

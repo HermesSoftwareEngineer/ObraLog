@@ -6,7 +6,7 @@ from backend.db.session import SessionLocal
 from .common import assert_permission, to_dict
 
 
-def build_frentes_servico_tools(actor_user_id: int, actor_level: str) -> list:
+def build_frentes_servico_tools(actor_user_id: int, actor_level: str, tenant_id: int | None = None) -> list:
     del actor_user_id
 
     @tool
@@ -14,7 +14,13 @@ def build_frentes_servico_tools(actor_user_id: int, actor_level: str) -> list:
         """Cria frente de serviço. Administrador e gerente."""
         assert_permission(actor_level, "create", "frentes_servico")
         with SessionLocal() as db:
-            frente = Repository.frentes_servico.criar(db, nome, encarregado_responsavel, observacao)
+            frente = Repository.frentes_servico.criar(
+                db,
+                nome,
+                encarregado_responsavel,
+                observacao,
+                tenant_id=tenant_id,
+            )
             return to_dict(frente)
 
     @tool
@@ -22,7 +28,7 @@ def build_frentes_servico_tools(actor_user_id: int, actor_level: str) -> list:
         """Lista frentes de serviço para apoiar decisões e preencher cadastro de registros sem pedir ID ao usuário."""
         assert_permission(actor_level, "read", "frentes_servico")
         with SessionLocal() as db:
-            frentes = Repository.frentes_servico.listar(db)
+            frentes = Repository.frentes_servico.listar(db, tenant_id=tenant_id)
             return [to_dict(item) for item in frentes]
 
     @tool
@@ -33,6 +39,7 @@ def build_frentes_servico_tools(actor_user_id: int, actor_level: str) -> list:
             frente = Repository.frentes_servico.atualizar(
                 db,
                 frente_id,
+                tenant_id=tenant_id,
                 nome=nome,
                 encarregado_responsavel=encarregado_responsavel,
                 observacao=observacao,
@@ -46,7 +53,7 @@ def build_frentes_servico_tools(actor_user_id: int, actor_level: str) -> list:
         """Deleta frente de serviço. Administrador e gerente."""
         assert_permission(actor_level, "delete", "frentes_servico")
         with SessionLocal() as db:
-            ok = Repository.frentes_servico.deletar(db, frente_id)
+            ok = Repository.frentes_servico.deletar(db, frente_id, tenant_id=tenant_id)
             return {"ok": ok}
 
     return [criar_frente_servico, listar_frentes_servico, atualizar_frente_servico, deletar_frente_servico]

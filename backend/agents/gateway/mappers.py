@@ -34,10 +34,22 @@ def parse_optional_uuid(value: str | None, field_name: str) -> UUID | None:
 
 
 def parse_iso_date(value: str, field_name: str) -> date:
+    raw = str(value or "").strip()
+    if not raw:
+        raise GatewayValidationError(f"{field_name} is required.")
+
     try:
-        return date.fromisoformat(value)
+        return date.fromisoformat(raw)
+    except Exception:
+        pass
+
+    try:
+        day, month, year = raw.split("/")
+        return date(year=int(year), month=int(month), day=int(day))
     except Exception as exc:
-        raise GatewayValidationError(f"{field_name} must use YYYY-MM-DD format.") from exc
+        raise GatewayValidationError(
+            f"{field_name} must use YYYY-MM-DD or DD/MM/YYYY format."
+        ) from exc
 
 
 def clamp_limit(limit: int, *, default: int, min_value: int, max_value: int) -> int:
@@ -98,6 +110,7 @@ def has_technical_keys(payload: Any) -> bool:
 def summarize_registro_item(item: dict[str, Any], frente_nome: str | None = None) -> dict[str, Any]:
     return {
         "data": item.get("data"),
+        "obra_id": item.get("obra_id"),
         "frente_servico_nome": frente_nome,
         "estaca_inicial": item.get("estaca_inicial"),
         "estaca_final": item.get("estaca_final"),
@@ -254,6 +267,7 @@ def map_alerta_to_business(alerta: dict[str, Any]) -> dict[str, Any]:
     return {
         "codigo": alerta.get("code") or alerta.get("codigo"),
         "tipo": alerta.get("type") or alerta.get("tipo"),
+        "obra_id": alerta.get("obra_id"),
         "severidade": alerta.get("severity") or alerta.get("severidade"),
         "status": alerta.get("status"),
         "titulo": alerta.get("title") or alerta.get("titulo"),

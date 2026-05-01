@@ -18,6 +18,7 @@ from datetime import datetime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
+from ..gateway.location_profile import build_location_profile
 from ..gateway.rag_service import BusinessRAGService
 
 
@@ -47,6 +48,11 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
     actor_chat_display_name = configurable.get("actor_chat_display_name")
     conversation_date = configurable.get("conversation_date")
     conversation_date_br = configurable.get("conversation_date_br")
+    tenant_id = configurable.get("tenant_id")
+    obra_id_ativa = configurable.get("obra_id_ativa")
+    location_profile = configurable.get("location_profile")
+    location_required_fields = configurable.get("location_required_fields") or []
+    location_labels = configurable.get("location_labels") or {}
 
     if not conversation_date:
         conversation_date = datetime.now().date().isoformat()
@@ -68,7 +74,23 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             f"- Nome exibido no chat: {actor_chat_display_name or 'não informado'}\n"
             f"- Nível de acesso: {actor_level}\n"
             f"- Data atual da conversa (ISO): {conversation_date}\n"
-            f"- Data atual da conversa (BR): {conversation_date_br or 'não informado'}"
+            f"- Data atual da conversa (BR): {conversation_date_br or 'não informado'}\n"
+            f"- Tenant ativo: {tenant_id if tenant_id is not None else 'não informado'}\n"
+            f"- Obra ativa: {obra_id_ativa if obra_id_ativa is not None else 'não informada'}"
+        )
+
+    location_block = ""
+    if location_profile:
+        required_labels = ", ".join(str(item) for item in location_required_fields)
+        labels = ", ".join(
+            f"{key}={value}" for key, value in location_labels.items()
+        ) if isinstance(location_labels, dict) else ""
+        location_block = (
+            "\n\nPerfil de localização ativo:\n"
+            f"- Perfil: {location_profile}\n"
+            f"- Campos obrigatórios de local: {required_labels or 'não informado'}\n"
+            f"- Labels de negócio: {labels or 'não informado'}\n"
+            "- Não misture regras de localização entre tenants."
         )
 
     user_hint_block = ""
@@ -87,10 +109,13 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             "oriente fluxo de solicitação/encaminhamento de criação de frente sem encerrar em bloqueio passivo."
         )
 
-    return SystemMessage(content=build_system_prompt() + role_block + context_block + user_hint_block)
+    return SystemMessage(content=build_system_prompt() + role_block + location_block + context_block + user_hint_block)
 
 
-def _ensure_required_fields(tool_name: str, tool_args: dict) -> str | None:
+def _ensure_required_fields(tool_name: str, tool_args: dict, config: RunnableConfig | None = None) -> str | None:
+    configurable = (config or {}).get("configurable", {})
+    profile = build_location_profile(configurable.get("location_profile")).mode
+
     if tool_name == "criar_registro":
         status = _normalize_text(str(tool_args.get("status") or ""))
         if status != "consolidado":
@@ -98,12 +123,27 @@ def _ensure_required_fields(tool_name: str, tool_args: dict) -> str | None:
 
         required = [
             "data",
-            "estaca_inicial",
-            "estaca_final",
             "tempo_manha",
             "tempo_tarde",
         ]
+        if profile == "km":
+            required.extend(["km_inicial", "km_final"])
+        elif profile == "texto":
+            required.append("local_descritivo")
+        else:
+            required.extend(["estaca_inicial", "estaca_final"])
+
         missing = [field for field in required if tool_args.get(field) in (None, "")]
+
+        localizacao = tool_args.get("localizacao") if isinstance(tool_args.get("localizacao"), dict) else {}
+        if profile in {"estaca", "km"}:
+            if tool_args.get("estaca_inicial") in (None, "") and tool_args.get("km_inicial") in (None, "") and localizacao.get("valor_inicial") in (None, ""):
+                missing.append("valor_inicial")
+            if tool_args.get("estaca_final") in (None, "") and tool_args.get("km_final") in (None, "") and localizacao.get("valor_final") in (None, ""):
+                missing.append("valor_final")
+        if profile == "texto" and tool_args.get("local_descritivo") in (None, "") and localizacao.get("detalhe_texto") in (None, ""):
+            missing.append("local_descritivo")
+
         if not tool_args.get("frente_servico_id") and not tool_args.get("frente_servico_nome"):
             missing.append("frente_servico_nome")
 
@@ -132,7 +172,7 @@ def _ensure_required_fields(tool_name: str, tool_args: dict) -> str | None:
     return None
 
 
-def _normalize_tool_output(tool_name: str, tool_output):
+def _normalize_tool_output(tool_name: str, tool_output, config: RunnableConfig | None = None):
     if tool_name == "listar_registros" and isinstance(tool_output, list):
         if not tool_output:
             return {
@@ -190,7 +230,14 @@ def _normalize_tool_output(tool_name: str, tool_output):
             status = _normalize_text(str(registro.get("status") or ""))
             if status != "consolidado":
                 business_rag = BusinessRAGService()
-                sugestao = business_rag.sugerir_campos_faltantes(tipo_registro="producao_diaria", dados_parciais=registro)
+                configurable = (config or {}).get("configurable", {})
+                sugestao = business_rag.sugerir_campos_faltantes(
+                    tipo_registro="producao_diaria",
+                    dados_parciais=registro,
+                    tenant_id=configurable.get("tenant_id"),
+                    obra_id_ativa=configurable.get("obra_id_ativa"),
+                    location_profile=configurable.get("location_profile"),
+                )
                 payload = dict(tool_output)
                 if sugestao.get("ok"):
                     payload["faltantes"] = sugestao.get("faltantes", [])
@@ -207,11 +254,14 @@ def _normalize_tool_output(tool_name: str, tool_output):
     return tool_output
 
 
-def _resolve_actor_context(config: RunnableConfig | None = None) -> tuple[int | None, str | None]:
+def _resolve_actor_context(config: RunnableConfig | None = None) -> tuple[int | None, str | None, int | None, int | None, str | None]:
     configurable = (config or {}).get("configurable", {})
     actor_user_id = configurable.get("actor_user_id")
     actor_level = configurable.get("actor_level")
-    return actor_user_id, actor_level
+    tenant_id = configurable.get("tenant_id")
+    obra_id_ativa = configurable.get("obra_id_ativa")
+    location_profile = configurable.get("location_profile")
+    return actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile
 
 
 def _is_gateway_enabled() -> bool:
@@ -219,25 +269,64 @@ def _is_gateway_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _get_business_tools(actor_user_id: int, actor_level: str):
+def _get_business_tools(
+    actor_user_id: int,
+    actor_level: str,
+    *,
+    tenant_id: int | None,
+    obra_id_ativa: int | None,
+    location_profile: str | None,
+):
     if _is_gateway_enabled():
         try:
+            return get_gateway_tools(
+                actor_user_id=actor_user_id,
+                actor_level=actor_level,
+                tenant_id=tenant_id,
+                obra_id_ativa=obra_id_ativa,
+                location_profile=location_profile,
+            )
+        except TypeError:
             return get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
         except NameError:
             from ..tools import get_gateway_tools as lazy_get_gateway_tools
 
-            return lazy_get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
+            try:
+                return lazy_get_gateway_tools(
+                    actor_user_id=actor_user_id,
+                    actor_level=actor_level,
+                    tenant_id=tenant_id,
+                    obra_id_ativa=obra_id_ativa,
+                    location_profile=location_profile,
+                )
+            except TypeError:
+                return lazy_get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
 
     try:
+        return get_database_tools(
+            actor_user_id=actor_user_id,
+            actor_level=actor_level,
+            tenant_id=tenant_id,
+            location_profile=location_profile,
+        )
+    except TypeError:
         return get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
     except NameError:
         from ..tools import get_database_tools as lazy_get_database_tools
 
-        return lazy_get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
+        try:
+            return lazy_get_database_tools(
+                actor_user_id=actor_user_id,
+                actor_level=actor_level,
+                tenant_id=tenant_id,
+                location_profile=location_profile,
+            )
+        except TypeError:
+            return lazy_get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
 
 
 def _resolve_tool_map(config: RunnableConfig | None = None):
-    actor_user_id, actor_level = _resolve_actor_context(config)
+    actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile = _resolve_actor_context(config)
     if actor_user_id is None or actor_level is None:
         return {}
 
@@ -246,7 +335,13 @@ def _resolve_tool_map(config: RunnableConfig | None = None):
     thread_id = configurable.get("thread_id")
     telegram_message_thread_id = configurable.get("telegram_message_thread_id")
 
-    tools = _get_business_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
+    tools = _get_business_tools(
+        actor_user_id=int(actor_user_id),
+        actor_level=str(actor_level),
+        tenant_id=int(tenant_id) if tenant_id is not None else None,
+        obra_id_ativa=int(obra_id_ativa) if obra_id_ativa is not None else None,
+        location_profile=str(location_profile) if location_profile is not None else None,
+    )
     tools.extend(
         get_telegram_tools(
             chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
@@ -262,7 +357,7 @@ def _resolve_tool_map(config: RunnableConfig | None = None):
 def agent_step(state: State, config: RunnableConfig | None = None):
     state_messages = list(state["messages"])
     system_message = _build_system_message(state_messages, config)
-    actor_user_id, actor_level = _resolve_actor_context(config)
+    actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile = _resolve_actor_context(config)
 
     if actor_user_id is None or actor_level is None:
         response = llm_main.invoke([system_message] + state_messages)
@@ -272,7 +367,13 @@ def agent_step(state: State, config: RunnableConfig | None = None):
     telegram_chat_id = configurable.get("telegram_chat_id")
     thread_id = configurable.get("thread_id")
     telegram_message_thread_id = configurable.get("telegram_message_thread_id")
-    tools = _get_business_tools(actor_user_id=int(actor_user_id), actor_level=str(actor_level))
+    tools = _get_business_tools(
+        actor_user_id=int(actor_user_id),
+        actor_level=str(actor_level),
+        tenant_id=int(tenant_id) if tenant_id is not None else None,
+        obra_id_ativa=int(obra_id_ativa) if obra_id_ativa is not None else None,
+        location_profile=str(location_profile) if location_profile is not None else None,
+    )
     tools.extend(
         get_telegram_tools(
             chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
@@ -305,7 +406,7 @@ def tools_step(state: State, config: RunnableConfig | None = None):
         if not tool_instance:
             tool_output = {"ok": False, "message": f"Tool inexistente: {tool_name}"}
         else:
-            required_error = _ensure_required_fields(tool_name, tool_args)
+            required_error = _ensure_required_fields(tool_name, tool_args, config)
             if required_error:
                 tool_output = {"ok": False, "message": required_error}
                 tool_messages.append(
@@ -318,7 +419,7 @@ def tools_step(state: State, config: RunnableConfig | None = None):
 
             try:
                 tool_output = tool_instance.invoke(tool_args)
-                tool_output = _normalize_tool_output(tool_name, tool_output)
+                tool_output = _normalize_tool_output(tool_name, tool_output, config)
             except PermissionError:
                 last_human = _normalize_text(_last_human_text(messages))
                 if "engenheiro" in last_human and tool_name in {

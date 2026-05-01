@@ -30,6 +30,31 @@ def init_db():
         Base.metadata.create_all(bind=engine)
 
         with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS obras (
+                        id SERIAL PRIMARY KEY,
+                        nome VARCHAR(200) NOT NULL,
+                        codigo VARCHAR(80),
+                        descricao TEXT,
+                        ativo BOOLEAN NOT NULL DEFAULT true,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+                        CONSTRAINT uq_obras_codigo_tenant UNIQUE (tenant_id, codigo)
+                    )
+                    """
+                )
+            )
+            connection.execute(text("ALTER TABLE registros ADD COLUMN IF NOT EXISTS obra_id INT REFERENCES obras(id) ON DELETE SET NULL"))
+            connection.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS obra_id INT REFERENCES obras(id) ON DELETE SET NULL"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS idx_obras_tenant_id ON obras(tenant_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS idx_registros_obra_id ON registros(obra_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_obra_id ON alerts(obra_id)"))
+            connection.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS location_type VARCHAR(50)"))
+            connection.execute(text("ALTER TABLE tenants ALTER COLUMN location_type SET DEFAULT 'estaca'"))
+            connection.execute(text("UPDATE tenants SET location_type = 'estaca' WHERE location_type IS NULL"))
+            connection.execute(text("ALTER TABLE tenants ALTER COLUMN location_type SET NOT NULL"))
             connection.execute(text("ALTER TABLE registros ALTER COLUMN observacao DROP NOT NULL"))
             connection.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telefone VARCHAR"))
             connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_telefone_unique ON usuarios(telefone) WHERE telefone IS NOT NULL"))

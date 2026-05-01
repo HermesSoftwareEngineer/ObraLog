@@ -6,6 +6,31 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/).
 
 ---
 
+## [2026-05-01] - Gateway do Agente com Tenant + Localizacao Dinamica
+
+### 🔄 Alterado
+- Runtime do agente (grafo) agora recebe contexto configuravel por tenant:
+  - `tenant_id`
+  - `obra_id_ativa`
+  - `location_profile`
+  - `location_labels`
+  - `location_required_fields`
+- `registrar_producao_diaria` no gateway passou a aceitar localizacao estruturada dinamica e manter alias legado (`estaca_inicial`, `estaca_final`).
+- Checklist de `sugerir_campos_faltantes` ficou dinamico por perfil de localizacao (`estaca`, `km`, `texto`).
+- System message do agente passou a incluir perfil de localizacao ativo para orientar perguntas e validacao.
+- Tools internas de banco no agente foram reforcadas para operar com escopo de tenant em leituras e gravacoes.
+
+### 🧪 Testes
+- Novos cenarios de teste para:
+  - perfil `km` e `texto` em `registrar_producao_diaria`
+  - propagacao de tenant no gateway
+  - checklist dinamico por perfil de localizacao no RAG
+
+### 📚 Documentação Atualizada
+- `docs/api-changes/20260501_gateway_tenant_localizacao.md`
+
+---
+
 ## [2026-04-29] - Simplificação do Contrato da API de Alertas
 
 ### 🔄 Alterado

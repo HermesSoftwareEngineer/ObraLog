@@ -10,6 +10,7 @@ from backend.db.repository import MensagemCampoRepository
 class MensagemCampoRepositoryTests(unittest.TestCase):
     def _base_kwargs(self) -> dict:
         return {
+            "tenant_id": 1,
             "telegram_chat_id": "1751541108",
             "telegram_message_id": 456,
             "telegram_update_id": 132303124,

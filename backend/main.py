@@ -15,6 +15,7 @@ try:
     from .api.routes.reports import router as reports_blueprint
     from .api.routes.auth import auth_blueprint
     from .api.routes.chat import router as chat_router
+    from .api.routes.tenant import tenant_blueprint
     from .services.telegram import start_polling, set_webhook
 except ImportError:
     from api.routes.webhook import telegram_blueprint
@@ -24,6 +25,7 @@ except ImportError:
     from api.routes.reports import router as reports_blueprint
     from api.routes.auth import auth_blueprint
     from api.routes.chat import router as chat_router
+    from api.routes.tenant import tenant_blueprint
     from services.telegram import start_polling, set_webhook
 
 
@@ -53,6 +55,7 @@ app.register_blueprint(alerts_router)
 app.register_blueprint(reports_blueprint)
 app.register_blueprint(auth_blueprint)
 app.register_blueprint(chat_router)
+app.register_blueprint(tenant_blueprint)
 
 
 def _should_start_polling_in_dev() -> bool:

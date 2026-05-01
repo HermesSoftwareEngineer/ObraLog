@@ -7,7 +7,7 @@ from backend.db.session import SessionLocal
 from .common import assert_permission, parse_nivel_acesso, to_dict
 
 
-def build_usuarios_tools(actor_user_id: int, actor_level: str) -> list:
+def build_usuarios_tools(actor_user_id: int, actor_level: str, tenant_id: int | None = None) -> list:
     @tool
     def criar_usuario(
         nome: str,
@@ -30,6 +30,7 @@ def build_usuarios_tools(actor_user_id: int, actor_level: str) -> list:
                     telegram_chat_id=telegram_chat_id,
                     nivel_acesso=nivel,
                     telefone=telefone,
+                    tenant_id=tenant_id,
                 )
             else:
                 usuario = Repository.usuarios.criar(
@@ -39,6 +40,7 @@ def build_usuarios_tools(actor_user_id: int, actor_level: str) -> list:
                     senha=senha,
                     nivel_acesso=nivel,
                     telefone=telefone,
+                    tenant_id=tenant_id,
                 )
             return to_dict(usuario)
 
@@ -48,9 +50,9 @@ def build_usuarios_tools(actor_user_id: int, actor_level: str) -> list:
         assert_permission(actor_level, "read", "usuarios")
         with SessionLocal() as db:
             if actor_level == NivelAcesso.ENCARREGADO.value:
-                usuario = Repository.usuarios.obter_por_id(db, actor_user_id)
+                usuario = Repository.usuarios.obter_por_id(db, actor_user_id, tenant_id=tenant_id)
                 return [to_dict(usuario)] if usuario else []
-            usuarios = Repository.usuarios.listar(db)
+            usuarios = Repository.usuarios.listar(db, tenant_id=tenant_id)
             return [to_dict(item) for item in usuarios]
 
     @tool
@@ -75,7 +77,7 @@ def build_usuarios_tools(actor_user_id: int, actor_level: str) -> list:
         if nivel_acesso:
             payload["nivel_acesso"] = parse_nivel_acesso(nivel_acesso)
         with SessionLocal() as db:
-            usuario = Repository.usuarios.atualizar(db, usuario_id, **payload)
+            usuario = Repository.usuarios.atualizar(db, usuario_id, tenant_id=tenant_id, **payload)
             if not usuario:
                 return {"ok": False, "message": "Usuário não encontrado."}
             return {"ok": True, "usuario": to_dict(usuario)}
@@ -85,7 +87,7 @@ def build_usuarios_tools(actor_user_id: int, actor_level: str) -> list:
         """Deleta usuário. Apenas administrador."""
         assert_permission(actor_level, "delete", "usuarios")
         with SessionLocal() as db:
-            ok = Repository.usuarios.deletar(db, usuario_id)
+            ok = Repository.usuarios.deletar(db, usuario_id, tenant_id=tenant_id)
             return {"ok": ok}
 
     return [criar_usuario, listar_usuarios, atualizar_usuario, deletar_usuario]

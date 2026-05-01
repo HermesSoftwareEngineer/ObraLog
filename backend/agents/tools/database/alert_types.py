@@ -7,6 +7,7 @@ from langchain_core.tools import tool
 from sqlalchemy.exc import IntegrityError
 
 from backend.db.models import AlertTypeAlias
+from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 
 from .common import assert_permission, normalize_text, to_dict
@@ -19,22 +20,35 @@ def _parse_canonical_type(value: str | None, field_name: str = "tipo_canonico") 
     return normalized.replace(" ", "_")
 
 
-def _get_alias(db, tipo_id: str | None = None, alias: str | None = None) -> AlertTypeAlias | None:
+def _get_alias(db, tipo_id: str | None = None, alias: str | None = None, tenant_id: int | None = None) -> AlertTypeAlias | None:
     if tipo_id:
-        return db.query(AlertTypeAlias).filter(AlertTypeAlias.id == uuid.UUID(str(tipo_id))).first()
+        query = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == uuid.UUID(str(tipo_id)))
+        if tenant_id is not None:
+            query = query.filter(AlertTypeAlias.tenant_id == tenant_id)
+        return query.first()
     if alias:
         normalized_alias = normalize_text(alias)
-        return db.query(AlertTypeAlias).filter(AlertTypeAlias.normalized_alias == normalized_alias).first()
+        query = db.query(AlertTypeAlias).filter(AlertTypeAlias.normalized_alias == normalized_alias)
+        if tenant_id is not None:
+            query = query.filter(AlertTypeAlias.tenant_id == tenant_id)
+        return query.first()
     raise ValueError("Informe tipo_id ou alias para identificar o tipo de alerta.")
 
 
-def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
+def build_alert_type_tools(actor_user_id: int, actor_level: str, tenant_id: int | None = None) -> list:
+    def _effective_tenant_id(db) -> int:
+        if tenant_id is not None:
+            return int(tenant_id)
+        return int(Repository.tenants.get_default(db).id)
+
     @tool
     def listar_tipos_alerta(ativos_apenas: bool = False) -> dict:
         """Lista tipos de alerta cadastrados para classificar ocorrências em linguagem de negócio."""
         assert_permission(actor_level, "read", "alert_types")
         with SessionLocal() as db:
             query = db.query(AlertTypeAlias)
+            if tenant_id is not None:
+                query = query.filter(AlertTypeAlias.tenant_id == tenant_id)
             if ativos_apenas:
                 query = query.filter(AlertTypeAlias.ativo.is_(True))
             items = query.order_by(AlertTypeAlias.alias.asc()).all()
@@ -50,9 +64,12 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
                 }
                 for item in items
             ]
+            canonical_query = db.query(AlertTypeAlias.canonical_type)
+            if tenant_id is not None:
+                canonical_query = canonical_query.filter(AlertTypeAlias.tenant_id == tenant_id)
             canonical_types = [
                 row[0]
-                for row in db.query(AlertTypeAlias.canonical_type)
+                for row in canonical_query
                 .distinct()
                 .order_by(AlertTypeAlias.canonical_type.asc())
                 .all()
@@ -69,7 +86,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
         """Obtém um tipo de alerta cadastrado por UUID técnico ou alias de negócio."""
         assert_permission(actor_level, "read", "alert_types")
         with SessionLocal() as db:
-            item = _get_alias(db, tipo_id=tipo_id, alias=alias)
+            item = _get_alias(db, tipo_id=tipo_id, alias=alias, tenant_id=tenant_id)
             if not item:
                 return {"ok": False, "message": "Tipo de alerta não encontrado."}
             payload = to_dict(item)
@@ -92,7 +109,9 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
         canonical_type = _parse_canonical_type(tipo_canonico)
 
         with SessionLocal() as db:
+            effective_tenant_id = _effective_tenant_id(db)
             item = AlertTypeAlias(
+                tenant_id=effective_tenant_id,
                 alias=str(alias).strip(),
                 normalized_alias=normalized_alias,
                 canonical_type=canonical_type,
@@ -123,7 +142,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
         """Atualiza alias, tipo canônico, descrição e status de um tipo de alerta cadastrado."""
         assert_permission(actor_level, "update", "alert_types")
         with SessionLocal() as db:
-            item = _get_alias(db, tipo_id=tipo_id, alias=alias)
+            item = _get_alias(db, tipo_id=tipo_id, alias=alias, tenant_id=tenant_id)
             if not item:
                 return {"ok": False, "message": "Tipo de alerta não encontrado."}
 
@@ -160,7 +179,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str) -> list:
         """Remove um alias de tipo de alerta cadastrado."""
         assert_permission(actor_level, "delete", "alert_types")
         with SessionLocal() as db:
-            item = _get_alias(db, tipo_id=tipo_id, alias=alias)
+            item = _get_alias(db, tipo_id=tipo_id, alias=alias, tenant_id=tenant_id)
             if not item:
                 return {"ok": False, "message": "Tipo de alerta não encontrado."}
 

@@ -6,7 +6,16 @@ from datetime import date
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session, selectinload
 
-from backend.db.models import Clima, FrenteServico, Registro, RegistroImagem, Usuario
+from backend.db.models import Clima, FrenteServico, Registro, RegistroImagem, Usuario, Tenant
+
+
+def _resolve_tenant_id(session: Session, tenant_id: int | None) -> int:
+    if tenant_id is not None:
+        return tenant_id
+    default = session.query(Tenant).filter(Tenant.slug == "default").first()
+    if not default:
+        raise RuntimeError("Default tenant not found - run migrations first.")
+    return default.id
 
 
 def get_registros_por_periodo(
@@ -16,17 +25,21 @@ def get_registros_por_periodo(
     frente_servico_id: int | None = None,
     usuario_id: int | None = None,
     apenas_impraticaveis: bool = False,
+    tenant_id: int | None = None,
 ) -> list[Registro]:
     """
     Retorna registros no periodo com joins de frente e usuario.
     Ordenacao: data ASC, frente_servico_id ASC, id ASC.
     """
+    tenant_id = _resolve_tenant_id(session, tenant_id)
+
     query = (
         select(Registro)
         .join(FrenteServico, Registro.frente_servico_id == FrenteServico.id)
         .join(Usuario, Registro.usuario_registrador_id == Usuario.id)
         .options(selectinload(Registro.frente_servico).selectinload(FrenteServico.encarregado))
         .options(selectinload(Registro.usuario_registrador))
+        .where(Registro.tenant_id == tenant_id)
         .where(Registro.data >= data_inicio)
         .where(Registro.data <= data_fim)
         .order_by(Registro.data.asc(), Registro.frente_servico_id.asc(), Registro.id.asc())
@@ -72,6 +85,7 @@ def get_diario_do_dia(
     session: Session,
     data: date,
     frente_servico_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> list[Registro]:
     """Atalho para get_registros_por_periodo com data_inicio == data_fim."""
     return get_registros_por_periodo(
@@ -79,6 +93,7 @@ def get_diario_do_dia(
         data_inicio=data,
         data_fim=data,
         frente_servico_id=frente_servico_id,
+        tenant_id=tenant_id,
     )
 
 

@@ -21,7 +21,12 @@ from .common import (
 )
 
 
-def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
+def build_registros_tools(
+    actor_user_id: int,
+    actor_level: str,
+    tenant_id: int | None = None,
+    location_profile: str | None = None,
+) -> list:
     def _parse_registro_status(value: str | None) -> RegistroStatus | None:
         if value in (None, ""):
             return None
@@ -41,8 +46,13 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
     @tool
     def criar_registro(
         data: str | None = None,
+        obra_id: int | None = None,
         estaca_inicial: float | None = None,
         estaca_final: float | None = None,
+        km_inicial: float | None = None,
+        km_final: float | None = None,
+        local_descritivo: str | None = None,
+        localizacao: dict | None = None,
         tempo_manha: str | None = None,
         tempo_tarde: str | None = None,
         observacao: str | None = None,
@@ -62,9 +72,16 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
         parsed_tempo_manha = parse_clima(tempo_manha, "tempo_manha") if tempo_manha else None
         parsed_tempo_tarde = parse_clima(tempo_tarde, "tempo_tarde") if tempo_tarde else None
 
+        localizacao = localizacao or {}
+        normalized_mode = (location_profile or "estaca").strip().lower()
+        location_type = str(localizacao.get("tipo") or normalized_mode or "estaca").strip().lower()
+        start_value = localizacao.get("valor_inicial", estaca_inicial if estaca_inicial is not None else km_inicial)
+        end_value = localizacao.get("valor_final", estaca_final if estaca_final is not None else km_final)
+        detail_value = localizacao.get("detalhe_texto", local_descritivo)
+
         resultado = None
-        if estaca_inicial is not None and estaca_final is not None:
-            resultado = estaca_final - estaca_inicial
+        if start_value is not None and end_value is not None:
+            resultado = float(end_value) - float(start_value)
 
         parsed_status = _parse_registro_status(status) or RegistroStatus.PENDENTE
 
@@ -82,14 +99,19 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
                     db,
                     frente_servico_id=frente_servico_id,
                     frente_servico_nome=frente_servico_nome,
+                    tenant_id=tenant_id,
                 )
             registro = Repository.registros.criar(
                 db=db,
+                tenant_id=tenant_id,
                 data=parsed_data,
+                obra_id=obra_id,
                 frente_servico_id=resolved_frente_id,
                 usuario_registrador_id=actor_user_id,
-                estaca_inicial=estaca_inicial,
-                estaca_final=estaca_final,
+                estaca_inicial=float(start_value) if start_value is not None else None,
+                estaca_final=float(end_value) if end_value is not None else None,
+                estaca=(str(detail_value).strip() or None) if detail_value is not None else None,
+                metadata_json={"tipo": location_type},
                 resultado=resultado,
                 tempo_manha=parsed_tempo_manha,
                 tempo_tarde=parsed_tempo_tarde,
@@ -109,7 +131,7 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
         """Anexa imagem a um registro por URL externa. Limite: 30 imagens por registro."""
         assert_permission(actor_level, "update", "registros")
         with SessionLocal() as db:
-            registro = Repository.registros.obter_por_id(db, registro_id)
+            registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
             if not registro:
                 return {"ok": False, "message": "Registro não encontrado."}
 
@@ -129,6 +151,7 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
                     registro_id=registro_id,
                     external_url=imagem_url,
                     origem="agent",
+                    tenant_id=tenant_id,
                 )
             except ValueError as exc:
                 return {"ok": False, "message": str(exc)}
@@ -146,6 +169,7 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
     @tool
     def listar_registros(
         data: str | None = None,
+        obra_id: int | None = None,
         frente_servico_id: int | None = None,
         frente_servico_nome: str | None = None,
         usuario_id: int | None = None,
@@ -154,31 +178,39 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
         assert_permission(actor_level, "read", "registros")
         with SessionLocal() as db:
             if actor_level == NivelAcesso.ENCARREGADO.value:
-                registros = Repository.registros.listar_por_usuario(db, actor_user_id)
+                registros = Repository.registros.listar_por_usuario(db, actor_user_id, tenant_id=tenant_id)
             elif data:
-                registros = Repository.registros.listar_por_data(db, date.fromisoformat(data))
+                registros = Repository.registros.listar_por_data(db, date.fromisoformat(data), tenant_id=tenant_id)
             elif frente_servico_id is not None or frente_servico_nome:
                 resolved_frente_id = resolve_frente_servico_id(
                     db,
                     frente_servico_id=frente_servico_id,
                     frente_servico_nome=frente_servico_nome,
+                    tenant_id=tenant_id,
                 )
-                registros = Repository.registros.listar_por_frente(db, resolved_frente_id)
+                registros = Repository.registros.listar_por_frente(db, resolved_frente_id, tenant_id=tenant_id)
+            elif obra_id is not None:
+                registros = Repository.registros.listar_por_obra(db, int(obra_id), tenant_id=tenant_id)
             elif usuario_id:
-                registros = Repository.registros.listar_por_usuario(db, usuario_id)
+                registros = Repository.registros.listar_por_usuario(db, usuario_id, tenant_id=tenant_id)
             else:
-                registros = Repository.registros.listar(db)
+                registros = Repository.registros.listar(db, tenant_id=tenant_id)
             return [registro_to_dict_with_images(db, item) for item in registros]
 
     @tool
     def atualizar_registro(
         registro_id: int,
         data: str | None = None,
+        obra_id: int | None = None,
         frente_servico_id: int | None = None,
         frente_servico_nome: str | None = None,
         usuario_registrador_id: int | None = None,
         estaca_inicial: float | None = None,
         estaca_final: float | None = None,
+        km_inicial: float | None = None,
+        km_final: float | None = None,
+        local_descritivo: str | None = None,
+        localizacao: dict | None = None,
         resultado: float | None = None,
         tempo_manha: str | None = None,
         tempo_tarde: str | None = None,
@@ -192,10 +224,9 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
         """Atualiza registro. Pode resolver frente por nome quando o usuário não souber o ID."""
         assert_permission(actor_level, "update", "registros")
         payload = {
+            "obra_id": obra_id,
             "frente_servico_id": frente_servico_id,
             "usuario_registrador_id": usuario_registrador_id,
-            "estaca_inicial": estaca_inicial,
-            "estaca_final": estaca_final,
             "resultado": resultado,
             "tempo_manha": parse_clima(tempo_manha, "tempo_manha"),
             "tempo_tarde": parse_clima(tempo_tarde, "tempo_tarde"),
@@ -204,6 +235,17 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
             "raw_text": raw_text,
             "status": _parse_registro_status(status),
         }
+
+        localizacao = localizacao or {}
+        normalized_mode = (location_profile or "estaca").strip().lower()
+        location_type = str(localizacao.get("tipo") or normalized_mode or "estaca").strip().lower()
+        start_value = localizacao.get("valor_inicial", estaca_inicial if estaca_inicial is not None else km_inicial)
+        end_value = localizacao.get("valor_final", estaca_final if estaca_final is not None else km_final)
+        detail_value = localizacao.get("detalhe_texto", local_descritivo)
+        payload["estaca_inicial"] = float(start_value) if start_value is not None else None
+        payload["estaca_final"] = float(end_value) if end_value is not None else None
+        payload["estaca"] = (str(detail_value).strip() or None) if detail_value is not None else None
+        payload["metadata_json"] = {"tipo": location_type}
         if data:
             payload["data"] = date.fromisoformat(data)
 
@@ -225,14 +267,15 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
                     db,
                     frente_servico_id=frente_servico_id,
                     frente_servico_nome=frente_servico_nome,
+                    tenant_id=tenant_id,
                 )
 
-            registro = Repository.registros.obter_por_id(db, registro_id)
+            registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
             if not registro:
                 return {"ok": False, "message": "Registro não encontrado."}
             if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
                 raise PermissionError("Encarregado só pode atualizar seus próprios registros.")
-            updated = Repository.registros.atualizar(db, registro_id, **payload)
+            updated = Repository.registros.atualizar(db, registro_id, tenant_id=tenant_id, **payload)
             return {"ok": True, "registro": registro_to_dict_with_images(db, updated)}
 
     @tool
@@ -244,13 +287,13 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
             raise ValueError("status invalido. Use: pendente, consolidado, revisado, ativo, descartado.")
 
         with SessionLocal() as db:
-            registro = Repository.registros.obter_por_id(db, registro_id)
+            registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
             if not registro:
                 return {"ok": False, "message": "Registro não encontrado."}
             if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
                 raise PermissionError("Encarregado só pode atualizar seus próprios registros.")
 
-            updated = Repository.registros.atualizar_status(db, registro_id, parsed_status)
+            updated = Repository.registros.atualizar_status(db, registro_id, parsed_status, tenant_id=tenant_id)
             return {"ok": True, "registro": registro_to_dict_with_images(db, updated)}
 
     @tool
@@ -258,12 +301,12 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
         """Deleta registro do diário."""
         assert_permission(actor_level, "delete", "registros")
         with SessionLocal() as db:
-            registro = Repository.registros.obter_por_id(db, registro_id)
+            registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
             if not registro:
                 return {"ok": False, "message": "Registro não encontrado."}
             if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
                 raise PermissionError("Encarregado só pode deletar seus próprios registros.")
-            ok = Repository.registros.deletar(db, registro_id)
+            ok = Repository.registros.deletar(db, registro_id, tenant_id=tenant_id)
             return {"ok": ok}
 
     @tool
@@ -272,7 +315,7 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
         assert_permission(actor_level, "read", "registros")
         data_alvo = date.fromisoformat(data)
         with SessionLocal() as db:
-            registros = get_diario_do_dia(db, data=data_alvo, frente_servico_id=frente_servico_id)
+            registros = get_diario_do_dia(db, data=data_alvo, frente_servico_id=frente_servico_id, tenant_id=tenant_id)
             if actor_level == NivelAcesso.ENCARREGADO.value:
                 registros = [r for r in registros if r.usuario_registrador_id == actor_user_id]
 
@@ -307,6 +350,7 @@ def build_registros_tools(actor_user_id: int, actor_level: str) -> list:
                 frente_servico_id=frente_servico_id,
                 usuario_id=effective_usuario,
                 apenas_impraticaveis=apenas_impraticaveis,
+                tenant_id=tenant_id,
             )
 
         grouped = agrupar_por_data(registros)

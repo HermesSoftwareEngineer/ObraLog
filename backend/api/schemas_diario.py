@@ -19,14 +19,23 @@ class ImagemOut(BaseModel):
     origem: str
 
 
+class LocalizacaoSchema(BaseModel):
+    tipo: str  # 'TEXT', 'ESTACA', 'KM'
+    detalhe_texto: str | None = None
+    valor_inicial: float | None = None
+    valor_final: float | None = None
+
+
 class RegistroOut(BaseModel):
     id: int
     data: date
+
     frente_servico_id: int
     usuario_registrador_id: int
-    estaca_inicial: float
-    estaca_final: float
-    resultado: float
+    estaca_inicial: float | None = None
+    estaca_final: float | None = None
+    localizacao: LocalizacaoSchema | None = None
+    resultado: float | None = None
     tempo_manha: str
     tempo_tarde: str
     pista: str | None = None
@@ -35,6 +44,21 @@ class RegistroOut(BaseModel):
     created_at: datetime | None = None
     registrador_nome: str
     imagens: list[ImagemOut] = []
+
+
+class RegistroCreate(BaseModel):
+    data: date
+    frente_servico_id: int
+    usuario_registrador_id: int
+    estaca_inicial: float | None = None
+    estaca_final: float | None = None
+    localizacao: LocalizacaoSchema | None = None
+    resultado: float | None = None
+    tempo_manha: str | None = None
+    tempo_tarde: str | None = None
+    pista: str | None = None
+    lado_pista: str | None = None
+    observacao: str | None = None
 
 
 class DiarioDoDiaOut(BaseModel):
@@ -68,6 +92,7 @@ __all__ = [
     "FrenteServicoSummary",
     "ImagemOut",
     "RegistroOut",
+    "RegistroCreate",
     "DiarioDoDiaOut",
     "DiarioRelatorioOut",
     "FiltrosDiario",

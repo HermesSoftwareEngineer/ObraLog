@@ -205,10 +205,13 @@ def default_alert_description(
     return ". ".join(parts)
 
 
-def generate_alert_code(db) -> str:
+def generate_alert_code(db, tenant_id: int | None = None) -> str:
     year = datetime.utcnow().year
     prefix = f"ALT-{year}-"
-    count = db.query(func.count(Alert.id)).filter(Alert.code.like(f"{prefix}%")).scalar() or 0
+    query = db.query(func.count(Alert.id)).filter(Alert.code.like(f"{prefix}%"))
+    if tenant_id is not None:
+        query = query.filter(Alert.tenant_id == tenant_id)
+    count = query.scalar() or 0
     return f"{prefix}{count + 1:04d}"
 
 
@@ -259,15 +262,22 @@ def resolve_frente_servico_id(
     db,
     frente_servico_id: int | None = None,
     frente_servico_nome: str | None = None,
+    tenant_id: int | None = None,
     auto_select_single: bool = False,
 ) -> int:
     if frente_servico_id is not None:
-        frente = Repository.frentes_servico.obter_por_id(db, frente_servico_id)
+        try:
+            frente = Repository.frentes_servico.obter_por_id(db, frente_servico_id, tenant_id=tenant_id)
+        except TypeError:
+            frente = Repository.frentes_servico.obter_por_id(db, frente_servico_id)
         if not frente:
             raise ValueError(f"Frente de serviço com ID {frente_servico_id} não encontrada.")
         return frente_servico_id
 
-    frentes = Repository.frentes_servico.listar(db)
+    try:
+        frentes = Repository.frentes_servico.listar(db, tenant_id=tenant_id)
+    except TypeError:
+        frentes = Repository.frentes_servico.listar(db)
     if not frentes:
         raise ValueError("Nenhuma frente de serviço cadastrada no momento.")
 

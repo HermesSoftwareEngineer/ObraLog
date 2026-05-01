@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from flask import Blueprint, jsonify, make_response, request
+from flask import Blueprint, jsonify, make_response, request, g
 
 from backend.api.routes.auth import require_auth
 from backend.api.schemas_diario import (
@@ -108,6 +108,13 @@ def _registro_to_schema(registro) -> RegistroOut:
 
     registrador_nome = registro.usuario_registrador.nome if getattr(registro, "usuario_registrador", None) else ""
 
+    localizacao = {"tipo": "ESTACA"}
+    if getattr(registro, "metadata_json", None) and isinstance(registro.metadata_json, dict):
+        localizacao["tipo"] = registro.metadata_json.get("tipo", "ESTACA")
+    localizacao["detalhe_texto"] = getattr(registro, "estaca", None)
+    localizacao["valor_inicial"] = _to_float(registro.estaca_inicial) if registro.estaca_inicial is not None else None
+    localizacao["valor_final"] = _to_float(registro.estaca_final) if registro.estaca_final is not None else None
+
     return RegistroOut(
         id=registro.id,
         data=registro.data,
@@ -115,6 +122,7 @@ def _registro_to_schema(registro) -> RegistroOut:
         usuario_registrador_id=registro.usuario_registrador_id,
         estaca_inicial=_to_float(registro.estaca_inicial),
         estaca_final=_to_float(registro.estaca_final),
+        localizacao=localizacao,
         resultado=_to_float(registro.resultado),
         tempo_manha=tempo_manha,
         tempo_tarde=tempo_tarde,
@@ -158,7 +166,12 @@ def obter_diario_do_dia():
         return _json_error(str(exc), 422)
 
     with SessionLocal() as db:
-        registros = get_diario_do_dia(db, data=data_alvo, frente_servico_id=frente_servico_id)
+        registros = get_diario_do_dia(
+            db, 
+            data=data_alvo, 
+            frente_servico_id=frente_servico_id,
+            tenant_id=getattr(g, "tenant_id", None)
+        )
 
     if not registros:
         return _json_error("Não há registros para os filtros informados.", 404)
@@ -195,6 +208,7 @@ def obter_diario_periodo():
             data_fim=data_fim,
             frente_servico_id=frente_servico_id,
             usuario_id=usuario_id,
+            tenant_id=getattr(g, "tenant_id", None),
             apenas_impraticaveis=apenas_impraticaveis,
         )
 

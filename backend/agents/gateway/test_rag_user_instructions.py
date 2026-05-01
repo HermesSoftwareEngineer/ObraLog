@@ -74,6 +74,28 @@ class BusinessRAGUserInstructionsTests(unittest.TestCase):
             Repository.frentes_servico.obter_por_id = original_frentes_obter
             Repository.usuarios.obter_por_id = original_usuarios_obter
 
+    def test_sugerir_campos_faltantes_usa_perfil_localizacao_km(self):
+        service = BusinessRAGService()
+        response = service.sugerir_campos_faltantes(
+            "producao_diaria",
+            {
+                "data": "2026-04-14",
+                "frente_servico": "Frente X",
+                "tempo_manha": "limpo",
+                "tempo_tarde": "limpo",
+            },
+            tenant_id=99,
+            obra_id_ativa=123,
+            location_profile="km",
+        )
+
+        self.assertTrue(response.get("ok"))
+        self.assertEqual(response.get("perfil_localizacao"), "km")
+        self.assertIn("km_inicial", response.get("obrigatorios", []))
+        self.assertIn("km_final", response.get("obrigatorios", []))
+        self.assertIn("km_inicial", response.get("faltantes", []))
+        self.assertIn("km_final", response.get("faltantes", []))
+
 
 if __name__ == "__main__":
     unittest.main()

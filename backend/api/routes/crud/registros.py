@@ -2,11 +2,12 @@ from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
-from flask import request, send_from_directory
+from flask import request, send_from_directory, g
 from werkzeug.utils import secure_filename
 
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
+from backend.api.routes.auth import require_auth
 
 from .base import (
     ALLOWED_IMAGE_MIME_TYPES,
@@ -26,6 +27,12 @@ from .base import (
 
 def _parse_registro_payload(data: dict):
     parsed = {}
+
+    if data.get("obra_id") not in (None, ""):
+        try:
+            parsed["obra_id"] = int(data["obra_id"])
+        except (ValueError, TypeError):
+            raise ValueError("obra_id deve ser um numero inteiro valido.") from None
 
     if data.get("status") is not None:
         parsed["status"] = _parse_registro_status(str(data.get("status")), "status")
@@ -59,6 +66,16 @@ def _parse_registro_payload(data: dict):
             parsed["estaca_final"] = float(data.get("estaca_final"))
         except (ValueError, TypeError):
             raise ValueError("estaca_final deve ser um numero valido.")
+
+    if data.get("localizacao") is not None:
+        loc = data["localizacao"]
+        if loc.get("detalhe_texto"):
+            parsed["estaca"] = str(loc["detalhe_texto"])
+        if loc.get("valor_inicial") is not None:
+            parsed["estaca_inicial"] = float(loc["valor_inicial"])
+        if loc.get("valor_final") is not None:
+            parsed["estaca_final"] = float(loc["valor_final"])
+        parsed["metadata_json"] = {"tipo": loc.get("tipo")}
 
     if data.get("resultado") not in (None, ""):
         try:
@@ -105,30 +122,37 @@ def _parse_registro_payload(data: dict):
 @api_blueprint.route("/registros", methods=["GET"])
 def listar_registros():
     data_filter = request.args.get("data")
+    obra_filter = request.args.get("obra_id")
     frente_filter = request.args.get("frente_servico_id")
     usuario_filter = request.args.get("usuario_id")
+    tenant_id = getattr(g, "tenant_id", None)
 
     with SessionLocal() as db:
         if data_filter:
             try:
-                registros = Repository.registros.listar_por_data(db, date.fromisoformat(data_filter))
+                registros = Repository.registros.listar_por_data(db, date.fromisoformat(data_filter), tenant_id=tenant_id)
             except Exception:
                 return _json_error("Parametro data invalido. Use YYYY-MM-DD.")
+        elif obra_filter:
+            registros = Repository.registros.listar_por_obra(db, int(obra_filter), tenant_id=tenant_id)
         elif frente_filter:
-            registros = Repository.registros.listar_por_frente(db, int(frente_filter))
+            registros = Repository.registros.listar_por_frente(db, int(frente_filter), tenant_id=tenant_id)
         elif usuario_filter:
-            registros = Repository.registros.listar_por_usuario(db, int(usuario_filter))
+            registros = Repository.registros.listar_por_usuario(db, int(usuario_filter), tenant_id=tenant_id)
         else:
-            registros = Repository.registros.listar(db)
+            registros = Repository.registros.listar(db, tenant_id=tenant_id)
 
         return [_to_dict(item) for item in registros]
 
 
 @api_blueprint.route("/registros", methods=["POST"])
+@require_auth
 def criar_registro():
     data = request.get_json(silent=True) or {}
+    tenant_id = getattr(g, "tenant_id", None)
     try:
         parsed = _parse_registro_payload(data)
+        parsed["tenant_id"] = tenant_id
     except ValueError as exc:
         return _json_error(str(exc))
 
@@ -141,27 +165,56 @@ def criar_registro():
 
 
 @api_blueprint.route("/registros/<int:registro_id>", methods=["GET"])
+@require_auth
 def obter_registro(registro_id: int):
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        registro = Repository.registros.obter_por_id(db, registro_id)
+        registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
         if not registro:
             return _json_error("Registro nao encontrado.", 404)
         return _to_dict(registro)
 
 
 @api_blueprint.route("/registros/<int:registro_id>", methods=["PUT", "PATCH"])
+@require_auth
 def atualizar_registro(registro_id: int):
+    tenant_id = getattr(g, "tenant_id", None)
     data = request.get_json(silent=True) or {}
+
+    obra_id = data.get("obra_id")
+    if obra_id not in (None, ""):
+        try:
+            obra_id = int(obra_id)
+        except (ValueError, TypeError):
+            return _json_error("obra_id deve ser um numero inteiro valido.")
+
     payload = {
+        "obra_id": obra_id,
         "frente_servico_id": data.get("frente_servico_id"),
         "usuario_registrador_id": data.get("usuario_registrador_id"),
-        "estaca_inicial": data.get("estaca_inicial"),
-        "estaca_final": data.get("estaca_final"),
-        "resultado": data.get("resultado"),
         "observacao": data.get("observacao"),
         "raw_text": data.get("raw_text"),
         "source_message_id": data.get("source_message_id"),
     }
+
+    if data.get("localizacao") is not None:
+        loc = data["localizacao"]
+        if "detalhe_texto" in loc:
+            payload["estaca"] = str(loc["detalhe_texto"]) if loc["detalhe_texto"] else None
+        if "valor_inicial" in loc:
+            payload["estaca_inicial"] = float(loc["valor_inicial"]) if loc["valor_inicial"] is not None else None
+        if "valor_final" in loc:
+            payload["estaca_final"] = float(loc["valor_final"]) if loc["valor_final"] is not None else None
+        if "tipo" in loc:
+            payload["metadata_json"] = {"tipo": loc["tipo"]}
+    else:
+        if "estaca_inicial" in data:
+            payload["estaca_inicial"] = data.get("estaca_inicial")
+        if "estaca_final" in data:
+            payload["estaca_final"] = data.get("estaca_final")
+            
+    if "resultado" in data:
+        payload["resultado"] = data.get("resultado")
 
     if data.get("tempo_manha"):
         try:
@@ -199,7 +252,7 @@ def atualizar_registro(registro_id: int):
 
     with SessionLocal() as db:
         try:
-            registro = Repository.registros.atualizar(db, registro_id, **payload)
+            registro = Repository.registros.atualizar(db, registro_id, tenant_id=tenant_id, **payload)
         except ValueError as exc:
             return _json_error(str(exc), 422)
         if not registro:

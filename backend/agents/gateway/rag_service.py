@@ -5,6 +5,7 @@ import re
 import unicodedata
 
 from backend.agents.instructions_store import read_agent_instructions
+from backend.agents.gateway.location_profile import build_location_profile
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 
@@ -51,8 +52,15 @@ class BusinessRAGService:
             "encontrado": bool(selected),
         }
 
-    def sugerir_campos_faltantes(self, tipo_registro: str, dados_parciais: dict) -> dict:
-        checklist = self._checklist_by_type(tipo_registro)
+    def sugerir_campos_faltantes(
+        self,
+        tipo_registro: str,
+        dados_parciais: dict,
+        tenant_id: int | None = None,
+        obra_id_ativa: int | None = None,
+        location_profile: str | None = None,
+    ) -> dict:
+        checklist = self._checklist_by_type(tipo_registro, location_profile=location_profile)
         if not checklist:
             return {
                 "ok": False,
@@ -60,10 +68,15 @@ class BusinessRAGService:
             }
 
         missing = [field for field in checklist if self._is_missing(self._value_for_field(field, dados_parciais))]
-        validation_issues = self._validate_references(tipo_registro, dados_parciais)
+        validation_issues = self._validate_references(tipo_registro, dados_parciais, tenant_id=tenant_id)
+        profile = build_location_profile(location_profile)
         return {
             "ok": True,
             "tipo_registro": tipo_registro,
+            "tenant_id": tenant_id,
+            "obra_id_ativa": obra_id_ativa,
+            "perfil_localizacao": profile.mode,
+            "labels_localizacao": profile.labels,
             "obrigatorios": checklist,
             "faltantes": missing,
             "completo": len(missing) == 0,
@@ -99,16 +112,16 @@ class BusinessRAGService:
         parts = re.findall(r"[a-z0-9_]{3,}", normalized.lower())
         return set(parts)
 
-    def _checklist_by_type(self, tipo_registro: str) -> list[str]:
+    def _checklist_by_type(self, tipo_registro: str, location_profile: str | None = None) -> list[str]:
+        profile = build_location_profile(location_profile)
+        location_required = profile.required_fields
         mapping = {
             "producao_diaria": [
                 "data",
                 "frente_servico",
-                "estaca_inicial",
-                "estaca_final",
                 "tempo_manha",
                 "tempo_tarde",
-            ],
+            ] + location_required,
             "alerta_operacional": [
                 "tipo_alerta",
                 "descricao",
@@ -118,17 +131,17 @@ class BusinessRAGService:
         }
         return mapping.get((tipo_registro or "").strip().lower(), [])
 
-    def _validate_references(self, tipo_registro: str, dados_parciais: dict) -> list[dict]:
+    def _validate_references(self, tipo_registro: str, dados_parciais: dict, tenant_id: int | None = None) -> list[dict]:
         normalized_type = (tipo_registro or "").strip().lower()
         issues: list[dict] = []
 
         if normalized_type == "producao_diaria":
-            issues.extend(self._validate_frente_servico_reference(dados_parciais))
-            issues.extend(self._validate_usuario_registrador_reference(dados_parciais))
+            issues.extend(self._validate_frente_servico_reference(dados_parciais, tenant_id=tenant_id))
+            issues.extend(self._validate_usuario_registrador_reference(dados_parciais, tenant_id=tenant_id))
 
         return issues
 
-    def _validate_frente_servico_reference(self, dados_parciais: dict) -> list[dict]:
+    def _validate_frente_servico_reference(self, dados_parciais: dict, tenant_id: int | None = None) -> list[dict]:
         frente_id = dados_parciais.get("frente_servico_id")
         frente_nome = dados_parciais.get("frente_servico") or dados_parciais.get("frente_servico_nome")
 
@@ -149,7 +162,10 @@ class BusinessRAGService:
                         }
                     ]
 
-                frente = Repository.frentes_servico.obter_por_id(db, parsed_id)
+                try:
+                    frente = Repository.frentes_servico.obter_por_id(db, parsed_id, tenant_id=tenant_id)
+                except TypeError:
+                    frente = Repository.frentes_servico.obter_por_id(db, parsed_id)
                 if frente:
                     return []
                 return [
@@ -168,7 +184,10 @@ class BusinessRAGService:
 
             if isinstance(frente_nome, str) and frente_nome.strip():
                 normalized_name = _normalize_text(frente_nome)
-                frentes = Repository.frentes_servico.listar(db)
+                try:
+                    frentes = Repository.frentes_servico.listar(db, tenant_id=tenant_id)
+                except TypeError:
+                    frentes = Repository.frentes_servico.listar(db)
                 exact = [item for item in frentes if _normalize_text(str(item.nome or "")) == normalized_name]
                 partial = [item for item in frentes if normalized_name in _normalize_text(str(item.nome or ""))]
                 candidates = exact or partial
@@ -205,7 +224,7 @@ class BusinessRAGService:
 
         return []
 
-    def _validate_usuario_registrador_reference(self, dados_parciais: dict) -> list[dict]:
+    def _validate_usuario_registrador_reference(self, dados_parciais: dict, tenant_id: int | None = None) -> list[dict]:
         usuario_id = dados_parciais.get("usuario_registrador_id")
         if self._is_missing(usuario_id):
             return []
@@ -223,7 +242,10 @@ class BusinessRAGService:
             ]
 
         with SessionLocal() as db:
-            usuario = Repository.usuarios.obter_por_id(db, parsed_id)
+            try:
+                usuario = Repository.usuarios.obter_por_id(db, parsed_id, tenant_id=tenant_id)
+            except TypeError:
+                usuario = Repository.usuarios.obter_por_id(db, parsed_id)
             if usuario:
                 return []
 
@@ -254,6 +276,33 @@ class BusinessRAGService:
                 return dados_parciais.get("frente_servico_id")
             if not self._is_missing(dados_parciais.get("frente_servico_nome")):
                 return dados_parciais.get("frente_servico_nome")
+            return None
+
+        if field_name == "km_inicial":
+            if not self._is_missing(dados_parciais.get("km_inicial")):
+                return dados_parciais.get("km_inicial")
+            if not self._is_missing(dados_parciais.get("estaca_inicial")):
+                return dados_parciais.get("estaca_inicial")
+            if isinstance(dados_parciais.get("localizacao"), dict):
+                return dados_parciais.get("localizacao", {}).get("valor_inicial")
+            return None
+
+        if field_name == "km_final":
+            if not self._is_missing(dados_parciais.get("km_final")):
+                return dados_parciais.get("km_final")
+            if not self._is_missing(dados_parciais.get("estaca_final")):
+                return dados_parciais.get("estaca_final")
+            if isinstance(dados_parciais.get("localizacao"), dict):
+                return dados_parciais.get("localizacao", {}).get("valor_final")
+            return None
+
+        if field_name == "local_descritivo":
+            if not self._is_missing(dados_parciais.get("local_descritivo")):
+                return dados_parciais.get("local_descritivo")
+            if not self._is_missing(dados_parciais.get("estaca")):
+                return dados_parciais.get("estaca")
+            if isinstance(dados_parciais.get("localizacao"), dict):
+                return dados_parciais.get("localizacao", {}).get("detalhe_texto")
             return None
 
         return dados_parciais.get(field_name)

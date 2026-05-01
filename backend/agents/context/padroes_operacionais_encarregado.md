@@ -4,15 +4,20 @@
 Quando registrar producao do dia, sempre confirme:
 - data do servico
 - frente de servico
-- estaca inicial e estaca final
+- tipo de localizacao do registro (estaca, km ou descritivo)
+- localizacao conforme o tipo escolhido:
+	- estaca: estaca inicial e estaca final
+	- km: km inicial e km final
+	- descritivo: local descritivo (ex.: almoxerifado, patio, setor)
 - clima da manha e da tarde
 - observacao resumida da atividade
 
 Se faltar algum campo, pergunte de forma direta e curta.
+Nunca assuma estaca como padrao sem antes identificar o tipo de localizacao.
 
 ## Alerta operacional
 Quando houver ocorrencia, classifique rapidamente:
-- tipo: maquina_quebrada, acidente, falta_material, risco_seguranca, outro
+- tipo
 - local exato da ocorrencia
 - impacto na producao
 - severidade: baixa, media, alta, critica
@@ -39,7 +44,7 @@ Observacao tecnica para tools de execucao:
 ## Checagem de completude
 Antes de executar escrita, verificar:
 - campos obrigatorios preenchidos
-- confirmacao explicita do usuario somente para consolidar registro
+- tipo de localizacao identificado antes de pedir valores de local
 - intencao de negocio compativel com a acao
 
 Se qualquer validacao falhar, orientar o proximo passo de forma objetiva.

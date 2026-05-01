@@ -2,7 +2,7 @@ from datetime import datetime, date, time
 import uuid
 from enum import Enum
 
-from sqlalchemy import Boolean, Column, Date, DateTime, DECIMAL, Enum as SQLEnum, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func, BigInteger
+from sqlalchemy import Boolean, Column, Date, DateTime, DECIMAL, Enum as SQLEnum, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func, BigInteger, JSON
 from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -89,12 +89,55 @@ def _enum_values(enum_cls):
 # MODELS
 # =====================
 
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    nome         = Column(String(200), nullable=False)
+    slug         = Column(String(100), nullable=False, unique=True, index=True)
+    tipo_negocio = Column(String(100), nullable=True)
+    location_type = Column(String(50), nullable=False, server_default="estaca")
+    ativo        = Column(Boolean, nullable=False, default=True)
+    created_at   = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    usuarios            = relationship("Usuario",          back_populates="tenant")
+    obras               = relationship("Obra",             back_populates="tenant")
+    frentes_servico     = relationship("FrenteServico",    back_populates="tenant")
+    registros           = relationship("Registro",         back_populates="tenant")
+    mensagens_campo     = relationship("MensagemCampo",    back_populates="tenant")
+    alerts              = relationship("Alert",            back_populates="tenant")
+    alert_type_aliases  = relationship("AlertTypeAlias",   back_populates="tenant")
+    telegram_link_codes = relationship("TelegramLinkCode", back_populates="tenant", foreign_keys="TelegramLinkCode.tenant_id")
+
+
+class Obra(Base):
+    __tablename__ = "obras"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "codigo", name="uq_obras_codigo_tenant"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String(200), nullable=False)
+    codigo = Column(String(80), nullable=True, index=True)
+    descricao = Column(Text, nullable=True)
+    ativo = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
+
+    tenant = relationship("Tenant", back_populates="obras")
+    registros = relationship("Registro", back_populates="obra")
+    alerts = relationship("Alert", back_populates="obra")
+
+
 class Usuario(Base):
     __tablename__ = "usuarios"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_usuarios_email_tenant"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String, nullable=False)
-    email = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, nullable=False, index=True)
     senha = Column(String, nullable=False)
     telefone = Column(String, unique=True, nullable=True, index=True)
     telegram_chat_id = Column(String, unique=True, nullable=True, index=True)
@@ -108,7 +151,9 @@ class Usuario(Base):
         default=NivelAcesso.ENCARREGADO,
     )
     created_at = Column(DateTime, default=datetime.utcnow)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
+    tenant = relationship("Tenant", back_populates="usuarios")
     frentes_servico = relationship("FrenteServico", back_populates="encarregado")
     registros = relationship("Registro", back_populates="usuario_registrador")
     telegram_link_codes = relationship(
@@ -147,7 +192,9 @@ class FrenteServico(Base):
     nome = Column(String, nullable=False)
     encarregado_responsavel = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
     observacao = Column(String, nullable=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
+    tenant = relationship("Tenant", back_populates="frentes_servico")
     encarregado = relationship("Usuario", back_populates="frentes_servico")
     registros = relationship("Registro", back_populates="frente_servico")
 
@@ -162,10 +209,13 @@ class Registro(Base):
         index=True,
     )
     data = Column(Date, nullable=True, index=True)
+    obra_id = Column(Integer, ForeignKey("obras.id", ondelete="SET NULL"), nullable=True, index=True)
     frente_servico_id = Column(Integer, ForeignKey("frentes_servico.id", ondelete="CASCADE"), nullable=True, index=True)
     usuario_registrador_id = Column(Integer, ForeignKey("usuarios.id", ondelete="RESTRICT"), nullable=True, index=True)
     estaca_inicial = Column(DECIMAL(10, 2), nullable=True)
     estaca_final = Column(DECIMAL(10, 2), nullable=True)
+    estaca = Column(String, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
     resultado = Column(DECIMAL(10, 2), nullable=True)
     tempo_manha = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=True)
     tempo_tarde = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=True)
@@ -175,7 +225,10 @@ class Registro(Base):
     source_message_id = Column(PGUUID(as_uuid=True), ForeignKey("mensagens_campo.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
+    tenant = relationship("Tenant", back_populates="registros")
+    obra = relationship("Obra", back_populates="registros")
     frente_servico = relationship("FrenteServico", back_populates="registros")
     usuario_registrador = relationship("Usuario", back_populates="registros")
     source_message = relationship("MensagemCampo", back_populates="registros")
@@ -206,6 +259,7 @@ class RegistroImagem(Base):
     file_size = Column(Integer, nullable=True)
     origem = Column(String, nullable=False, default="api")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     registro = relationship("Registro", back_populates="imagens")
 
@@ -243,7 +297,9 @@ class MensagemCampo(Base):
         default=DirecaoMensagem.USER,
         index=True,
     )
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
+    tenant = relationship("Tenant", back_populates="mensagens_campo")
     usuario = relationship("Usuario", back_populates="mensagens_campo")
     registros = relationship("Registro", back_populates="source_message")
 
@@ -258,18 +314,24 @@ class TelegramLinkCode(Base):
     expires_at = Column(DateTime, nullable=False, index=True)
     used_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     usuario = relationship("Usuario", foreign_keys=[user_id], back_populates="telegram_link_codes")
+    tenant = relationship("Tenant", back_populates="telegram_link_codes", foreign_keys=[tenant_id])
 
 
 class Alert(Base):
     __tablename__ = "alerts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_alerts_code_tenant"),
+    )
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code = Column(String(20), unique=True, nullable=False, index=True)
+    code = Column(String(20), nullable=False, index=True)
     type = Column(String(120), nullable=False, index=True)
     severity = Column(SQLEnum(AlertSeverity, values_callable=_enum_values, name="alert_severity"), nullable=False)
     reported_by = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
+    obra_id = Column(Integer, ForeignKey("obras.id", ondelete="SET NULL"), nullable=True, index=True)
     telegram_message_id = Column(BigInteger, nullable=True)
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=False)
@@ -293,7 +355,10 @@ class Alert(Base):
     read_by = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
+    tenant = relationship("Tenant", back_populates="alerts")
+    obra = relationship("Obra", back_populates="alerts")
     reporter = relationship("Usuario", back_populates="alerts_reportados", foreign_keys=[reported_by])
     resolver = relationship("Usuario", back_populates="alerts_resolvidos", foreign_keys=[resolved_by])
     reader = relationship("Usuario", back_populates="alerts_lidos", foreign_keys=[read_by])
@@ -315,6 +380,7 @@ class AlertRead(Base):
     alert_id = Column(PGUUID(as_uuid=True), ForeignKey("alerts.id", ondelete="CASCADE"), nullable=False, index=True)
     worker_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
     read_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     alert = relationship("Alert", back_populates="reads")
     worker = relationship("Usuario", back_populates="alert_reads", foreign_keys=[worker_id])
@@ -322,10 +388,14 @@ class AlertRead(Base):
 
 class AlertTypeAlias(Base):
     __tablename__ = "alert_type_aliases"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "alias", name="uq_alert_type_aliases_alias_tenant"),
+        UniqueConstraint("tenant_id", "normalized_alias", name="uq_alert_type_aliases_normalized_alias_tenant"),
+    )
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    alias = Column(String(120), nullable=False, unique=True)
-    normalized_alias = Column(String(120), nullable=False, unique=True, index=True)
+    alias = Column(String(120), nullable=False)
+    normalized_alias = Column(String(120), nullable=False, index=True)
     canonical_type = Column(String(120), nullable=False, index=True)
     descricao = Column(Text, nullable=True)
     ativo = Column(Boolean, nullable=False, default=True)
@@ -333,3 +403,6 @@ class AlertTypeAlias(Base):
     updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
+
+    tenant = relationship("Tenant", back_populates="alert_type_aliases")

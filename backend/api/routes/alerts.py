@@ -9,7 +9,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.exc import IntegrityError
 
 from backend.api.routes.auth import require_auth
-from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, AlertTypeAlias, NivelAcesso, Usuario
+from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, AlertTypeAlias, NivelAcesso, Obra, Usuario
 from backend.db.session import SessionLocal
 
 
@@ -51,7 +51,9 @@ def _serialize_alert_summary(alert: Alert, user_names: dict[int, str]):
         "code": alert.code,
         "type": _to_json_value(alert.type),
         "severity": _to_json_value(alert.severity),
+        "obra_id": alert.obra_id,
         "title": alert.title,
+        "description": alert.description,
         "status": _to_json_value(alert.status),
         "is_read": bool(alert.is_read),
         "reported_at": _to_json_value(alert.created_at),
@@ -222,11 +224,13 @@ def _sync_alert_read_flags(db, alert):
 @router.get("")
 @require_auth
 def listar_alertas():
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        query = db.query(Alert)
+        query = db.query(Alert).filter(Alert.tenant_id == tenant_id)
 
         status = request.args.get("status")
         severity = request.args.get("severity")
+        obra_id = request.args.get("obra_id")
         apenas_nao_lidos = request.args.get("apenas_nao_lidos", "false").lower() in {"1", "true", "yes", "on"}
 
         if status:
@@ -244,6 +248,12 @@ def listar_alertas():
         if apenas_nao_lidos:
             query = query.filter(Alert.is_read.is_(False))
 
+        if obra_id not in (None, ""):
+            try:
+                query = query.filter(Alert.obra_id == int(obra_id))
+            except (ValueError, TypeError):
+                return _json_error("obra_id inválido. Use inteiro.", 422)
+
         items = query.order_by(Alert.created_at.desc()).limit(200).all()
         user_ids = {item.reported_by for item in items}
         user_names = _build_user_name_map(db, user_ids)
@@ -253,6 +263,7 @@ def listar_alertas():
 @router.post("")
 @require_auth
 def criar_alerta():
+    tenant_id = getattr(g, "tenant_id", None)
     data = request.get_json(silent=True) or {}
     source = data.get("source")
     is_agent_request = _is_agent_source(source)
@@ -291,11 +302,26 @@ def criar_alerta():
                 equipment_name=(data.get("equipment_name") or "").strip() or None,
             )
 
+        obra_id = data.get("obra_id")
+        if obra_id not in (None, ""):
+            try:
+                obra_id = int(obra_id)
+            except (ValueError, TypeError):
+                return _json_error("obra_id inválido. Use inteiro.", 422)
+
+            obra = db.query(Obra).filter(Obra.id == obra_id, Obra.tenant_id == tenant_id).first()
+            if not obra:
+                return _json_error("Obra não encontrada para este tenant.", 404)
+        else:
+            obra_id = None
+
         alert = Alert(
+            tenant_id=tenant_id,
             code=_generate_alert_code(db),
             type=type_value,
             severity=severity_value,
             reported_by=g.current_user.id,
+            obra_id=obra_id,
             telegram_message_id=data.get("telegram_message_id"),
             title=title,
             description=description,
@@ -318,37 +344,57 @@ def criar_alerta():
 @router.get("/<uuid:alert_id>")
 @require_auth
 def obter_alerta(alert_id):
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
         user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
         return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names)})
 
 
-@router.patch("/<uuid:alert_id>/status")
-@require_auth
-def atualizar_status_alerta(alert_id):
+def _atualizar_status_alerta(alert_id):
     if not _is_admin_or_gerente():
         return _json_error("Apenas administrador/gerente pode atualizar status do alerta.", 403)
 
     data = request.get_json(silent=True) or {}
     status = data.get("status")
-    if not status:
-        return _json_error("Campo obrigatório: status")
+    has_status = status not in (None, "")
+    if not has_status and "obra_id" not in data and "resolution_notes" not in data:
+        return _json_error("Informe ao menos um campo para atualizar: status, obra_id ou resolution_notes.", 422)
 
-    try:
-        parsed_status = _parse_alert_status(status)
-    except ValueError as exc:
-        return _json_error(str(exc), 422)
+    parsed_status = None
+    if has_status:
+        try:
+            parsed_status = _parse_alert_status(status)
+        except ValueError as exc:
+            return _json_error(str(exc), 422)
 
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
 
-        alert.status = parsed_status
-        alert.resolution_notes = data.get("resolution_notes")
+        if parsed_status is not None:
+            alert.status = parsed_status
+        if "resolution_notes" in data:
+            alert.resolution_notes = data.get("resolution_notes")
+
+        if "obra_id" in data:
+            obra_id = data.get("obra_id")
+            if obra_id in (None, ""):
+                alert.obra_id = None
+            else:
+                try:
+                    obra_id = int(obra_id)
+                except (ValueError, TypeError):
+                    return _json_error("obra_id inválido. Use inteiro.", 422)
+                obra = db.query(Obra).filter(Obra.id == obra_id, Obra.tenant_id == tenant_id).first()
+                if not obra:
+                    return _json_error("Obra não encontrada para este tenant.", 404)
+                alert.obra_id = obra_id
+
         if parsed_status in {AlertStatus.RESOLVIDO, AlertStatus.CANCELADO}:
             alert.resolved_by = g.current_user.id
             alert.resolved_at = datetime.utcnow()
@@ -359,11 +405,24 @@ def atualizar_status_alerta(alert_id):
         return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names)})
 
 
+@router.patch("/<uuid:alert_id>")
+@require_auth
+def atualizar_alerta(alert_id):
+    return _atualizar_status_alerta(alert_id)
+
+
+@router.patch("/<uuid:alert_id>/status")
+@require_auth
+def atualizar_status_alerta(alert_id):
+    return _atualizar_status_alerta(alert_id)
+
+
 @router.post("/<uuid:alert_id>/read")
 @require_auth
 def marcar_como_lido(alert_id):
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
 
@@ -393,8 +452,9 @@ def marcar_como_lido(alert_id):
 @router.post("/<uuid:alert_id>/unread")
 @require_auth
 def marcar_como_nao_lido(alert_id):
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
 
@@ -420,8 +480,9 @@ def marcar_como_nao_lido(alert_id):
 @router.get("/codigo/<string:code>")
 @require_auth
 def obter_alerta_por_codigo(code: str):
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        alert = db.query(Alert).filter(Alert.code == code.upper()).first()
+        alert = db.query(Alert).filter(Alert.code == code.upper(), Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
         user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
@@ -434,8 +495,9 @@ def deletar_alerta(alert_id):
     if not _is_admin_or_gerente():
         return _json_error("Apenas administrador/gerente pode remover alertas.", 403)
 
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
 
