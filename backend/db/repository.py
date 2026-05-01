@@ -12,6 +12,7 @@ from backend.db.models import (
     TelegramLinkCode,
     MensagemCampo,
     Tenant,
+    UserInviteCode,
     NivelAcesso,
     CanalOrigemMensagem,
     ConteudoMensagemTipo,
@@ -345,18 +346,54 @@ class FrenteServicoRepository:
 
 class RegistroRepository:
     @staticmethod
+    def _resolve_location_type(payload: dict) -> str:
+        metadata = payload.get("metadata_json") if isinstance(payload.get("metadata_json"), dict) else {}
+        raw = (
+            payload.get("tipo_localizacao")
+            or metadata.get("tipo")
+            or "estaca"
+        )
+        normalized = str(raw).strip().lower()
+        if normalized == "text":
+            return "texto"
+        if normalized in {"estaca", "km", "texto"}:
+            return normalized
+        return "estaca"
+
+    @staticmethod
     def _required_missing_for_consolidated(payload: dict) -> list[str]:
-        required_fields = [
+        required_common = [
             "data",
             "frente_servico_id",
             "usuario_registrador_id",
-            "estaca_inicial",
-            "estaca_final",
-            "resultado",
             "tempo_manha",
             "tempo_tarde",
         ]
-        return [field for field in required_fields if payload.get(field) in (None, "")]
+        missing = [field for field in required_common if payload.get(field) in (None, "")]
+
+        location_type = RegistroRepository._resolve_location_type(payload)
+        if location_type == "texto":
+            detail_text = payload.get("estaca")
+            if detail_text in (None, ""):
+                missing.append("estaca")
+            return missing
+
+        # For estaca/km profiles, start/end are required.
+        for field in ("estaca_inicial", "estaca_final"):
+            if payload.get(field) in (None, ""):
+                missing.append(field)
+
+        # resultado can be derived when both bounds are provided.
+        if payload.get("resultado") in (None, ""):
+            if payload.get("estaca_inicial") not in (None, "") and payload.get("estaca_final") not in (None, ""):
+                try:
+                    payload["resultado"] = float(payload["estaca_final"]) - float(payload["estaca_inicial"])
+                except Exception:
+                    missing.append("resultado")
+            else:
+                missing.append("resultado")
+
+        return missing
 
     @staticmethod
     def criar(
@@ -519,6 +556,8 @@ class RegistroRepository:
                 "usuario_registrador_id": registro.usuario_registrador_id,
                 "estaca_inicial": registro.estaca_inicial,
                 "estaca_final": registro.estaca_final,
+                "estaca": registro.estaca,
+                "metadata_json": registro.metadata_json,
                 "resultado": registro.resultado,
                 "tempo_manha": registro.tempo_manha,
                 "tempo_tarde": registro.tempo_tarde,
@@ -550,6 +589,8 @@ class RegistroRepository:
                 "usuario_registrador_id": registro.usuario_registrador_id,
                 "estaca_inicial": registro.estaca_inicial,
                 "estaca_final": registro.estaca_final,
+                "estaca": registro.estaca,
+                "metadata_json": registro.metadata_json,
                 "resultado": registro.resultado,
                 "tempo_manha": registro.tempo_manha,
                 "tempo_tarde": registro.tempo_tarde,
@@ -559,6 +600,8 @@ class RegistroRepository:
                 raise ValueError(
                     "Nao e possivel consolidar registro sem campos basicos: " + ", ".join(missing)
                 )
+            if registro.resultado in (None, "") and payload.get("resultado") not in (None, ""):
+                registro.resultado = payload.get("resultado")
 
         registro.status = status
         db.commit()
@@ -860,6 +903,69 @@ class TelegramLinkCodeRepository:
         db.refresh(item)
         return item
 
+# ---------------------------------------------------------------------------
+# UserInviteCodeRepository
+# ---------------------------------------------------------------------------
+
+class UserInviteCodeRepository:
+    @staticmethod
+    def criar(
+        db: Session,
+        tenant_id: int,
+        criado_por: int,
+        codigo: str,
+        expira_em: datetime,
+        nivel_acesso: str = "encarregado",
+        email_destinatario: str | None = None,
+    ) -> UserInviteCode:
+        invite = UserInviteCode(
+            tenant_id=tenant_id,
+            criado_por=criado_por,
+            codigo=codigo,
+            expira_em=expira_em,
+            nivel_acesso=nivel_acesso,
+            email_destinatario=email_destinatario,
+            ativo=True,
+        )
+        db.add(invite)
+        db.commit()
+        db.refresh(invite)
+        return invite
+
+    @staticmethod
+    def obter_por_codigo(db: Session, codigo: str) -> UserInviteCode | None:
+        return db.query(UserInviteCode).filter(UserInviteCode.codigo == codigo).first()
+
+    @staticmethod
+    def listar_por_tenant(db: Session, tenant_id: int, apenas_ativos: bool = True) -> list[UserInviteCode]:
+        q = db.query(UserInviteCode).filter(UserInviteCode.tenant_id == tenant_id)
+        if apenas_ativos:
+            q = q.filter(UserInviteCode.ativo.is_(True), UserInviteCode.usado_em.is_(None))
+        return q.order_by(UserInviteCode.created_at.desc()).all()
+
+    @staticmethod
+    def marcar_usado(db: Session, invite: UserInviteCode, usado_por: int) -> UserInviteCode:
+        invite.usado_em = datetime.utcnow()
+        invite.usado_por = usado_por
+        invite.ativo = False
+        db.commit()
+        db.refresh(invite)
+        return invite
+
+    @staticmethod
+    def cancelar(db: Session, codigo: str, tenant_id: int) -> bool:
+        invite = (
+            db.query(UserInviteCode)
+            .filter(UserInviteCode.codigo == codigo, UserInviteCode.tenant_id == tenant_id)
+            .first()
+        )
+        if not invite:
+            return False
+        invite.ativo = False
+        db.commit()
+        return True
+
+
 class Repository:
     usuarios = UsuarioRepository
     obras = ObraRepository
@@ -869,4 +975,5 @@ class Repository:
     telegram_link_codes = TelegramLinkCodeRepository
     mensagens_campo = MensagemCampoRepository
     tenants = TenantRepository
+    user_invite_codes = UserInviteCodeRepository
 

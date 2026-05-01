@@ -12,12 +12,25 @@ Rastreamento do status e última atualização de cada endpoint da API.
 
 ## Autenticação
 | Endpoint | Status | Última alteração |
-|----------|--------|------------------|
-| `POST /api/v1/auth/register` | ✅ | - |
+|----------|--------|-----------------|
+| `POST /api/v1/auth/register` | 🔄 | 2026-05-01 — Agora exige `invite_code`; associa usuário ao tenant do convite |
 | `POST /api/v1/auth/login` | ✅ | - |
 | `GET /api/v1/auth/me` | ✅ | - |
 | `PATCH /api/v1/auth/link-telegram` | ✅ | - |
 | `POST /api/v1/auth/telegram-link-codes` | ✅ | - |
+| `POST /api/v1/auth/invite-codes` | 🔄 | 2026-05-01 — Novo; gera convite de cadastro (admin/gerente) |
+| `GET /api/v1/auth/invite-codes` | 🔄 | 2026-05-01 — Novo; lista convites ativos da unidade |
+| `DELETE /api/v1/auth/invite-codes/{codigo}` | 🔄 | 2026-05-01 — Novo; cancela convite |
+
+---
+
+## Unidade (Tenant)
+| Endpoint | Status | Última alteração |
+|----------|--------|-----------------|
+| `GET /api/v1/tenant` | 🔄 | 2026-05-01 — Novo endpoint principal; retorna todos os campos de empresa |
+| `PATCH /api/v1/tenant` | 🔄 | 2026-05-01 — Novo endpoint principal; atualiza campos de empresa (admin/gerente) |
+| `GET /api/v1/tenant/config` | ✅ | Alias legado de `GET /api/v1/tenant` |
+| `PATCH /api/v1/tenant/config` | ✅ | Alias legado de `PATCH /api/v1/tenant` |
 
 ---
 

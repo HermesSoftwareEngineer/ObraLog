@@ -1,7 +1,7 @@
 import os
 import secrets
 import string
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 from flask import Blueprint, g, jsonify, request
@@ -60,6 +60,11 @@ def _is_admin(user) -> bool:
     return nivel == NivelAcesso.ADMINISTRADOR.value
 
 
+def _is_gerente_or_admin(user) -> bool:
+    nivel = user.nivel_acesso.value if hasattr(user.nivel_acesso, "value") else str(user.nivel_acesso)
+    return nivel in (NivelAcesso.ADMINISTRADOR.value, NivelAcesso.GERENTE.value)
+
+
 def _generate_link_code(length: int = 8) -> str:
     alphabet = string.ascii_uppercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
@@ -114,23 +119,44 @@ def register():
     email = data.get("email")
     senha = data.get("senha")
     telefone = data.get("telefone")
+    invite_code = (data.get("invite_code") or "").strip().upper()
 
     if not nome or not email or not senha:
         return _json_error("Campos obrigatórios: nome, email, senha.")
+    if not invite_code:
+        return _json_error("Campos obrigatórios: invite_code.")
 
     with SessionLocal() as db:
-        if Repository.usuarios.obter_por_email(db, email):
-            return _json_error("Email já cadastrado.", 409)
+        invite = Repository.user_invite_codes.obter_por_codigo(db, invite_code)
+        if not invite:
+            return _json_error("Código de convite inválido.", 404)
+        if not invite.ativo or invite.usado_em is not None:
+            return _json_error("Código de convite já utilizado.", 409)
+        now_utc = datetime.now(timezone.utc)
+        expira = invite.expira_em
+        if expira.tzinfo is None:
+            expira = expira.replace(tzinfo=timezone.utc)
+        if now_utc > expira:
+            return _json_error("Código de convite expirado.", 410)
+
+        tenant_id = invite.tenant_id
+        nivel_acesso_str = invite.nivel_acesso or "encarregado"
+        nivel_acesso = NivelAcesso(nivel_acesso_str) if nivel_acesso_str in NivelAcesso._value2member_map_ else NivelAcesso.ENCARREGADO
+
+        if Repository.usuarios.obter_por_email(db, email, tenant_id=tenant_id):
+            return _json_error("Email já cadastrado nesta unidade.", 409)
 
         user = Repository.usuarios.criar(
             db=db,
             nome=nome,
             email=email,
             senha=generate_password_hash(senha),
-            nivel_acesso=NivelAcesso.ENCARREGADO,
+            nivel_acesso=nivel_acesso,
             telefone=telefone,
             telegram_thread_id=None,
+            tenant_id=tenant_id,
         )
+        Repository.user_invite_codes.marcar_usado(db, invite, usado_por=user.id)
 
     token = _issue_token(user.id, user.email, user.tenant_id)
     return jsonify({"ok": True, "token": token, "user": _user_payload(user)}), 201
@@ -236,3 +262,100 @@ def create_telegram_link_code():
             },
         }
     ), 201
+
+
+# ---------------------------------------------------------------------------
+# Invite codes
+# ---------------------------------------------------------------------------
+
+_INVITE_EXPIRY_HOURS = 24
+
+
+def _serialize_invite(invite) -> dict:
+    return {
+        "id": str(invite.id),
+        "codigo": invite.codigo,
+        "email_destinatario": invite.email_destinatario,
+        "nivel_acesso": invite.nivel_acesso,
+        "expira_em": invite.expira_em.isoformat() if invite.expira_em else None,
+        "usado_em": invite.usado_em.isoformat() if invite.usado_em else None,
+        "ativo": invite.ativo,
+        "criado_por": invite.criado_por,
+        "created_at": invite.created_at.isoformat() if invite.created_at else None,
+    }
+
+
+@auth_blueprint.post("/invite-codes")
+@require_auth
+def criar_invite():
+    if not _is_gerente_or_admin(g.current_user):
+        return _json_error("Permissão negada. Requer perfil Admin ou Gerente.", 403)
+
+    tenant_id = getattr(g, "tenant_id", None)
+    if not tenant_id:
+        return _json_error("Tenant não identificado no contexto.", 403)
+
+    data = request.get_json(silent=True) or {}
+    email_destinatario = data.get("email_destinatario")
+    nivel_acesso = data.get("nivel_acesso", "encarregado")
+    if nivel_acesso not in NivelAcesso._value2member_map_:
+        return _json_error(f"nivel_acesso inválido. Use: {', '.join(NivelAcesso._value2member_map_)}")
+
+    expira_em = datetime.now(timezone.utc) + timedelta(hours=_INVITE_EXPIRY_HOURS)
+
+    with SessionLocal() as db:
+        # Gera código único
+        codigo = None
+        for _ in range(10):
+            candidate = _generate_link_code(length=12)
+            if not Repository.user_invite_codes.obter_por_codigo(db, candidate):
+                codigo = candidate
+                break
+        if not codigo:
+            return _json_error("Não foi possível gerar código único. Tente novamente.", 500)
+
+        invite = Repository.user_invite_codes.criar(
+            db=db,
+            tenant_id=tenant_id,
+            criado_por=g.current_user.id,
+            codigo=codigo,
+            expira_em=expira_em,
+            nivel_acesso=nivel_acesso,
+            email_destinatario=email_destinatario,
+        )
+
+    return jsonify({"ok": True, "invite": _serialize_invite(invite)}), 201
+
+
+@auth_blueprint.get("/invite-codes")
+@require_auth
+def listar_invites():
+    if not _is_gerente_or_admin(g.current_user):
+        return _json_error("Permissão negada. Requer perfil Admin ou Gerente.", 403)
+
+    tenant_id = getattr(g, "tenant_id", None)
+    if not tenant_id:
+        return _json_error("Tenant não identificado no contexto.", 403)
+
+    with SessionLocal() as db:
+        invites = Repository.user_invite_codes.listar_por_tenant(db, tenant_id, apenas_ativos=True)
+
+    return jsonify({"ok": True, "invites": [_serialize_invite(i) for i in invites]})
+
+
+@auth_blueprint.delete("/invite-codes/<string:codigo>")
+@require_auth
+def cancelar_invite(codigo: str):
+    if not _is_gerente_or_admin(g.current_user):
+        return _json_error("Permissão negada. Requer perfil Admin ou Gerente.", 403)
+
+    tenant_id = getattr(g, "tenant_id", None)
+    if not tenant_id:
+        return _json_error("Tenant não identificado no contexto.", 403)
+
+    with SessionLocal() as db:
+        cancelado = Repository.user_invite_codes.cancelar(db, codigo.upper(), tenant_id)
+
+    if not cancelado:
+        return _json_error("Convite não encontrado.", 404)
+    return jsonify({"ok": True})

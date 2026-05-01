@@ -8,14 +8,21 @@
 
 ## Autenticacao
 ### POST `/api/v1/auth/register`
-- Cria conta de usuário (nível inicial `encarregado`) e retorna token.
+- Cria conta de usuário via convite e retorna token.
+- O nível de acesso e o tenant são determinados pelo convite.
 - Body obrigatório:
 ```json
 {
   "nome": "string",
   "email": "string",
   "senha": "string",
-  "telefone": "string (opcional)"
+  "invite_code": "ABC123XYZ456"
+}
+```
+- Body opcional:
+```json
+{
+  "telefone": "string"
 }
 ```
 - Resposta 201:
@@ -33,6 +40,11 @@
   }
 }
 ```
+- Erros:
+  - `400`: `invite_code` ausente
+  - `404`: código de convite inválido
+  - `409`: convite já utilizado ou e-mail já cadastrado na unidade
+  - `410`: convite expirado
 
 ### POST `/api/v1/auth/login`
 - Autentica usuário e retorna token.
@@ -120,20 +132,129 @@ Authorization: Bearer <token>
   }
 }
 ```
+
+### POST `/api/v1/auth/invite-codes`
+- Gera convite de cadastro para um novo usuário.
+- Apenas administrador ou gerente.
+- Convite expira em **24 horas**.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Body obrigatório:
+```json
+{
+  "nivel_acesso": "encarregado"
+}
+```
+- Body opcional:
+```json
+{
+  "email_destinatario": "convidado@empresa.com"
+}
+```
+- Resposta 201:
+```json
+{
+  "ok": true,
+  "invite": {
+    "id": "uuid",
+    "codigo": "ABC123XYZ456",
+    "email_destinatario": "convidado@empresa.com",
+    "nivel_acesso": "encarregado",
+    "expira_em": "2026-05-02T12:00:00+00:00",
+    "usado_em": null,
+    "ativo": true,
+    "criado_por": 1,
+    "created_at": "2026-05-01T12:00:00+00:00"
+  }
+}
+```
+
+### GET `/api/v1/auth/invite-codes`
+- Lista convites ativos (não usados) da unidade do usuário autenticado.
+- Apenas administrador ou gerente.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Resposta 200: lista de objetos `invite` (mesmo schema acima).
+
+### DELETE `/api/v1/auth/invite-codes/{codigo}`
+- Cancela (desativa) um convite pendente.
+- Apenas administrador ou gerente.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Resposta 200:
+```json
+{"ok": true}
+```
+
+## Unidade
+
+### GET `/api/v1/tenant`
+- Retorna todos os dados da unidade (empresa) do usuário autenticado.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
 - Resposta 200:
 ```json
 {
   "ok": true,
-  "user": {
-    "id": 1,
-    "nome": "string",
-    "email": "string",
-    "telefone": "string|null",
-    "telegram_chat_id": "1751541108",
-    "nivel_acesso": "administrador"
-  }
+  "tenant_id": 1,
+  "nome": "Construtora XYZ",
+  "slug": "construtora-xyz",
+  "location_type": "estaca",
+  "tipo_negocio": "construção civil",
+  "ativo": true,
+  "cnpj": "12.345.678/0001-99",
+  "razao_social": "Construtora XYZ Ltda",
+  "nome_fantasia": "XYZ Obras",
+  "logradouro": "Av. Brasil",
+  "numero": "1000",
+  "complemento": "Sala 201",
+  "cep": "01234-567",
+  "cidade": "São Paulo",
+  "estado": "SP",
+  "telefone_comercial": "(11) 3000-0000",
+  "email_comercial": "contato@xyz.com.br"
 }
 ```
+
+### PATCH `/api/v1/tenant`
+- Atualiza dados da unidade.
+- Apenas administrador ou gerente.
+- Header obrigatório:
+```text
+Authorization: Bearer <token>
+```
+- Body (todos os campos opcionais, enviar apenas os que deseja alterar):
+```json
+{
+  "nome": "string",
+  "tipo_negocio": "string",
+  "location_type": "estaca | km | text",
+  "cnpj": "string",
+  "razao_social": "string",
+  "nome_fantasia": "string",
+  "logradouro": "string",
+  "numero": "string",
+  "complemento": "string",
+  "cep": "string",
+  "cidade": "string",
+  "estado": "string (2 letras)",
+  "telefone_comercial": "string",
+  "email_comercial": "string"
+}
+```
+- Resposta 200: mesmo schema do `GET /api/v1/tenant`.
+
+> **Aliases legados** — `GET /api/v1/tenant/config` e `PATCH /api/v1/tenant/config` continuam funcionando e delegam para os endpoints acima.
+
+---
 
 ## Healthcheck
 ### GET `/health`
@@ -601,29 +722,167 @@ Content-Disposition: inline; filename="diario_YYYYMMDD_YYYYMMDD.json"
 - Apenas administrador/gerente.
 
 ## Dashboard
+
+Todos os endpoints de dashboard exigem `Authorization: Bearer <token>`.
+
 ### GET `/api/v1/dashboard/overview`
-- Retorna KPIs e séries básicas para gráficos.
-- Exemplo de resposta:
+- Painel principal com KPIs globais + séries temporais.
+- Query params opcionais:
+  - `days` (int, 7–365, default `30`) — janela das séries temporais
+  - `obra_id` (int) — filtra métricas por obra
+- Resposta 200:
 ```json
 {
+  "ok": true,
+  "periodo": { "inicio": "2026-04-01", "fim": "2026-04-30", "days": 30 },
   "kpis": {
-    "usuarios_total": 10,
-    "frentes_servico_total": 4,
-    "registros_total": 120,
-    "progresso_total": 350.75
+    "usuarios_total": 12,
+    "frentes_total": 5,
+    "obras_ativas": 3,
+    "registros_total": 320,
+    "progresso_total": 980.5,
+    "alertas_abertos": 4,
+    "alertas_criticos": 1,
+    "alertas_nao_lidos": 2,
+    "registros_periodo": 87,
+    "progresso_periodo": 210.75,
+    "dias_impraticaveis_periodo": 3,
+    "mensagens_agente_periodo": 142
   },
   "charts": {
-    "registros_por_dia_7d": [
-      {"date": "2026-03-30", "total": 4},
-      {"date": "2026-03-31", "total": 7}
-    ],
-    "progresso_por_dia_7d": [
-      {"date": "2026-03-30", "resultado_total": 14.5},
-      {"date": "2026-03-31", "resultado_total": 22.0}
+    "serie_diaria": [
+      {
+        "date": "2026-04-01",
+        "registros": 4,
+        "progresso": 12.5,
+        "impraticaveis_manha": 0,
+        "impraticaveis_tarde": 1
+      }
     ],
     "progresso_por_frente": [
-      {"frente_servico_id": 1, "resultado_total": 120.0},
-      {"frente_servico_id": 2, "resultado_total": 90.25}
+      { "frente_id": 1, "frente_nome": "Terraplenagem", "total_registros": 30, "progresso": 120.0 }
+    ],
+    "alertas_por_severidade": { "critica": 1, "alta": 3, "media": 5, "baixa": 2 },
+    "alertas_por_status": { "aberto": 4, "resolvido": 7, "cancelado": 1 },
+    "alertas_por_dia": [
+      { "date": "2026-04-10", "total": 2 }
+    ],
+    "top_encarregados": [
+      { "usuario_id": 3, "usuario_nome": "Carlos", "total_registros": 12, "progresso": 48.0 }
+    ]
+  }
+}
+```
+
+### GET `/api/v1/dashboard/producao`
+- Análise detalhada de produção com progresso acumulado e breakdown climático.
+- Query params:
+  - `data_inicio` (YYYY-MM-DD, **obrigatório**)
+  - `data_fim`    (YYYY-MM-DD, **obrigatório**)
+  - `frente_id`   (int, opcional)
+  - `obra_id`     (int, opcional)
+- Período máximo: 365 dias.
+- Resposta 200:
+```json
+{
+  "ok": true,
+  "periodo": { "inicio": "2026-04-01", "fim": "2026-04-30" },
+  "resumo": {
+    "total_registros": 87,
+    "progresso_total": 210.75,
+    "dias_trabalhados": 22,
+    "dias_impraticaveis": 3,
+    "frentes_ativas": 4,
+    "encarregados_ativos": 6,
+    "media_diaria": 9.58
+  },
+  "charts": {
+    "progresso_acumulado": [
+      { "date": "2026-04-01", "progresso_dia": 8.5, "progresso_acumulado": 8.5 },
+      { "date": "2026-04-02", "progresso_dia": 10.0, "progresso_acumulado": 18.5 }
+    ],
+    "por_frente": [
+      {
+        "frente_id": 1,
+        "frente_nome": "Terraplenagem",
+        "registros": 30,
+        "progresso": 120.0,
+        "dias_ativos": 18,
+        "media_diaria": 6.67
+      }
+    ],
+    "clima_manha": { "limpo": 60, "nublado": 20, "impraticavel": 7 },
+    "clima_tarde":  { "limpo": 55, "nublado": 25, "impraticavel": 7 },
+    "por_pista": [
+      { "lado": "direito", "registros": 45, "progresso": 130.5 },
+      { "lado": "esquerdo", "registros": 42, "progresso": 80.25 }
+    ]
+  }
+}
+```
+- Erros:
+  - `400`: parâmetros ausentes, datas inválidas ou período > 365 dias
+
+### GET `/api/v1/dashboard/alertas`
+- Análise de alertas operacionais: taxa de resolução, tempo médio, série diária.
+- Query params opcionais:
+  - `days`    (int, 7–365, default `30`)
+  - `obra_id` (int)
+- Resposta 200:
+```json
+{
+  "ok": true,
+  "periodo": { "inicio": "2026-04-01", "fim": "2026-04-30", "days": 30 },
+  "kpis": {
+    "total_periodo": 11,
+    "resolvidos_periodo": 7,
+    "taxa_resolucao_pct": 63.6,
+    "tempo_medio_resolucao_horas": 4.2,
+    "abertos_criticos_atual": 1
+  },
+  "charts": {
+    "por_severidade": { "critica": 1, "alta": 3, "media": 5, "baixa": 2 },
+    "por_tipo": [
+      { "tipo": "maquina_quebrada", "total": 5 }
+    ],
+    "por_status_snapshot": { "aberto": 4, "resolvido": 7, "cancelado": 1 },
+    "serie_diaria": [
+      { "date": "2026-04-10", "total": 2, "resolvidos": 1 }
+    ]
+  }
+}
+```
+
+### GET `/api/v1/dashboard/equipe`
+- Métricas de equipe: headcount, ranking de produtividade por encarregado, atividade por dia da semana.
+- Query params opcionais:
+  - `days` (int, 7–365, default `30`)
+- Resposta 200:
+```json
+{
+  "ok": true,
+  "periodo": { "inicio": "2026-04-01", "fim": "2026-04-30", "days": 30 },
+  "kpis": {
+    "total_usuarios": 12,
+    "com_telegram_vinculado": 9,
+    "pct_telegram_vinculado": 75.0,
+    "por_nivel": { "administrador": 1, "gerente": 2, "encarregado": 9 }
+  },
+  "charts": {
+    "ranking_encarregados": [
+      {
+        "usuario_id": 3,
+        "nome": "Carlos Silva",
+        "nivel": "encarregado",
+        "registros": 12,
+        "progresso": 48.0,
+        "dias_ativos": 10,
+        "telegram_vinculado": true
+      }
+    ],
+    "atividade_por_dia_semana": [
+      { "dow": 1, "nome": "Seg", "registros": 18, "progresso": 54.0 },
+      { "dow": 6, "nome": "Sáb", "registros": 3, "progresso": 8.0 }
     ]
   }
 }
@@ -738,20 +997,12 @@ Para acompanhar as mudanças realizadas na API, consulte:
 - **[CHANGELOG.md](./CHANGELOG.md)** - Resumo de todas as alterações por data
 - **[docs/api-changes/](./docs/api-changes/)** - Documentação detalhada de cada alteração com guias de migração
 
-### Últimas Alterações (2026-04-29)
-- ✅ **Persistência de mensagens do agent**: respostas do agente agora são armazenadas em `mensagens_campo` com `direcao=agent`.
-- ✅ Campo `direcao` adicionado aos endpoints de mensagens do chat (`user` | `agent`).
-- ✅ Estrutura de chat consolidada com endpoints separados:
-  - `GET /api/v1/chat/conversas`
-  - `GET /api/v1/chat/mensagens?chat_id=...`
-- ✅ Rota legada preservada para compatibilidade: `GET /api/v1/chat/conversas/{chat_id}/mensagens`
-- ✨ Campo `observacao` adicionado em Frentes de Serviço e Registros
-- 🔄 `frente_servico_id` agora obrigatório em Registros
-- ❌ Campo `hora_registro` removido de Registros
-- ✅ Campo `observacao` agora opcional em Registros
-- ✅ Rotas de download de imagem disponíveis em `/backend/uploads/registros/{filename}` e `/api/v1/backend/uploads/registros/{filename}`
-- ✅ Endpoints de Diário de Obra adicionados em `/api/v1/diario/*`
-- ✅ Endpoints de Alertas adicionados em `/api/v1/alertas/*`
-- ✅ Campos legados removidos da tabela e contratos de Alertas
+### Últimas Alterações (2026-05-01)
+- ✅ **Dashboard profissional**: 4 endpoints analíticos em `/api/v1/dashboard/` — `overview`, `producao`, `alertas` e `equipe`. KPIs, séries temporais, rankings, breakdown climático e análise de alertas.
+- ✅ **Unidade (Tenant)**: novos endpoints `GET /api/v1/tenant` e `PATCH /api/v1/tenant` com campos completos de empresa (CNPJ, endereço, etc.). Aliases `/tenant/config` mantidos.
+- ✅ **Convites de cadastro**: `POST /api/v1/auth/invite-codes`, `GET /api/v1/auth/invite-codes`, `DELETE /api/v1/auth/invite-codes/{codigo}`. Requer admin ou gerente. Convites expiram em 24 h.
+- 🔄 **`POST /api/v1/auth/register`**: agora exige `invite_code` no body. O tenant e o nível de acesso são determinados pelo convite. Registro livre foi removido.
+- ✅ **Multi-tenant**: todos os repositórios e rotas operam com isolamento por `tenant_id` extraído do JWT.
+- ✅ **Obras**: CRUD completo em `/api/v1/obras`; `obra_id` disponível em registros e alertas.
 
-[Veja detalhes completos →](./docs/api-changes/20260405_alteracoes_frente_registros.md)
+[Veja detalhes completos →](./docs/api-changes/20260501_022_unidade_invite_codes.md)

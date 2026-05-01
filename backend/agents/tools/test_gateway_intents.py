@@ -386,6 +386,41 @@ class GatewayIntentNormalizationTests(unittest.TestCase):
         self.assertEqual((sent.get("localizacao") or {}).get("detalhe_texto"), "Subsolo bloco B")
         self.assertEqual((sent.get("localizacao") or {}).get("tipo"), "texto")
 
+    def test_registrar_producao_diaria_infers_text_mode_from_descriptive_location(self):
+        fake_create = _CaptureInternalTool("criar_registro", lambda args: {"ok": True, "registro": args})
+        fake_listar = _FakeInternalTool("listar_frentes_servico", [{"id": 3, "nome": "Drenagem"}])
+
+        with patch("backend.agents.tools.gateway_tools.get_database_tools", return_value=[fake_create, fake_listar]):
+            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado", location_profile="estaca")
+
+        registrar = next(tool for tool in tools if tool.name == "registrar_producao_diaria")
+        result = registrar.invoke(
+            {
+                "data": "2026-05-01",
+                "frente_servico": "Drenagem",
+                "local_descritivo": "Armazem",
+                "tempo_manha": "limpo",
+                "tempo_tarde": "limpo",
+            }
+        )
+
+        sent = fake_create.calls[-1]
+        self.assertTrue(result.get("ok"))
+        self.assertEqual((sent.get("localizacao") or {}).get("tipo"), "texto")
+        self.assertEqual((sent.get("localizacao") or {}).get("detalhe_texto"), "Armazem")
+
+    def test_registrar_producao_frente_nao_encontrada_sugere_cadastro(self):
+        fake_listar = _FakeInternalTool("listar_frentes_servico", [{"id": 1, "nome": "Drenagem"}])
+
+        with patch("backend.agents.tools.gateway_tools.get_database_tools", return_value=[fake_listar]):
+            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado")
+
+        registrar = next(tool for tool in tools if tool.name == "registrar_producao_diaria")
+        result = registrar.invoke({"data": "2026-05-01", "frente_servico": "Armazem"})
+
+        self.assertFalse(result.get("ok"))
+        self.assertIn("voce pode cadastrar, caso o usuario deseje", str(result.get("message", "")).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

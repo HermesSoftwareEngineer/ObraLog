@@ -91,10 +91,27 @@ class BusinessRAGUserInstructionsTests(unittest.TestCase):
 
         self.assertTrue(response.get("ok"))
         self.assertEqual(response.get("perfil_localizacao"), "km")
-        self.assertIn("km_inicial", response.get("obrigatorios", []))
-        self.assertIn("km_final", response.get("obrigatorios", []))
-        self.assertIn("km_inicial", response.get("faltantes", []))
-        self.assertIn("km_final", response.get("faltantes", []))
+        self.assertIn("tipo_localizacao", response.get("obrigatorios", []))
+        self.assertIn("tipo_localizacao", response.get("faltantes", []))
+
+    def test_sugerir_campos_faltantes_infer_texto_por_local_descritivo(self):
+        service = BusinessRAGService()
+        response = service.sugerir_campos_faltantes(
+            "producao_diaria",
+            {
+                "data": "2026-05-01",
+                "frente_servico": "Drenagem",
+                "tempo_manha": "limpo",
+                "tempo_tarde": "limpo",
+                "local_descritivo": "Armazem",
+            },
+            location_profile="estaca",
+        )
+
+        self.assertTrue(response.get("ok"))
+        self.assertEqual(response.get("perfil_localizacao"), "texto")
+        self.assertNotIn("estaca_inicial", response.get("faltantes", []))
+        self.assertNotIn("estaca_final", response.get("faltantes", []))
 
 
 if __name__ == "__main__":

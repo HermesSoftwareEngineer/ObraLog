@@ -100,6 +100,19 @@ class Tenant(Base):
     ativo        = Column(Boolean, nullable=False, default=True)
     created_at   = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
+    # Dados da empresa (Unidade)
+    cnpj               = Column(String(18),  nullable=True)
+    razao_social       = Column(String(200), nullable=True)
+    nome_fantasia      = Column(String(200), nullable=True)
+    logradouro         = Column(String(200), nullable=True)
+    numero             = Column(String(20),  nullable=True)
+    complemento        = Column(String(100), nullable=True)
+    cep                = Column(String(9),   nullable=True)
+    cidade             = Column(String(100), nullable=True)
+    estado             = Column(String(2),   nullable=True)
+    telefone_comercial = Column(String(20),  nullable=True)
+    email_comercial    = Column(String(200), nullable=True)
+
     usuarios            = relationship("Usuario",          back_populates="tenant")
     obras               = relationship("Obra",             back_populates="tenant")
     frentes_servico     = relationship("FrenteServico",    back_populates="tenant")
@@ -108,6 +121,27 @@ class Tenant(Base):
     alerts              = relationship("Alert",            back_populates="tenant")
     alert_type_aliases  = relationship("AlertTypeAlias",   back_populates="tenant")
     telegram_link_codes = relationship("TelegramLinkCode", back_populates="tenant", foreign_keys="TelegramLinkCode.tenant_id")
+    user_invite_codes   = relationship("UserInviteCode",   back_populates="tenant", cascade="all, delete-orphan")
+
+
+class UserInviteCode(Base):
+    __tablename__ = "user_invite_codes"
+
+    id                 = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id          = Column(Integer, ForeignKey("tenants.id",   ondelete="CASCADE"),    nullable=False, index=True)
+    criado_por         = Column(Integer, ForeignKey("usuarios.id",  ondelete="RESTRICT"),   nullable=False)
+    email_destinatario = Column(String(200), nullable=True)
+    codigo             = Column(String(32),  nullable=False, unique=True, index=True)
+    nivel_acesso       = Column(String(50),  nullable=False, default="encarregado")
+    expira_em          = Column(DateTime(timezone=True), nullable=False)
+    usado_em           = Column(DateTime(timezone=True), nullable=True)
+    usado_por          = Column(Integer, ForeignKey("usuarios.id",  ondelete="SET NULL"),    nullable=True)
+    ativo              = Column(Boolean, nullable=False, default=True)
+    created_at         = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    tenant  = relationship("Tenant",  back_populates="user_invite_codes")
+    criador = relationship("Usuario", foreign_keys=[criado_por])
+    usuario_convidado = relationship("Usuario", foreign_keys=[usado_por])
 
 
 class Obra(Base):

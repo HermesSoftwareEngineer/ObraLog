@@ -109,11 +109,21 @@ ALTER TABLE registros
       data IS NOT NULL
       AND frente_servico_id IS NOT NULL
       AND usuario_registrador_id IS NOT NULL
-      AND estaca_inicial IS NOT NULL
-      AND estaca_final IS NOT NULL
-      AND resultado IS NOT NULL
       AND tempo_manha IS NOT NULL
       AND tempo_tarde IS NOT NULL
+      AND (
+        (
+          COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') IN ('texto', 'text')
+          AND estaca IS NOT NULL
+        )
+        OR
+        (
+          COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') NOT IN ('texto', 'text')
+          AND estaca_inicial IS NOT NULL
+          AND estaca_final IS NOT NULL
+          AND resultado IS NOT NULL
+        )
+      )
     )
   );
 

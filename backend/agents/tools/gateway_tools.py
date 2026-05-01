@@ -301,6 +301,34 @@ def get_gateway_tools(
                 mapping[item_id] = item_nome.strip()
         return mapping
 
+    def _resolve_location_mode(
+        *,
+        localizacao: dict | None,
+        estaca_inicial: float | None,
+        estaca_final: float | None,
+        km_inicial: float | None,
+        km_final: float | None,
+        local_descritivo: str | None,
+    ) -> str:
+        localizacao_input = localizacao or {}
+        explicit_type = str(localizacao_input.get("tipo") or "").strip().lower()
+        if explicit_type in {"estaca", "km", "texto", "text"}:
+            return "texto" if explicit_type == "text" else explicit_type
+
+        has_estaca_values = estaca_inicial is not None or estaca_final is not None
+        has_km_values = km_inicial is not None or km_final is not None
+
+        detail_value = localizacao_input.get("detalhe_texto", local_descritivo)
+        has_detail = isinstance(detail_value, str) and bool(detail_value.strip())
+
+        if has_km_values:
+            return "km"
+        if has_estaca_values:
+            return "estaca"
+        if has_detail:
+            return "texto"
+        return resolved_location_mode
+
     def _resolve_obra_selection(obra_id: int | None = None, obra: str | None = None) -> dict:
         if obra_id is not None:
             return {"ok": True, "obra_id": int(obra_id)}
@@ -406,7 +434,7 @@ def get_gateway_tools(
                     f"Frente nao encontrada para '{frente_servico_nome}'. "
                     f"Sugestoes por similaridade: {sugestoes}. "
                     f"Opcoes cadastradas: {', '.join(options)}. "
-                    "Se essa frente ainda nao existe, voce pode cadastrar a frente de servico (se seu perfil tiver permissao)."
+                    "Se essa frente ainda nao existe, voce pode cadastrar, caso o usuario deseje (se seu perfil tiver permissao)."
                 ),
                 "sugestoes": suggested_names,
                 "opcoes": options,
@@ -419,7 +447,7 @@ def get_gateway_tools(
                 f"Frente nao encontrada para '{frente_servico_nome}'. "
                 "Use o nome da frente de servico (nao o local/trecho). "
                 f"Opcoes cadastradas: {', '.join(options)}. "
-                "Se essa frente ainda nao existe, voce pode cadastrar a frente de servico (se seu perfil tiver permissao)."
+                "Se essa frente ainda nao existe, voce pode cadastrar, caso o usuario deseje (se seu perfil tiver permissao)."
             ),
             "opcoes": options,
             "next_steps": ["pedir ao usuario para informar o nome exato da frente", "cadastrar a frente de servico, se permitido"],
@@ -1116,7 +1144,14 @@ def get_gateway_tools(
 
             frente_id = resolved.get("frente_servico_id")
             localizacao_input = localizacao or {}
-            mode = str(localizacao_input.get("tipo") or resolved_location_mode or "estaca").strip().lower()
+            mode = _resolve_location_mode(
+                localizacao=localizacao,
+                estaca_inicial=estaca_inicial,
+                estaca_final=estaca_final,
+                km_inicial=km_inicial,
+                km_final=km_final,
+                local_descritivo=local_descritivo,
+            )
             start_value = localizacao_input.get("valor_inicial", estaca_inicial if estaca_inicial is not None else km_inicial)
             end_value = localizacao_input.get("valor_final", estaca_final if estaca_final is not None else km_final)
             detail_value = localizacao_input.get("detalhe_texto", local_descritivo)

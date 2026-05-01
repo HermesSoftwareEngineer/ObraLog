@@ -60,7 +60,12 @@ class BusinessRAGService:
         obra_id_ativa: int | None = None,
         location_profile: str | None = None,
     ) -> dict:
-        checklist = self._checklist_by_type(tipo_registro, location_profile=location_profile)
+        effective_location_mode = self._resolve_location_mode(dados_parciais, location_profile=location_profile)
+        checklist = self._checklist_by_type(
+            tipo_registro,
+            dados_parciais,
+            location_profile=effective_location_mode,
+        )
         if not checklist:
             return {
                 "ok": False,
@@ -69,7 +74,7 @@ class BusinessRAGService:
 
         missing = [field for field in checklist if self._is_missing(self._value_for_field(field, dados_parciais))]
         validation_issues = self._validate_references(tipo_registro, dados_parciais, tenant_id=tenant_id)
-        profile = build_location_profile(location_profile)
+        profile = build_location_profile(effective_location_mode)
         return {
             "ok": True,
             "tipo_registro": tipo_registro,
@@ -83,6 +88,12 @@ class BusinessRAGService:
             "validacoes": validation_issues,
             "pronto_para_consolidar": len(missing) == 0 and not validation_issues,
         }
+
+    def _resolve_location_mode(self, dados_parciais: dict, location_profile: str | None = None) -> str:
+        inferred_type = self._value_for_field("tipo_localizacao", dados_parciais)
+        if isinstance(inferred_type, str) and inferred_type.strip():
+            return inferred_type.strip().lower()
+        return build_location_profile(location_profile).mode
 
     def _load_blocks(self) -> list[str]:
         blocks: list[str] = []
@@ -112,15 +123,23 @@ class BusinessRAGService:
         parts = re.findall(r"[a-z0-9_]{3,}", normalized.lower())
         return set(parts)
 
-    def _checklist_by_type(self, tipo_registro: str, location_profile: str | None = None) -> list[str]:
+    def _checklist_by_type(
+        self,
+        tipo_registro: str,
+        dados_parciais: dict,
+        location_profile: str | None = None,
+    ) -> list[str]:
         profile = build_location_profile(location_profile)
-        location_required = profile.required_fields
+        location_type_value = self._value_for_field("tipo_localizacao", dados_parciais)
+        has_location_type = not self._is_missing(location_type_value)
+        location_required = profile.required_fields if has_location_type else []
         mapping = {
             "producao_diaria": [
                 "data",
                 "frente_servico",
                 "tempo_manha",
                 "tempo_tarde",
+                "tipo_localizacao",
             ] + location_required,
             "alerta_operacional": [
                 "tipo_alerta",
@@ -303,6 +322,24 @@ class BusinessRAGService:
                 return dados_parciais.get("estaca")
             if isinstance(dados_parciais.get("localizacao"), dict):
                 return dados_parciais.get("localizacao", {}).get("detalhe_texto")
+            return None
+
+        if field_name == "tipo_localizacao":
+            if isinstance(dados_parciais.get("localizacao"), dict):
+                tipo = dados_parciais.get("localizacao", {}).get("tipo")
+                if isinstance(tipo, str) and tipo.strip():
+                    normalized = tipo.strip().lower()
+                    return "texto" if normalized == "text" else normalized
+
+            if not self._is_missing(dados_parciais.get("km_inicial")) or not self._is_missing(dados_parciais.get("km_final")):
+                return "km"
+
+            if not self._is_missing(dados_parciais.get("estaca_inicial")) or not self._is_missing(dados_parciais.get("estaca_final")):
+                return "estaca"
+
+            if not self._is_missing(self._value_for_field("local_descritivo", dados_parciais)):
+                return "texto"
+
             return None
 
         return dados_parciais.get(field_name)
