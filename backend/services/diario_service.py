@@ -92,7 +92,7 @@ def _registro_to_row(r: Registro, include_imagens: bool = False) -> dict:
         "registro_schema_id": r.registro_schema_id,
         "estaca_inicial": float(r.estaca_inicial) if r.estaca_inicial is not None else None,
         "estaca_final": float(r.estaca_final) if r.estaca_final is not None else None,
-        "estaca": r.estaca,
+        "localizacao": r.localizacao,
         "resultado": float(r.resultado) if r.resultado is not None else None,
         "lado_pista": r.lado_pista.value if hasattr(r.lado_pista, "value") else str(r.lado_pista or ""),
         "tempo_manha": r.tempo_manha.value if hasattr(r.tempo_manha, "value") else str(r.tempo_manha or ""),
@@ -370,6 +370,22 @@ def get_dados_para_exportar(diario_id: str, versao: int, tenant_id: int) -> tupl
         registros_rows = [_registro_to_row(r, include_imagens=True) for r in regs]
         frentes_schemas = _build_frentes_schemas(db, regs)
         return diario_info, registros_rows, frentes_schemas
+
+
+def deletar_diario(diario_id: str, tenant_id: int) -> None:
+    """Delete a diário and all related records. Raises ValueError if not found."""
+    with SessionLocal() as db:
+        diario = (
+            db.query(Diario)
+            .filter(Diario.id == diario_id, Diario.tenant_id == tenant_id)
+            .first()
+        )
+        if not diario:
+            raise ValueError(f"Diário {diario_id} não encontrado.")
+        db.query(DiarioRegistro).filter(DiarioRegistro.diario_id == diario.id).delete()
+        db.query(DiarioVersao).filter(DiarioVersao.diario_id == diario.id).delete()
+        db.delete(diario)
+        db.commit()
 
 
 def buscar_diario(

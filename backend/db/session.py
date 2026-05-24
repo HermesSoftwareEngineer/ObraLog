@@ -14,7 +14,12 @@ def _normalize_database_url(database_url: str) -> str:
     return database_url
 
 
-engine = create_engine(_normalize_database_url(settings.database_url), pool_pre_ping=True)
+engine = create_engine(
+    _normalize_database_url(settings.database_url),
+    pool_pre_ping=True,
+    pool_size=3,
+    max_overflow=2,
+)
 
 try:
     from pgvector.psycopg import register_vector as _register_vector
@@ -358,8 +363,10 @@ def ensure_runtime_migrations() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_type_aliases_ativo ON alert_type_aliases(ativo)"))
 
         # Sprint: Sessões de conversa + memória vetorial
-        # Wrapped in try/except: pgvector may not be available in all environments.
+        # SAVEPOINT isolates pgvector DDL: if the extension is unavailable the
+        # rollback resets the transaction state so subsequent migrations still run.
         try:
+            connection.execute(text("SAVEPOINT pgvector_sp"))
             connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             connection.execute(
                 text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS timeout_conversa_minutos INT NOT NULL DEFAULT 60")
@@ -383,6 +390,9 @@ def ensure_runtime_migrations() -> None:
                 )
             )
             connection.execute(
+                text("ALTER TABLE conversas ADD COLUMN IF NOT EXISTS ambiente VARCHAR(10) NOT NULL DEFAULT 'prod'")
+            )
+            connection.execute(
                 text("CREATE INDEX IF NOT EXISTS idx_conversas_tenant_usuario ON conversas(tenant_id, usuario_id)")
             )
             connection.execute(
@@ -390,7 +400,9 @@ def ensure_runtime_migrations() -> None:
                     "CREATE INDEX IF NOT EXISTS idx_conversas_aberta ON conversas(tenant_id, ultima_msg_em) WHERE encerrada_em IS NULL"
                 )
             )
+            connection.execute(text("RELEASE SAVEPOINT pgvector_sp"))
         except Exception as _vec_exc:
+            connection.execute(text("ROLLBACK TO SAVEPOINT pgvector_sp"))
             logger.warning(
                 "pgvector indisponível; sessões de conversa desabilitadas: %s", _vec_exc
             )

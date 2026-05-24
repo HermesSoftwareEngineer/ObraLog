@@ -10,7 +10,7 @@ from docx.shared import RGBColor  # module-level so helpers can use it
 _CAMPOS_ORDER = [
     ("estaca_inicial", "Est. Inicial"),
     ("estaca_final", "Est. Final"),
-    ("estaca", "Localização"),
+    ("localizacao", "Localização"),
     ("resultado", "Resultado"),
     ("lado_pista", "Lado"),
     ("tempo_manha", "Manhã"),
@@ -44,8 +44,8 @@ def _campo_value(r: dict, chave: str) -> str:
     if chave in ("estaca_inicial", "estaca_final", "resultado"):
         v = r.get(chave)
         return f"{v:.2f}" if isinstance(v, (int, float)) else ("—" if v is None else str(v))
-    if chave == "estaca":
-        return str(r.get("estaca") or "—")
+    if chave == "localizacao":
+        return str(r.get("localizacao") or "—")
     if chave == "lado_pista":
         return str(r.get("lado_pista") or "—")
     if chave in ("tempo_manha", "tempo_tarde"):

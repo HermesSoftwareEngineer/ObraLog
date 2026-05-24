@@ -12,7 +12,7 @@ class RegistroConsolidacaoLocalizacaoTests(unittest.TestCase):
             "tempo_manha": "limpo",
             "tempo_tarde": "limpo",
             "metadata_json": {"tipo": "texto"},
-            "estaca": "Armazem",
+            "localizacao": "Armazem",
             "estaca_inicial": None,
             "estaca_final": None,
             "resultado": None,
@@ -29,11 +29,11 @@ class RegistroConsolidacaoLocalizacaoTests(unittest.TestCase):
             "tempo_manha": "limpo",
             "tempo_tarde": "limpo",
             "metadata_json": {"tipo": "texto"},
-            "estaca": None,
+            "localizacao": None,
         }
 
         missing = RegistroRepository._required_missing_for_consolidated(payload)
-        self.assertIn("estaca", missing)
+        self.assertIn("localizacao", missing)
         self.assertNotIn("estaca_inicial", missing)
         self.assertNotIn("estaca_final", missing)
 

@@ -20,6 +20,12 @@ def _parse_canonical_type(value: str | None, field_name: str = "tipo_canonico") 
     return normalized.replace(" ", "_")
 
 
+def _alias_to_business_dict(item: AlertTypeAlias) -> dict:
+    payload = to_dict(item)
+    payload["tipo_canonico"] = payload.pop("canonical_type", None)
+    return payload
+
+
 def _get_alias(db, tipo_id: str | None = None, alias: str | None = None, tenant_id: int | None = None) -> AlertTypeAlias | None:
     if tipo_id:
         query = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == uuid.UUID(str(tipo_id)))
@@ -52,18 +58,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str, tenant_id: int 
             if ativos_apenas:
                 query = query.filter(AlertTypeAlias.ativo.is_(True))
             items = query.order_by(AlertTypeAlias.alias.asc()).all()
-            tipos = [
-                {
-                    "id": str(item.id),
-                    "alias": item.alias,
-                    "tipo_canonico": str(item.canonical_type),
-                    "descricao": item.descricao,
-                    "ativo": bool(item.ativo),
-                    "created_at": item.created_at,
-                    "updated_at": item.updated_at,
-                }
-                for item in items
-            ]
+            tipos = [_alias_to_business_dict(item) for item in items]
             canonical_query = db.query(AlertTypeAlias.canonical_type)
             if tenant_id is not None:
                 canonical_query = canonical_query.filter(AlertTypeAlias.tenant_id == tenant_id)
@@ -89,8 +84,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str, tenant_id: int 
             item = _get_alias(db, tipo_id=tipo_id, alias=alias, tenant_id=tenant_id)
             if not item:
                 return {"ok": False, "message": "Tipo de alerta não encontrado."}
-            payload = to_dict(item)
-            return {"ok": True, "tipo_alerta": payload}
+            return {"ok": True, "tipo_alerta": _alias_to_business_dict(item)}
 
     @tool
     def criar_tipo_alerta(
@@ -127,8 +121,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str, tenant_id: int 
                 db.rollback()
                 raise ValueError("Já existe um tipo de alerta com este alias.") from exc
             db.refresh(item)
-            payload = to_dict(item)
-            return {"ok": True, "tipo_alerta": payload}
+            return {"ok": True, "tipo_alerta": _alias_to_business_dict(item)}
 
     @tool
     def atualizar_tipo_alerta(
@@ -171,8 +164,7 @@ def build_alert_type_tools(actor_user_id: int, actor_level: str, tenant_id: int 
                 db.rollback()
                 raise ValueError("Não foi possível atualizar: alias já existe.") from exc
             db.refresh(item)
-            payload = to_dict(item)
-            return {"ok": True, "tipo_alerta": payload}
+            return {"ok": True, "tipo_alerta": _alias_to_business_dict(item)}
 
     @tool
     def deletar_tipo_alerta(tipo_id: str | None = None, alias: str | None = None) -> dict:

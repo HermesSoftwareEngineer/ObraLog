@@ -110,10 +110,10 @@ def has_technical_keys(payload: Any) -> bool:
 def summarize_registro_item(item: dict[str, Any], frente_nome: str | None = None) -> dict[str, Any]:
     return {
         "data": item.get("data"),
-        "obra_id": item.get("obra_id"),
         "frente_servico_nome": frente_nome,
         "estaca_inicial": item.get("estaca_inicial"),
         "estaca_final": item.get("estaca_final"),
+        "localizacao": item.get("localizacao"),
         "resultado": item.get("resultado"),
         "tempo_manha": item.get("tempo_manha"),
         "tempo_tarde": item.get("tempo_tarde"),

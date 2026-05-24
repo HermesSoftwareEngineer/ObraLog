@@ -6,7 +6,8 @@ import unicodedata
 
 from backend.agents.instructions_store import read_agent_instructions
 from backend.agents.gateway.location_profile import build_location_profile
-from backend.db.repository import Repository
+from backend.db.models import FrenteServico, RegistroSchema
+from backend.db.repository import Repository, RegistroRepository, RegistroSchemaRepository
 from backend.db.session import SessionLocal
 
 
@@ -21,6 +22,45 @@ class BusinessRAGService:
     def __init__(self, knowledge_path: Path | None = None):
         default_path = Path(__file__).resolve().parents[1] / "context" / "padroes_operacionais_encarregado.md"
         self.knowledge_path = knowledge_path or default_path
+
+    def consultar_schema_frente(self, frente_servico: str, tenant_id: int | None = None) -> dict:
+        """Retorna campos obrigatórios e extras do RegistroSchema da frente de serviço."""
+        dados = {"frente_servico": frente_servico}
+        schema = self._fetch_schema_for_frente(dados, tenant_id=tenant_id)
+        if schema is None:
+            return {
+                "ok": True,
+                "frente_servico": frente_servico,
+                "schema_configurado": False,
+                "campos_obrigatorios": [],
+                "campos_opcionais": [],
+                "campos_extras": [],
+                "message": "Frente nao possui schema configurado. Use os campos padrao de producao_diaria.",
+            }
+
+        campos_ativos = getattr(schema, "campos_ativos", None) or {}
+        recognized = RegistroRepository._SCHEMA_CAMPO_TO_ATTR
+        _location_campos = {"localizacao", "estaca_inicial", "estaca_final"}
+        obrigatorios = [c for c, req in campos_ativos.items() if req and c in recognized and c not in _location_campos]
+        opcionais = [c for c, req in campos_ativos.items() if not req and c in recognized and c not in _location_campos]
+        extras = self._schema_campos_extras(schema)
+
+        localizacao_campos = {
+            c: ("obrigatorio" if req else "opcional")
+            for c, req in campos_ativos.items()
+            if c in _location_campos
+        }
+
+        return {
+            "ok": True,
+            "frente_servico": frente_servico,
+            "schema_configurado": True,
+            "schema_nome": getattr(schema, "nome", None),
+            "campos_obrigatorios": obrigatorios,
+            "campos_opcionais": opcionais,
+            "campos_extras": extras,
+            "campos_localizacao": localizacao_campos,
+        }
 
     def consultar_padroes_operacionais(self, pergunta: str, k: int = 3) -> dict:
         blocks = self._load_blocks()
@@ -61,10 +101,16 @@ class BusinessRAGService:
         location_profile: str | None = None,
     ) -> dict:
         effective_location_mode = self._resolve_location_mode(dados_parciais, location_profile=location_profile)
+
+        schema = None
+        if (tipo_registro or "").strip().lower() == "producao_diaria":
+            schema = self._fetch_schema_for_frente(dados_parciais, tenant_id=tenant_id)
+
         checklist = self._checklist_by_type(
             tipo_registro,
             dados_parciais,
             location_profile=effective_location_mode,
+            schema=schema,
         )
         if not checklist:
             return {
@@ -75,6 +121,9 @@ class BusinessRAGService:
         missing = [field for field in checklist if self._is_missing(self._value_for_field(field, dados_parciais))]
         validation_issues = self._validate_references(tipo_registro, dados_parciais, tenant_id=tenant_id)
         profile = build_location_profile(effective_location_mode)
+
+        campos_extras_info = self._schema_campos_extras(schema) if schema else []
+
         return {
             "ok": True,
             "tipo_registro": tipo_registro,
@@ -84,6 +133,7 @@ class BusinessRAGService:
             "labels_localizacao": profile.labels,
             "obrigatorios": checklist,
             "faltantes": missing,
+            "campos_extras": campos_extras_info,
             "completo": len(missing) == 0,
             "validacoes": validation_issues,
             "pronto_para_consolidar": len(missing) == 0 and not validation_issues,
@@ -128,27 +178,117 @@ class BusinessRAGService:
         tipo_registro: str,
         dados_parciais: dict,
         location_profile: str | None = None,
+        schema: "RegistroSchema | None" = None,
     ) -> list[str]:
         profile = build_location_profile(location_profile)
         location_type_value = self._value_for_field("tipo_localizacao", dados_parciais)
         has_location_type = not self._is_missing(location_type_value)
         location_required = profile.required_fields if has_location_type else []
-        mapping = {
-            "producao_diaria": [
-                "data",
-                "frente_servico",
-                "tempo_manha",
-                "tempo_tarde",
-                "tipo_localizacao",
-            ] + location_required,
-            "alerta_operacional": [
-                "tipo_alerta",
-                "descricao",
-                "severidade",
-                "local",
-            ],
-        }
-        return mapping.get((tipo_registro or "").strip().lower(), [])
+
+        normalized_type = (tipo_registro or "").strip().lower()
+        if normalized_type not in {"producao_diaria", "alerta_operacional"}:
+            return []
+
+        if normalized_type == "alerta_operacional":
+            return ["tipo_alerta", "descricao", "severidade", "local"]
+
+        # producao_diaria: campos universais sempre exigidos
+        universal = ["data", "frente_servico"] + location_required
+
+        if schema is None:
+            # Sem schema: usa base conservador hardcoded
+            return universal + ["tempo_manha", "tempo_tarde"]
+
+        # Com schema: campos_ativos é a fonte de verdade para campos não-universais
+        recognized = RegistroRepository._SCHEMA_CAMPO_TO_ATTR
+        _location_campos = {"localizacao", "estaca_inicial", "estaca_final"}
+        campos_ativos = getattr(schema, "campos_ativos", None) or {}
+
+        schema_required = [
+            campo for campo, required in campos_ativos.items()
+            if required and campo in recognized and campo not in _location_campos
+        ]
+
+        extras_required = [
+            extra["chave"] for extra in self._schema_campos_extras(schema)
+            if extra.get("chave") and extra.get("obrigatorio")
+        ]
+
+        return universal + schema_required + extras_required
+
+    def _fetch_schema_for_frente(self, dados_parciais: dict, tenant_id: int | None = None) -> "RegistroSchema | None":
+        """Resolve o RegistroSchema seguindo a mesma hierarquia de criar_registro:
+        1. registro_schema_id direto na frente
+        2. schema ativo via obra da frente (obter_ativo_para_obra)
+        """
+        frente_id = dados_parciais.get("frente_servico_id")
+        frente_nome = dados_parciais.get("frente_servico") or dados_parciais.get("frente_servico_nome")
+
+        if self._is_missing(frente_id) and self._is_missing(frente_nome):
+            return None
+
+        try:
+            with SessionLocal() as db:
+                frente: FrenteServico | None = None
+
+                if not self._is_missing(frente_id):
+                    try:
+                        frente = Repository.frentes_servico.obter_por_id(db, int(frente_id), tenant_id=tenant_id)
+                    except TypeError:
+                        frente = Repository.frentes_servico.obter_por_id(db, int(frente_id))
+                elif isinstance(frente_nome, str) and frente_nome.strip():
+                    normalized = _normalize_text(frente_nome)
+                    try:
+                        frentes = Repository.frentes_servico.listar(db, tenant_id=tenant_id)
+                    except TypeError:
+                        frentes = Repository.frentes_servico.listar(db)
+                    exact = [f for f in frentes if _normalize_text(str(f.nome or "")) == normalized]
+                    frente = exact[0] if len(exact) == 1 else None
+
+                if frente is None:
+                    return None
+
+                # Prioridade 1: schema direto na frente
+                if frente.registro_schema_id:
+                    schema = (
+                        db.query(RegistroSchema)
+                        .filter(
+                            RegistroSchema.id == frente.registro_schema_id,
+                            RegistroSchema.tenant_id == tenant_id,
+                        )
+                        .first()
+                    )
+                    if schema:
+                        return schema
+
+                # Prioridade 2: schema ativo via obra (mesma lógica de criar_registro)
+                if frente.obra_id and tenant_id is not None:
+                    return RegistroSchemaRepository.obter_ativo_para_obra(db, frente.obra_id, tenant_id)
+
+                return None
+        except Exception:
+            return None
+
+    def _schema_campos_extras(self, schema: "RegistroSchema | None") -> list[dict]:
+        if schema is None:
+            return []
+        extras = getattr(schema, "campos_extras", None)
+        if not isinstance(extras, list):
+            return []
+        result = []
+        for item in extras:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key") or item.get("chave")
+            label = item.get("label") or item.get("rotulo") or key
+            tipo = item.get("type") or item.get("tipo") or "text"
+            obrigatorio = bool(item.get("required") or item.get("obrigatorio"))
+            options = item.get("options") or item.get("opcoes")
+            entry: dict = {"chave": key, "label": label, "tipo": tipo, "obrigatorio": obrigatorio}
+            if options:
+                entry["opcoes"] = options
+            result.append(entry)
+        return result
 
     def _validate_references(self, tipo_registro: str, dados_parciais: dict, tenant_id: int | None = None) -> list[dict]:
         normalized_type = (tipo_registro or "").strip().lower()
@@ -318,19 +458,28 @@ class BusinessRAGService:
         if field_name == "local_descritivo":
             if not self._is_missing(dados_parciais.get("local_descritivo")):
                 return dados_parciais.get("local_descritivo")
-            if not self._is_missing(dados_parciais.get("estaca")):
-                return dados_parciais.get("estaca")
-            if isinstance(dados_parciais.get("localizacao"), dict):
-                return dados_parciais.get("localizacao", {}).get("detalhe_texto")
+            loc = dados_parciais.get("localizacao")
+            if isinstance(loc, dict):
+                return loc.get("detalhe_texto")
+            if not self._is_missing(loc):
+                return loc
             return None
 
         if field_name == "tipo_localizacao":
+            # 1. Valor explícito passado diretamente pelo agente
+            direct = dados_parciais.get("tipo_localizacao")
+            if isinstance(direct, str) and direct.strip():
+                normalized = direct.strip().lower()
+                return "texto" if normalized == "text" else normalized
+
+            # 2. Dentro do objeto localizacao
             if isinstance(dados_parciais.get("localizacao"), dict):
                 tipo = dados_parciais.get("localizacao", {}).get("tipo")
                 if isinstance(tipo, str) and tipo.strip():
                     normalized = tipo.strip().lower()
                     return "texto" if normalized == "text" else normalized
 
+            # 3. Inferir pelos campos numéricos ou descritivo
             if not self._is_missing(dados_parciais.get("km_inicial")) or not self._is_missing(dados_parciais.get("km_final")):
                 return "km"
 
@@ -341,5 +490,10 @@ class BusinessRAGService:
                 return "texto"
 
             return None
+
+        # Campos extras do schema ficam aninhados em metadata_json ou no próprio dict
+        metadata = dados_parciais.get("metadata_json") or {}
+        if isinstance(metadata, dict) and field_name in metadata:
+            return metadata[field_name]
 
         return dados_parciais.get(field_name)

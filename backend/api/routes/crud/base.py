@@ -57,7 +57,7 @@ def _to_dict(model_instance):
         localizacao = {"tipo": "ESTACA"}
         if payload.get("metadata_json") and isinstance(payload["metadata_json"], dict):
             localizacao["tipo"] = payload["metadata_json"].get("tipo", "ESTACA")
-        localizacao["detalhe_texto"] = payload.get("estaca")
+        localizacao["detalhe_texto"] = payload.get("localizacao")
         localizacao["valor_inicial"] = payload.get("estaca_inicial")
         localizacao["valor_final"] = payload.get("estaca_final")
         payload["localizacao"] = localizacao

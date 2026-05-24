@@ -1069,6 +1069,26 @@ def get_gateway_tools(
         return _execute_gateway(lambda: router.consulta(request, handler))
 
     @tool
+    def consultar_schema_frente_servico(frente_servico: str) -> dict:
+        """Retorna os campos obrigatorios, opcionais e extras do schema de registro vinculado a frente de servico.
+        Use esta tool logo apos identificar a frente, antes de coletar os demais dados do registro."""
+        request = _request(
+            "consultar_schema_frente_servico",
+            payload={"frente_servico": frente_servico},
+            action_route="consulta",
+            business_tool="consultar_schema_frente_servico",
+            technical_operation="rag_schema_frente",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            return business_rag.consultar_schema_frente(
+                frente_servico=frente_servico,
+                tenant_id=tenant_id,
+            )
+
+        return _execute_gateway(lambda: router.consulta(request, handler))
+
+    @tool
     def sugerir_campos_faltantes(tipo_registro: str, dados_parciais: dict) -> dict:
         """Sugere campos obrigatorios faltantes para completar registro operacional."""
         request = _request(
@@ -1186,16 +1206,36 @@ def get_gateway_tools(
                     "lado_pista": lado_pista,
                 },
             )
-            if isinstance(result, dict):
-                return {
-                    "registro": result,
-                    "perfil_localizacao": mode,
-                    "tenant_id": tenant_id,
-                }
+
+            dados_coletados = {
+                "data": data_normalizada,
+                "frente_servico_id": frente_id,
+                "frente_servico": frente_servico,
+                "tempo_manha": tempo_manha,
+                "tempo_tarde": tempo_tarde,
+                "lado_pista": lado_pista,
+                "tipo_localizacao": mode,
+                "estaca_inicial": start_value,
+                "estaca_final": end_value,
+                "local_descritivo": detail_value,
+                "observacao": observacao,
+            }
+            schema_ctx = business_rag.sugerir_campos_faltantes(
+                tipo_registro="producao_diaria",
+                dados_parciais=dados_coletados,
+                tenant_id=tenant_id,
+                location_profile=resolved_location_mode,
+            )
+            campos_pendentes = schema_ctx.get("faltantes", []) if schema_ctx.get("ok") else []
+            extras_info = schema_ctx.get("campos_extras", [])
+
+            registro_out = result if isinstance(result, dict) else {"resultado": result}
             return {
-                "registro": {"resultado": result},
+                "registro": registro_out,
                 "perfil_localizacao": mode,
                 "tenant_id": tenant_id,
+                "campos_pendentes_schema": campos_pendentes,
+                "campos_extras_schema": extras_info,
             }
 
         return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
@@ -1656,6 +1696,7 @@ def get_gateway_tools(
         listar_tipos_alerta_operacional,
         consultar_tipo_alerta_operacional,
         consultar_padroes_operacionais,
+        consultar_schema_frente_servico,
         sugerir_campos_faltantes,
         criar_frente_servico_operacional,
         atualizar_frente_servico_operacional,

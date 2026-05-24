@@ -124,7 +124,7 @@ def build_registros_tools(
                 usuario_registrador_id=actor_user_id,
                 estaca_inicial=float(start_value) if start_value is not None else None,
                 estaca_final=float(end_value) if end_value is not None else None,
-                estaca=(str(detail_value).strip() or None) if detail_value is not None else None,
+                localizacao=(str(detail_value).strip() or None) if detail_value is not None else None,
                 metadata_json={"tipo": location_type},
                 resultado=resultado,
                 tempo_manha=parsed_tempo_manha,
@@ -259,7 +259,7 @@ def build_registros_tools(
         detail_value = localizacao.get("detalhe_texto", local_descritivo)
         payload["estaca_inicial"] = float(start_value) if start_value is not None else None
         payload["estaca_final"] = float(end_value) if end_value is not None else None
-        payload["estaca"] = (str(detail_value).strip() or None) if detail_value is not None else None
+        payload["localizacao"] = (str(detail_value).strip() or None) if detail_value is not None else None
         payload["metadata_json"] = {"tipo": location_type}
         if data:
             payload["data"] = date.fromisoformat(data)

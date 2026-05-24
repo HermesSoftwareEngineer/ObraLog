@@ -426,7 +426,7 @@ class RegistroRepository:
     _SCHEMA_CAMPO_TO_ATTR: dict[str, str] = {
         "estaca_inicial": "estaca_inicial",
         "estaca_final": "estaca_final",
-        "estaca": "estaca",
+        "localizacao": "localizacao",
         "lado_pista": "lado_pista",
         "tempo_manha": "tempo_manha",
         "tempo_tarde": "tempo_tarde",
@@ -512,9 +512,9 @@ class RegistroRepository:
 
         location_type = RegistroRepository._resolve_location_type(payload)
         if location_type == "texto":
-            detail_text = payload.get("estaca")
+            detail_text = payload.get("localizacao")
             if detail_text in (None, ""):
-                missing.append("estaca")
+                missing.append("localizacao")
             return missing
 
         # For estaca/km profiles, start/end are required.
@@ -543,7 +543,7 @@ class RegistroRepository:
         usuario_registrador_id: int | None = None,
         estaca_inicial: float | None = None,
         estaca_final: float | None = None,
-        estaca: str | None = None,
+        localizacao: str | None = None,
         metadata_json: dict | None = None,
         resultado: float | None = None,
         tempo_manha: Clima | None = None,
@@ -576,7 +576,7 @@ class RegistroRepository:
             "usuario_registrador_id": usuario_registrador_id,
             "estaca_inicial": estaca_inicial,
             "estaca_final": estaca_final,
-            "estaca": estaca,
+            "localizacao": localizacao,
             "lado_pista": lado_pista,
             "resultado": resultado,
             "tempo_manha": tempo_manha,
@@ -601,7 +601,7 @@ class RegistroRepository:
             registro_schema_id=registro_schema_id,
             estaca_inicial=estaca_inicial,
             estaca_final=estaca_final,
-            estaca=estaca,
+            localizacao=localizacao,
             metadata_json=metadata_json,
             resultado=resultado,
             tempo_manha=tempo_manha,

@@ -321,7 +321,7 @@ class Registro(Base):
     registro_schema_id = Column(Integer, ForeignKey("registro_schemas.id", ondelete="SET NULL"), nullable=True, index=True)
     estaca_inicial = Column(DECIMAL(10, 2), nullable=True)
     estaca_final = Column(DECIMAL(10, 2), nullable=True)
-    estaca = Column(String, nullable=True)
+    localizacao = Column(String, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     resultado = Column(DECIMAL(10, 2), nullable=True)
     tempo_manha = Column(SQLEnum(Clima, values_callable=_enum_values, name="clima"), nullable=True)

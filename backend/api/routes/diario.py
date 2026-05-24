@@ -114,7 +114,7 @@ def _registro_to_schema(registro) -> RegistroOut:
     localizacao = {"tipo": "ESTACA"}
     if getattr(registro, "metadata_json", None) and isinstance(registro.metadata_json, dict):
         localizacao["tipo"] = registro.metadata_json.get("tipo", "ESTACA")
-    localizacao["detalhe_texto"] = getattr(registro, "estaca", None)
+    localizacao["detalhe_texto"] = getattr(registro, "localizacao", None)
     localizacao["valor_inicial"] = _to_float(registro.estaca_inicial) if registro.estaca_inicial is not None else None
     localizacao["valor_final"] = _to_float(registro.estaca_final) if registro.estaca_final is not None else None
 
@@ -300,6 +300,26 @@ def _check_gerente_admin():
     return user, None
 
 
+@diarios_router.get("/imagens/<int:imagem_id>")
+def servir_imagem_registro(imagem_id: int):
+    """Serve a registro image by ID. No auth required — browsers load <img> without headers.
+    Consistent with the PDF file-serving endpoint (servir_pdf_local)."""
+    from flask import redirect, send_file
+    from backend.db.models import RegistroImagem
+    with SessionLocal() as db:
+        img = db.query(RegistroImagem).filter(RegistroImagem.id == imagem_id).first()
+        if not img:
+            return _json_error("Imagem não encontrada.", 404)
+        if img.external_url:
+            return redirect(img.external_url)
+        if img.storage_path:
+            from pathlib import Path
+            p = Path(img.storage_path)
+            if p.exists():
+                return send_file(str(p.resolve()), mimetype=img.mime_type or "image/jpeg")
+        return _json_error("Arquivo de imagem não disponível.", 404)
+
+
 @diarios_router.post("/gerar")
 @require_auth
 def gerar_diario():
@@ -442,6 +462,55 @@ def obter_diario(diario_id: str):
         )
         from backend.services.diario_service import _diario_to_dict, _versao_to_dict
         return jsonify(_diario_to_dict(diario, versoes))
+
+
+@diarios_router.delete("/<string:diario_id>")
+@require_auth
+def deletar_diario(diario_id: str):
+    """Exclui um diário e todas as suas versões. Requer gerente ou administrador."""
+    _, err = _check_gerente_admin()
+    if err:
+        return err
+    tenant_id = getattr(g, "tenant_id", None)
+    try:
+        from backend.services.diario_service import deletar_diario as _deletar
+        _deletar(diario_id=diario_id, tenant_id=tenant_id)
+        return jsonify({"ok": True})
+    except ValueError as exc:
+        return _json_error(str(exc), 404)
+
+
+@diarios_router.get("/<string:diario_id>/versoes/<int:versao>/dados")
+@require_auth
+def obter_dados_versao(diario_id: str, versao: int):
+    """Retorna todos os dados de uma versão para visualização no frontend."""
+    tenant_id = getattr(g, "tenant_id", None)
+    try:
+        from backend.services.diario_service import get_dados_para_exportar
+        diario_info, registros_rows, frentes_schemas = get_dados_para_exportar(diario_id, versao, tenant_id)
+    except ValueError as exc:
+        return _json_error(str(exc), 404)
+
+    from backend.db.models import Diario, DiarioVersao as DV
+    with SessionLocal() as db:
+        diario = db.query(Diario).filter(
+            Diario.id == diario_id, Diario.tenant_id == tenant_id
+        ).first()
+        versoes = (
+            db.query(DV)
+            .filter(DV.diario_id == diario_id)
+            .order_by(DV.versao.desc())
+            .all()
+        )
+        from backend.services.diario_service import _diario_to_dict
+        diario_dict = _diario_to_dict(diario, versoes) if diario else None
+
+    return jsonify({
+        "diario": diario_dict,
+        "diario_info": diario_info,
+        "registros": registros_rows,
+        "frentes_schemas": frentes_schemas,
+    })
 
 
 @diarios_router.get("/<string:diario_id>/versoes/<int:versao>/url")

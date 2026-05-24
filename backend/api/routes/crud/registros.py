@@ -110,7 +110,7 @@ def _parse_registro_payload(data: dict):
     if data.get("localizacao") is not None:
         loc = data["localizacao"]
         if loc.get("detalhe_texto"):
-            parsed["estaca"] = str(loc["detalhe_texto"])
+            parsed["localizacao"] = str(loc["detalhe_texto"])
         if loc.get("valor_inicial") is not None:
             parsed["estaca_inicial"] = float(loc["valor_inicial"])
         if loc.get("valor_final") is not None:
@@ -156,10 +156,10 @@ def _parse_registro_payload(data: dict):
     if "source_message_id" in data:
         parsed["source_message_id"] = data.get("source_message_id")
 
-    # Aceita estaca diretamente quando não vem via objeto localizacao
-    if "estaca" in data and "estaca" not in parsed:
-        estaca_val = str(data.get("estaca") or "").strip()
-        parsed["estaca"] = estaca_val or None
+    # Aceita localizacao diretamente quando não vem via objeto localizacao
+    if "localizacao" in data and "localizacao" not in parsed:
+        estaca_val = str(data.get("localizacao") or "").strip()
+        parsed["localizacao"] = estaca_val or None
 
     # Campos extras do schema: mescla no metadata_json preservando tipo de localização
     if data.get("campos_extras_valores") and isinstance(data["campos_extras_valores"], dict):
@@ -281,10 +281,10 @@ def atualizar_registro(registro_id: int):
         "source_message_id": data.get("source_message_id"),
     }
 
-    if data.get("localizacao") is not None:
+    if data.get("localizacao") is not None and isinstance(data["localizacao"], dict):
         loc = data["localizacao"]
         if "detalhe_texto" in loc:
-            payload["estaca"] = str(loc["detalhe_texto"]) if loc["detalhe_texto"] else None
+            payload["localizacao"] = str(loc["detalhe_texto"]) if loc["detalhe_texto"] else None
         if "valor_inicial" in loc:
             payload["estaca_inicial"] = float(loc["valor_inicial"]) if loc["valor_inicial"] is not None else None
         if "valor_final" in loc:
@@ -292,9 +292,9 @@ def atualizar_registro(registro_id: int):
         if "tipo" in loc:
             payload["metadata_json"] = {"tipo": loc["tipo"]}
     else:
-        if "estaca" in data:
-            estaca_val = str(data.get("estaca") or "").strip()
-            payload["estaca"] = estaca_val or None
+        if "localizacao" in data and not isinstance(data["localizacao"], dict):
+            estaca_val = str(data.get("localizacao") or "").strip()
+            payload["localizacao"] = estaca_val or None
         if "estaca_inicial" in data:
             payload["estaca_inicial"] = data.get("estaca_inicial")
         if "estaca_final" in data:
