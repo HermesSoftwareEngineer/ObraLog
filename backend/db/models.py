@@ -60,6 +60,7 @@ class AlertStatus(str, Enum):
 
 class CanalOrigemMensagem(str, Enum):
     TELEGRAM = "telegram"
+    WHATSAPP = "whatsapp"
 
 
 class ConteudoMensagemTipo(str, Enum):

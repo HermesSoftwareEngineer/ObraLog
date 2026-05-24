@@ -110,10 +110,14 @@ def build_registros_tools(
                     obra_id = frente.obra_id
 
             registro_schema_id = None
-            if obra_id is not None:
-                schema = RegistroSchemaRepository.obter_ativo_para_obra(db, obra_id, tenant_id)
-                if schema:
-                    registro_schema_id = schema.id
+            if resolved_frente_id is not None:
+                frente_schema = RegistroSchemaRepository.obter_para_frente(db, resolved_frente_id, tenant_id)
+                if frente_schema:
+                    registro_schema_id = frente_schema.id
+            if registro_schema_id is None and obra_id is not None:
+                obra_schema = RegistroSchemaRepository.obter_ativo_para_obra(db, obra_id, tenant_id)
+                if obra_schema:
+                    registro_schema_id = obra_schema.id
 
             registro = Repository.registros.criar(
                 db=db,
@@ -180,6 +184,20 @@ def build_registros_tools(
                     "origem": imagem.origem,
                 },
             }
+
+    @tool
+    def obter_registro(registro_id: int) -> dict:
+        """Obtém um registro de produção pelo ID numérico."""
+        assert_permission(actor_level, "read", "registros")
+        with SessionLocal() as db:
+            registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
+            if not registro:
+                return {"ok": False, "message": "Registro não encontrado."}
+            if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
+                raise PermissionError("Encarregado só pode consultar seus próprios registros.")
+            data = registro_to_dict_with_images(db, registro)
+            data["registrador_nome"] = registro.usuario_registrador.nome if getattr(registro, "usuario_registrador", None) else None
+            return {"ok": True, "registro": data}
 
     @tool
     def listar_registros(
@@ -390,6 +408,7 @@ def build_registros_tools(
     return [
         criar_registro,
         anexar_imagem_registro,
+        obter_registro,
         listar_registros,
         atualizar_registro,
         atualizar_status_registro,

@@ -10,6 +10,8 @@ SYSTEM_PROMPT_BASE = (
     "Atue em linguagem de negócio: não exponha IDs técnicos ao usuário e prefira nomes operacionais. "
     "Use as tools do gateway para consultar e executar ações de ponta a ponta. "
     "Para operações de diário operacional, trabalhe com registros e status de registro em linguagem de negócio. "
+    "Quando o usuário falar em 'registro' sem qualificação, assuma sempre registro de produção diária — nunca confunda com alerta. Alertas são sempre mencionados explicitamente como 'alerta'. "
+    "Para consultar um registro de produção por ID numérico, use consultar_registro_operacional(registro_id=...). Para frente de serviço por ID ou nome, use consultar_frente_servico_operacional. "
     "Quando preencher o campo tecnico de intencao em tools de execucao, use apenas: registrar_producao, atualizar_registro, consolidar_registro ou registrar_alerta. "
     "Sempre crie e atualize registros de forma parcial durante a coleta de dados. "
     "Assim que houver qualquer informação útil, crie o registro em andamento; depois, sempre atualize o mesmo registro à medida que o usuário enviar novos dados. "

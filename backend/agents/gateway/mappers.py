@@ -262,6 +262,27 @@ def map_consultar_producao_periodo_output(
     return strip_technical_keys(payload)
 
 
+def map_registro_to_business(item: dict[str, Any], frente_nome: str | None = None) -> dict[str, Any]:
+    metadata = item.get("metadata_json") or {}
+    tipo_localizacao = metadata.get("tipo") if isinstance(metadata, dict) else None
+    return {
+        "status": item.get("status"),
+        "data": item.get("data"),
+        "frente_servico_nome": frente_nome,
+        "tipo_localizacao": tipo_localizacao,
+        "localizacao": item.get("localizacao"),
+        "estaca_inicial": item.get("estaca_inicial"),
+        "estaca_final": item.get("estaca_final"),
+        "resultado": item.get("resultado"),
+        "tempo_manha": item.get("tempo_manha"),
+        "tempo_tarde": item.get("tempo_tarde"),
+        "lado_pista": item.get("lado_pista") or item.get("pista"),
+        "observacao": item.get("observacao"),
+        "imagens_total": item.get("imagens_total"),
+        "registrador_nome": item.get("registrador_nome"),
+    }
+
+
 def map_alerta_to_business(alerta: dict[str, Any]) -> dict[str, Any]:
     """Converte um dict tecnico de alerta para chaves de negocio em PT-BR."""
     return {

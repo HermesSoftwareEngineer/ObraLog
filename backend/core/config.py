@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_service_key: str | None = None
 
+    # Channel selection: "telegram" (default) or "whatsapp"
+    bot_channel: str = "telegram"
+
+    # WhatsApp Business Cloud API
+    whatsapp_access_token: str | None = None      # Meta System User token
+    whatsapp_phone_number_id: str | None = None   # Phone Number ID from Meta dashboard
+    whatsapp_verify_token: str | None = None      # Any string you choose for webhook verification
+    whatsapp_app_secret: str | None = None        # App Secret for X-Hub-Signature-256 validation
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -24,6 +24,7 @@ from backend.agents.gateway.mappers import (
     map_consultar_alertas_operacionais_output,
     map_consultar_diario_obra_output,
     map_consultar_producao_periodo_output,
+    map_registro_to_business,
     parse_iso_date,
     strip_technical_keys,
 )
@@ -523,6 +524,25 @@ def get_gateway_tools(
         return _execute_gateway(lambda: router.consulta(request, handler))
 
     @tool
+    def consultar_frente_servico_operacional(frente_id: int | None = None, nome: str | None = None) -> dict:
+        """Consulta uma frente de serviço específica pelo ID numérico ou pelo nome."""
+        request = _request(
+            "consultar_frente_servico_operacional",
+            payload={"frente_id": frente_id, "nome": nome},
+            action_route="consulta",
+            business_tool="consultar_frente_servico_operacional",
+            technical_operation="obter_frente_servico",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal("obter_frente_servico", {"frente_id": frente_id, "nome": nome})
+            if isinstance(result, dict):
+                return strip_technical_keys(result)
+            return {"ok": False, "message": "Frente de serviço não encontrada."}
+
+        return _execute_gateway(lambda: router.consulta(request, handler))
+
+    @tool
     def listar_obras_operacional() -> dict:
         """Lista obras em linguagem de negócio para vinculação de registros e alertas."""
         request = _request(
@@ -887,6 +907,32 @@ def get_gateway_tools(
                 alerta_raw = result.get("alerta", result)
                 return {"ok": True, "alerta": map_alerta_to_business(alerta_raw) if isinstance(alerta_raw, dict) else alerta_raw}
             return {"ok": True, "alerta": {"resultado": result}}
+
+        return _execute_gateway(lambda: router.consulta(request, handler))
+
+    @tool
+    def consultar_registro_operacional(registro_id: int) -> dict:
+        """Consulta um registro de produção diária pelo ID numérico."""
+        request = _request(
+            "consultar_registro_operacional",
+            payload={"registro_id": registro_id},
+            action_route="consulta",
+            business_tool="consultar_registro_operacional",
+            technical_operation="obter_registro",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            result = _invoke_internal("obter_registro", {"registro_id": int(registro_id)})
+            if not isinstance(result, dict):
+                return {"ok": False, "message": "Registro não encontrado."}
+            if not result.get("ok"):
+                return result
+            registro_raw = result.get("registro", result)
+            frente_nome = None
+            frente_id = registro_raw.get("frente_servico_id")
+            if isinstance(frente_id, int):
+                frente_nome = _build_frentes_by_id().get(frente_id)
+            return {"ok": True, "registro": map_registro_to_business(registro_raw, frente_nome=frente_nome)}
 
         return _execute_gateway(lambda: router.consulta(request, handler))
 
@@ -1689,10 +1735,12 @@ def get_gateway_tools(
     return [
         consultar_diario_obra,
         listar_frentes_servico_operacional,
+        consultar_frente_servico_operacional,
         listar_obras_operacional,
         consultar_producao_periodo,
         consultar_alertas_operacionais,
         consultar_alerta_operacional,
+        consultar_registro_operacional,
         listar_tipos_alerta_operacional,
         consultar_tipo_alerta_operacional,
         consultar_padroes_operacionais,

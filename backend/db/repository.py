@@ -439,15 +439,11 @@ class RegistroRepository:
         """Fetch the active RegistroSchema for a registro or dict.
 
         Priority:
-        1. registro_schema_id explicit on the registro
-        2. registro_schema_id on the frente_servico linked to the registro
+        1. registro_schema_id on the frente_servico (most specific)
+        2. registro_schema_id stored on the registro (obra-level fallback)
         """
         def _get(field):
             return src.get(field) if isinstance(src, dict) else getattr(src, field, None)
-
-        schema_id = _get("registro_schema_id")
-        if schema_id:
-            return db.query(RegistroSchema).filter(RegistroSchema.id == schema_id).first()
 
         frente_id = _get("frente_servico_id")
         if frente_id:
@@ -456,10 +452,16 @@ class RegistroRepository:
                 FrenteServico.tenant_id == tenant_id,
             ).first()
             if frente and frente.registro_schema_id:
-                return db.query(RegistroSchema).filter(
+                schema = db.query(RegistroSchema).filter(
                     RegistroSchema.id == frente.registro_schema_id,
                     RegistroSchema.tenant_id == tenant_id,
                 ).first()
+                if schema:
+                    return schema
+
+        schema_id = _get("registro_schema_id")
+        if schema_id:
+            return db.query(RegistroSchema).filter(RegistroSchema.id == schema_id).first()
 
         return None
 
@@ -997,6 +999,87 @@ class MensagemCampoRepository:
             status_processamento=ProcessamentoMensagemStatus.PROCESSADA,
             processada_em=datetime.utcnow(),
             hash_idempotencia=f"agent:telegram:{telegram_chat_id}:{telegram_message_id}",
+        )
+        db.add(item)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        db.refresh(item)
+        return item
+
+
+    @staticmethod
+    def criar_whatsapp(
+        db: Session,
+        tenant_id: int | None = None,
+        *,
+        chat_id: str,
+        message_id: str,
+        texto_bruto: str | None,
+        texto_normalizado: str | None,
+        payload_json: str | None,
+        hash_idempotencia: str,
+        tipo_conteudo: ConteudoMensagemTipo,
+        usuario_id: int | None = None,
+    ) -> MensagemCampo:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+
+        existente = db.query(MensagemCampo).filter(
+            MensagemCampo.hash_idempotencia == hash_idempotencia
+        ).first()
+        if existente:
+            return existente
+
+        item = MensagemCampo(
+            tenant_id=tenant_id,
+            canal=CanalOrigemMensagem.WHATSAPP,
+            telegram_chat_id=chat_id,
+            usuario_id=usuario_id,
+            tipo_conteudo=tipo_conteudo,
+            texto_bruto=texto_bruto,
+            texto_normalizado=texto_normalizado,
+            payload_json=payload_json,
+            hash_idempotencia=hash_idempotencia,
+            status_processamento=ProcessamentoMensagemStatus.PENDENTE,
+        )
+        db.add(item)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existente = db.query(MensagemCampo).filter(
+                MensagemCampo.hash_idempotencia == hash_idempotencia
+            ).first()
+            if existente:
+                return existente
+            raise
+        db.refresh(item)
+        return item
+
+    @staticmethod
+    def criar_agent_response_whatsapp(
+        db: Session,
+        tenant_id: int | None = None,
+        *,
+        chat_id: str,
+        message_id: str,
+        texto: str,
+    ) -> MensagemCampo:
+        from backend.db.models import DirecaoMensagem
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        item = MensagemCampo(
+            tenant_id=tenant_id,
+            canal=CanalOrigemMensagem.WHATSAPP,
+            telegram_chat_id=chat_id,
+            tipo_conteudo=ConteudoMensagemTipo.TEXTO,
+            texto_bruto=texto,
+            texto_normalizado=" ".join(str(texto or "").strip().split()) or None,
+            direcao=DirecaoMensagem.AGENT,
+            status_processamento=ProcessamentoMensagemStatus.PROCESSADA,
+            processada_em=datetime.utcnow(),
+            hash_idempotencia=f"agent:whatsapp:{chat_id}:{message_id}",
         )
         db.add(item)
         try:
