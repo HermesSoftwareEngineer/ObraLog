@@ -88,6 +88,41 @@ class FiltrosDiario(BaseModel):
     usuario_id: int | None = None
     apenas_impraticaveis: bool = False
 
+
+# ---------------------------------------------------------------------------
+# Schemas para diários persistidos (Sprint: Diários de Obra)
+# ---------------------------------------------------------------------------
+
+class DiarioVersaoResponse(BaseModel):
+    id: str
+    versao: int
+    storage_url: str | None = None
+    gerado_em: datetime | None = None
+    motivo_regeracao: str | None = None
+
+
+class DiarioResponse(BaseModel):
+    id: str
+    obra_id: int
+    obra_nome: str | None = None
+    tipo: str          # 'diario' | 'semanal' | 'mensal'
+    status: str        # 'rascunho' | 'finalizado'
+    data_inicio: date
+    data_fim: date
+    versao_atual: int
+    gerado_em: datetime | None = None
+    finalizado_em: datetime | None = None
+    versoes: list[DiarioVersaoResponse] | None = None
+
+
+class GerarDiarioRequest(BaseModel):
+    obra_id: int
+    tipo: str = "diario"       # 'diario' | 'semanal' | 'mensal'
+    data_inicio: date
+    data_fim: date
+    motivo_regeracao: str | None = None
+
+
 __all__ = [
     "FrenteServicoSummary",
     "ImagemOut",
@@ -96,4 +131,7 @@ __all__ = [
     "DiarioDoDiaOut",
     "DiarioRelatorioOut",
     "FiltrosDiario",
+    "DiarioResponse",
+    "DiarioVersaoResponse",
+    "GerarDiarioRequest",
 ]

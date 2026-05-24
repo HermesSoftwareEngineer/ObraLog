@@ -202,14 +202,14 @@ class GatewayBusinessOutputTests(unittest.TestCase):
             response = atualizar_status.invoke(
                 {
                     "registro_id": 321,
-                    "status": "consolidado",
+                    "status": "aprovado",
                     "confirmado": True,
                 }
             )
 
             self.assertTrue(response.get("ok"))
             self.assertFalse(has_technical_keys(response))
-            self.assertEqual(response.get("registro", {}).get("status"), "consolidado")
+            self.assertEqual(response.get("registro", {}).get("status"), "aprovado")
         finally:
             gateway_tools_module.get_database_tools = original_get_database_tools
 

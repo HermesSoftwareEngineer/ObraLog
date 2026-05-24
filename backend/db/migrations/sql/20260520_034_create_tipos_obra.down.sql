@@ -1,0 +1,4 @@
+BEGIN;
+DROP TABLE IF EXISTS tipos_obra CASCADE;
+DROP SEQUENCE IF EXISTS tipos_obra_id_seq;
+COMMIT;

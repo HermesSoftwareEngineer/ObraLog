@@ -16,7 +16,7 @@ from backend.db.session import SessionLocal
 auth_blueprint = Blueprint("auth_v1", __name__, url_prefix="/api/v1/auth")
 
 _TOKEN_MAX_AGE_SECONDS = int(os.environ.get("AUTH_TOKEN_MAX_AGE_SECONDS", "86400"))
-_AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY") or os.environ.get("GOOGLE_API_KEY") or "obralog-dev-secret"
+_AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY") or "obralog-dev-secret"
 _NON_EXPIRING_LINK_CODE_EXPIRES_AT = datetime(9999, 12, 31, 23, 59, 59)
 
 
@@ -46,6 +46,7 @@ def _user_payload(user) -> dict:
         "telefone": user.telefone,
         "telegram_chat_id": user.telegram_chat_id,
         "nivel_acesso": nivel,
+        "tenant_id": user.tenant_id,
     }
 
 

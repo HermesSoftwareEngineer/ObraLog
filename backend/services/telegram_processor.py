@@ -29,6 +29,7 @@ from backend.services.telegram_extractor import (
 from backend.services import telegram_persistence as persistence
 from backend.services.telegram_linker import UserLinker
 from backend.agents.gateway.location_profile import resolve_runtime_location_context
+from backend.agents.session_service import get_or_create_conversa, atualizar_ultima_mensagem
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,21 @@ class MessageProcessor:
             usuario.id, chat_id, thread_id, len(extracted),
         )
 
+        tenant_id = getattr(usuario, "tenant_id", None)
+
+        # Resolve or create the current open conversation session
+        conversa_id = None
+        try:
+            from backend.core.config import get_ambiente
+            with SessionLocal() as db:
+                conversa = get_or_create_conversa(
+                    db, usuario.id, tenant_id, str(chat_id), thread_id,
+                    ambiente=get_ambiente(),
+                )
+                conversa_id = conversa.id
+        except Exception as exc:
+            logger.warning("Falha ao obter/criar conversa: %s", exc)
+
         config = {
             "configurable": {
                 "thread_id": thread_id,
@@ -172,7 +188,8 @@ class MessageProcessor:
                 "source_message_id": raw_source_id,
                 **_conversation_date_payload(),
                 "actor_user_id": usuario.id,
-                "tenant_id": getattr(usuario, "tenant_id", None),
+                "tenant_id": tenant_id,
+                "conversa_id": conversa_id,
                 "actor_level": (
                     usuario.nivel_acesso.value
                     if hasattr(usuario.nivel_acesso, "value")
@@ -184,18 +201,27 @@ class MessageProcessor:
         }
 
         runtime_location = resolve_runtime_location_context(
-            tenant_id=getattr(usuario, "tenant_id", None),
+            tenant_id=tenant_id,
             obra_id_ativa=None,
         )
         config["configurable"].update(runtime_location)
 
+        batched_text = _build_batched_text(extracted)
         typing_stop = self._typing.start(chat_id=chat_id, message_thread_id=thread_hint)
         try:
-            return self._invoke_agent(
-                _build_batched_text(extracted), config, chat_id, raw_messages
-            )
+            result = self._invoke_agent(batched_text, config, chat_id, raw_messages)
         finally:
             typing_stop()
+
+        # Stamp the session with the last message text (for future memory recall)
+        if conversa_id is not None:
+            try:
+                with SessionLocal() as db:
+                    atualizar_ultima_mensagem(db, conversa_id, batched_text)
+            except Exception as exc:
+                logger.warning("Falha ao atualizar ultima_msg_em: %s", exc)
+
+        return result
 
     def _handle_reset(self, chat_id, usuario, raw_messages: list) -> dict:
         logger.info("Reset de contexto - chat_id=%s, user_id=%d", chat_id, usuario.id)

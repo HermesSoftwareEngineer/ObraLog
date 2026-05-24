@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 
 from backend.db.models import NivelAcesso
 from backend.db.models import RegistroStatus
-from backend.db.repository import Repository
+from backend.db.repository import Repository, RegistroSchemaRepository
 from backend.db.session import SessionLocal
 
 from .common import (
@@ -33,14 +33,12 @@ def build_registros_tools(
         raw = str(value).strip().lower()
         aliases = {
             "pendente": RegistroStatus.PENDENTE,
-            "consolidado": RegistroStatus.CONSOLIDADO,
-            "revisado": RegistroStatus.REVISADO,
-            "ativo": RegistroStatus.ATIVO,
-            "descartado": RegistroStatus.DESCARTADO,
+            "aprovado": RegistroStatus.APROVADO,
+            "rejeitado": RegistroStatus.REJEITADO,
         }
         parsed = aliases.get(raw)
         if not parsed:
-            raise ValueError("status invalido. Use: pendente, consolidado, revisado, ativo, descartado.")
+            raise ValueError("status invalido. Use: pendente, aprovado, rejeitado.")
         return parsed
 
     @tool
@@ -101,6 +99,13 @@ def build_registros_tools(
                     frente_servico_nome=frente_servico_nome,
                     tenant_id=tenant_id,
                 )
+
+            registro_schema_id = None
+            if obra_id is not None:
+                schema = RegistroSchemaRepository.obter_ativo_para_obra(db, obra_id, tenant_id)
+                if schema:
+                    registro_schema_id = schema.id
+
             registro = Repository.registros.criar(
                 db=db,
                 tenant_id=tenant_id,
@@ -120,6 +125,7 @@ def build_registros_tools(
                 raw_text=(raw_text or "").strip() or None,
                 source_message_id=source_message_uuid,
                 status=parsed_status,
+                registro_schema_id=registro_schema_id,
             )
             return registro_to_dict_with_images(db, registro)
 
@@ -280,11 +286,11 @@ def build_registros_tools(
 
     @tool
     def atualizar_status_registro(registro_id: int, status: str) -> dict:
-        """Atualiza apenas o status do registro; consolidado exige campos basicos preenchidos."""
+        """Atualiza apenas o status do registro; aprovado exige campos basicos preenchidos."""
         assert_permission(actor_level, "update", "registros")
         parsed_status = _parse_registro_status(status)
         if parsed_status is None:
-            raise ValueError("status invalido. Use: pendente, consolidado, revisado, ativo, descartado.")
+            raise ValueError("status invalido. Use: pendente, aprovado, rejeitado.")
 
         with SessionLocal() as db:
             registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)

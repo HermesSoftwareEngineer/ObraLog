@@ -2,9 +2,15 @@ from datetime import datetime, date, time
 import uuid
 from enum import Enum
 
-from sqlalchemy import Boolean, Column, Date, DateTime, DECIMAL, Enum as SQLEnum, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func, BigInteger, JSON
+from sqlalchemy import Boolean, Column, Date, DateTime, DECIMAL, Enum as SQLEnum, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func, BigInteger, JSON, text as sa_text
 from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, relationship
+
+try:
+    from pgvector.sqlalchemy import Vector
+    _VECTOR_768 = Vector(768)
+except ImportError:
+    _VECTOR_768 = None  # type: ignore[assignment]
 
 
 class Base(DeclarativeBase):
@@ -76,10 +82,19 @@ class DirecaoMensagem(str, Enum):
 
 class RegistroStatus(str, Enum):
     PENDENTE = "pendente"
-    CONSOLIDADO = "consolidado"
-    REVISADO = "revisado"
-    ATIVO = "ativo"
-    DESCARTADO = "descartado"
+    APROVADO = "aprovado"
+    REJEITADO = "rejeitado"
+
+
+class DiarioTipo(str, Enum):
+    DIARIO  = "diario"
+    SEMANAL = "semanal"
+    MENSAL  = "mensal"
+
+
+class DiarioStatus(str, Enum):
+    RASCUNHO   = "rascunho"
+    FINALIZADO = "finalizado"
 
 
 def _enum_values(enum_cls):
@@ -97,6 +112,7 @@ class Tenant(Base):
     slug         = Column(String(100), nullable=False, unique=True, index=True)
     tipo_negocio = Column(String(100), nullable=True)
     location_type = Column(String(50), nullable=False, server_default="estaca")
+    timeout_conversa_minutos = Column(Integer, nullable=False, server_default="60")
     ativo        = Column(Boolean, nullable=False, default=True)
     created_at   = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -122,6 +138,31 @@ class Tenant(Base):
     alert_type_aliases  = relationship("AlertTypeAlias",   back_populates="tenant")
     telegram_link_codes = relationship("TelegramLinkCode", back_populates="tenant", foreign_keys="TelegramLinkCode.tenant_id")
     user_invite_codes   = relationship("UserInviteCode",   back_populates="tenant", cascade="all, delete-orphan")
+    registro_schemas    = relationship("RegistroSchema",   back_populates="tenant")
+    usuario_obras       = relationship("UsuarioObra",      back_populates="tenant")
+    conversas           = relationship("Conversa",         back_populates="tenant", cascade="all, delete-orphan")
+    diarios             = relationship("Diario",           back_populates="tenant", cascade="all, delete-orphan")
+    tipos_obra          = relationship("TipoObra",         back_populates="tenant", cascade="all, delete-orphan")
+
+
+class TipoObra(Base):
+    __tablename__ = "tipos_obra"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="uq_tipos_obra_tenant_slug"),
+    )
+
+    id          = Column(Integer, primary_key=True, index=True)
+    tenant_id   = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
+    slug        = Column(String(50), nullable=False)
+    nome        = Column(String(200), nullable=False)
+    descricao   = Column(Text, nullable=True)
+    ativo       = Column(Boolean, nullable=False, default=True)
+    created_at  = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    tenant             = relationship("Tenant", back_populates="tipos_obra")
+    obras              = relationship("Obra", back_populates="tipo_obra_ref")
+    registro_schemas   = relationship("RegistroSchema", back_populates="tipo_obra_ref")
 
 
 class UserInviteCode(Base):
@@ -155,12 +196,18 @@ class Obra(Base):
     codigo = Column(String(80), nullable=True, index=True)
     descricao = Column(Text, nullable=True)
     ativo = Column(Boolean, nullable=False, default=True)
+    tipo_obra = Column(String(50), nullable=True)
+    tipo_obra_id = Column(Integer, ForeignKey("tipos_obra.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     tenant = relationship("Tenant", back_populates="obras")
+    tipo_obra_ref = relationship("TipoObra", back_populates="obras")
     registros = relationship("Registro", back_populates="obra")
     alerts = relationship("Alert", back_populates="obra")
+    frentes_servico = relationship("FrenteServico", back_populates="obra", foreign_keys="FrenteServico.obra_id")
+    usuario_obras = relationship("UsuarioObra", back_populates="obra", cascade="all, delete-orphan")
+    diarios = relationship("Diario", back_populates="obra", cascade="all, delete-orphan")
 
 
 class Usuario(Base):
@@ -218,6 +265,8 @@ class Usuario(Base):
         foreign_keys="AlertRead.worker_id",
     )
     mensagens_campo = relationship("MensagemCampo", back_populates="usuario")
+    usuario_obras = relationship("UsuarioObra", back_populates="usuario", cascade="all, delete-orphan")
+    conversas = relationship("Conversa", back_populates="usuario", cascade="all, delete-orphan")
 
 class FrenteServico(Base):
     __tablename__ = "frentes_servico"
@@ -226,11 +275,34 @@ class FrenteServico(Base):
     nome = Column(String, nullable=False)
     encarregado_responsavel = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
     observacao = Column(String, nullable=True)
+    obra_id = Column(Integer, ForeignKey("obras.id", ondelete="SET NULL"), nullable=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     tenant = relationship("Tenant", back_populates="frentes_servico")
     encarregado = relationship("Usuario", back_populates="frentes_servico")
     registros = relationship("Registro", back_populates="frente_servico")
+    obra = relationship("Obra", back_populates="frentes_servico", foreign_keys=[obra_id])
+
+class RegistroSchema(Base):
+    __tablename__ = "registro_schemas"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "tipo_obra_id", name="uq_registro_schemas_tenant_tipo_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
+    tipo_obra = Column(String(50), nullable=True)
+    tipo_obra_id = Column(Integer, ForeignKey("tipos_obra.id", ondelete="RESTRICT"), nullable=True, index=True)
+    nome = Column(String(200), nullable=False)
+    campos_ativos = Column(JSON, nullable=False, server_default="{}")
+    campos_extras = Column(JSON, nullable=False, server_default="[]")
+    ativo = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    tenant = relationship("Tenant", back_populates="registro_schemas")
+    tipo_obra_ref = relationship("TipoObra", back_populates="registro_schemas")
+
 
 class Registro(Base):
     __tablename__ = "registros"
@@ -246,6 +318,7 @@ class Registro(Base):
     obra_id = Column(Integer, ForeignKey("obras.id", ondelete="SET NULL"), nullable=True, index=True)
     frente_servico_id = Column(Integer, ForeignKey("frentes_servico.id", ondelete="CASCADE"), nullable=True, index=True)
     usuario_registrador_id = Column(Integer, ForeignKey("usuarios.id", ondelete="RESTRICT"), nullable=True, index=True)
+    registro_schema_id = Column(Integer, ForeignKey("registro_schemas.id", ondelete="SET NULL"), nullable=True, index=True)
     estaca_inicial = Column(DECIMAL(10, 2), nullable=True)
     estaca_final = Column(DECIMAL(10, 2), nullable=True)
     estaca = Column(String, nullable=True)
@@ -296,6 +369,24 @@ class RegistroImagem(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     registro = relationship("Registro", back_populates="imagens")
+
+
+class UsuarioObra(Base):
+    __tablename__ = "usuario_obras"
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "obra_id", name="uq_usuario_obras_usuario_obra"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    obra_id = Column(Integer, ForeignKey("obras.id", ondelete="CASCADE"), nullable=False, index=True)
+    ativo = Column(Boolean, nullable=False, default=True)
+    eh_padrao = Column(Boolean, nullable=False, default=False)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
+
+    usuario = relationship("Usuario", back_populates="usuario_obras")
+    obra = relationship("Obra", back_populates="usuario_obras")
+    tenant = relationship("Tenant", back_populates="usuario_obras")
 
 
 class MensagemCampo(Base):
@@ -440,3 +531,79 @@ class AlertTypeAlias(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     tenant = relationship("Tenant", back_populates="alert_type_aliases")
+
+
+class Conversa(Base):
+    __tablename__ = "conversas"
+
+    id            = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id     = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    usuario_id    = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    chat_id       = Column(String, nullable=False)
+    thread_id     = Column(String, nullable=False)
+    iniciada_em   = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    encerrada_em  = Column(DateTime(timezone=True), nullable=True)
+    ultima_msg_em = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    resumo        = Column(Text, nullable=True)
+    embedding     = Column(_VECTOR_768, nullable=True, server_default=sa_text("NULL::vector")) if _VECTOR_768 is not None else Column(Text, nullable=True)
+    ambiente      = Column(String(10), nullable=False, default='prod')
+
+    tenant  = relationship("Tenant",  back_populates="conversas")
+    usuario = relationship("Usuario", back_populates="conversas")
+
+
+class Diario(Base):
+    __tablename__ = "diarios"
+
+    id           = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    obra_id      = Column(Integer, ForeignKey("obras.id",    ondelete="RESTRICT"), nullable=False, index=True)
+    tenant_id    = Column(Integer, ForeignKey("tenants.id",  ondelete="RESTRICT"), nullable=False, index=True)
+    tipo         = Column(SQLEnum(DiarioTipo,   values_callable=_enum_values, name="diario_tipo"),   nullable=False, server_default="diario")
+    status       = Column(SQLEnum(DiarioStatus, values_callable=_enum_values, name="diario_status"), nullable=False, server_default="rascunho")
+    data_inicio  = Column(Date, nullable=False)
+    data_fim     = Column(Date, nullable=False)
+    versao_atual = Column(Integer, nullable=False, default=1)
+    gerado_por   = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
+    gerado_em    = Column(DateTime(timezone=True), nullable=True)
+    finalizado_por = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
+    finalizado_em  = Column(DateTime(timezone=True), nullable=True)
+    created_at   = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    obra    = relationship("Obra",    back_populates="diarios")
+    tenant  = relationship("Tenant",  back_populates="diarios")
+    gerador = relationship("Usuario", foreign_keys=[gerado_por])
+    finalizador = relationship("Usuario", foreign_keys=[finalizado_por])
+    versoes = relationship("DiarioVersao",    back_populates="diario", cascade="all, delete-orphan", order_by="DiarioVersao.versao")
+    registros_vinculados = relationship("DiarioRegistro", back_populates="diario", cascade="all, delete-orphan")
+
+
+class DiarioRegistro(Base):
+    __tablename__ = "diario_registros"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    diario_id   = Column(PGUUID(as_uuid=True), ForeignKey("diarios.id",   ondelete="CASCADE"),  nullable=False, index=True)
+    registro_id = Column(Integer,              ForeignKey("registros.id", ondelete="RESTRICT"), nullable=False, index=True)
+    tenant_id   = Column(Integer,              ForeignKey("tenants.id",   ondelete="RESTRICT"), nullable=False)
+
+    diario   = relationship("Diario",   back_populates="registros_vinculados")
+    registro = relationship("Registro")
+
+
+class DiarioVersao(Base):
+    __tablename__ = "diario_versoes"
+
+    id           = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    diario_id    = Column(PGUUID(as_uuid=True), ForeignKey("diarios.id",  ondelete="CASCADE"),  nullable=False, index=True)
+    tenant_id    = Column(Integer,              ForeignKey("tenants.id",  ondelete="RESTRICT"), nullable=False)
+    versao       = Column(Integer, nullable=False)
+    storage_path = Column(String, nullable=False)
+    storage_url  = Column(String, nullable=True)
+    gerado_por   = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
+    gerado_em    = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    motivo_regeracao = Column(Text, nullable=True)
+    registros_ids    = Column(JSON, nullable=False, default=list)
+    include_pending  = Column(Boolean, nullable=False, default=False)
+
+    diario  = relationship("Diario",  back_populates="versoes")
+    gerador = relationship("Usuario", foreign_keys=[gerado_por])

@@ -203,12 +203,10 @@ def _parse_registro_status(value: str, field_name: str = "status") -> RegistroSt
     raw = _normalize_text(value)
     aliases = {
         "pendente": RegistroStatus.PENDENTE,
-        "consolidado": RegistroStatus.CONSOLIDADO,
-        "revisado": RegistroStatus.REVISADO,
-        "ativo": RegistroStatus.ATIVO,
-        "descartado": RegistroStatus.DESCARTADO,
+        "aprovado": RegistroStatus.APROVADO,
+        "rejeitado": RegistroStatus.REJEITADO,
     }
     parsed = aliases.get(raw)
     if not parsed:
-        raise ValueError(f"{field_name} invalido. Valores validos: pendente, consolidado, revisado, ativo, descartado")
+        raise ValueError(f"{field_name} invalido. Valores validos: pendente, aprovado, rejeitado")
     return parsed

@@ -9,6 +9,9 @@ from backend.db.models import (
     FrenteServico,
     Registro,
     RegistroImagem,
+    RegistroSchema,
+    TipoObra,
+    UsuarioObra,
     TelegramLinkCode,
     MensagemCampo,
     Tenant,
@@ -62,6 +65,25 @@ class TenantRepository:
         return tenant
 
 
+def _resolve_tipo_obra(
+    db: Session, tipo_obra_str: str | None, tipo_obra_id: int | None, tenant_id: int
+) -> tuple[int | None, str | None]:
+    """Resolve e sincroniza tipo_obra_id (FK) e tipo_obra (slug varchar)."""
+    if tipo_obra_id:
+        tipo = db.query(TipoObra).filter(
+            TipoObra.id == tipo_obra_id, TipoObra.tenant_id == tenant_id
+        ).first()
+        slug = tipo.slug if tipo else (tipo_obra_str or "").strip() or None
+        return tipo_obra_id, slug
+    if tipo_obra_str:
+        slug = tipo_obra_str.strip().lower()
+        tipo = db.query(TipoObra).filter(
+            TipoObra.slug == slug, TipoObra.tenant_id == tenant_id
+        ).first()
+        return (tipo.id if tipo else None), slug
+    return None, None
+
+
 class ObraRepository:
     @staticmethod
     def criar(
@@ -70,15 +92,20 @@ class ObraRepository:
         codigo: str | None = None,
         descricao: str | None = None,
         ativo: bool = True,
+        tipo_obra: str | None = None,
+        tipo_obra_id: int | None = None,
         tenant_id: int | None = None,
     ) -> Obra:
         tenant_id = _resolve_tenant_id(db, tenant_id)
+        resolved_id, resolved_slug = _resolve_tipo_obra(db, tipo_obra, tipo_obra_id, tenant_id)
         obra = Obra(
             tenant_id=tenant_id,
             nome=(nome or "").strip(),
             codigo=(codigo or "").strip() or None,
             descricao=(descricao or "").strip() or None,
             ativo=bool(ativo),
+            tipo_obra=resolved_slug,
+            tipo_obra_id=resolved_id,
         )
         db.add(obra)
         db.commit()
@@ -109,6 +136,13 @@ class ObraRepository:
         )
         if not obra:
             return None
+
+        tipo_obra_str = dados.pop("tipo_obra", None)
+        tipo_obra_id = dados.pop("tipo_obra_id", None)
+        if tipo_obra_str is not None or tipo_obra_id is not None:
+            resolved_id, resolved_slug = _resolve_tipo_obra(db, tipo_obra_str, tipo_obra_id, tenant_id)
+            obra.tipo_obra = resolved_slug
+            obra.tipo_obra_id = resolved_id
 
         for chave, valor in dados.items():
             if hasattr(obra, chave) and valor is not None:
@@ -291,9 +325,9 @@ class UsuarioRepository:
 
 class FrenteServicoRepository:
     @staticmethod
-    def criar(db: Session, nome: str, encarregado_responsavel: int | None = None, observacao: str | None = None, tenant_id: int | None = None) -> FrenteServico:
+    def criar(db: Session, nome: str, encarregado_responsavel: int | None = None, observacao: str | None = None, obra_id: int | None = None, tenant_id: int | None = None) -> FrenteServico:
         tenant_id = _resolve_tenant_id(db, tenant_id)
-        frente = FrenteServico(tenant_id=tenant_id, nome=nome, encarregado_responsavel=encarregado_responsavel, observacao=observacao)
+        frente = FrenteServico(tenant_id=tenant_id, nome=nome, encarregado_responsavel=encarregado_responsavel, observacao=observacao, obra_id=obra_id)
         db.add(frente)
         db.commit()
         db.refresh(frente)
@@ -314,7 +348,7 @@ class FrenteServicoRepository:
         return db.query(FrenteServico).filter(FrenteServico.tenant_id == tenant_id).all()
 
     @staticmethod
-    def atualizar(db: Session, frente_id: int, tenant_id: int | None = None, **dados) -> FrenteServico | None:
+    def atualizar(db: Session, frente_id: int, tenant_id: int | None = None, obra_id: int | None = None, **dados) -> FrenteServico | None:
         tenant_id = _resolve_tenant_id(db, tenant_id)
         frente = (
             db.query(FrenteServico)
@@ -323,6 +357,8 @@ class FrenteServicoRepository:
         )
         if not frente:
             return None
+        if obra_id is not None:
+            frente.obra_id = obra_id
         for chave, valor in dados.items():
             if hasattr(frente, chave) and valor is not None:
                 setattr(frente, chave, valor)
@@ -359,6 +395,98 @@ class RegistroRepository:
         if normalized in {"estaca", "km", "texto"}:
             return normalized
         return "estaca"
+
+    _SCHEMA_CAMPO_TO_ATTR: dict[str, str] = {
+        "estaca_inicial": "estaca_inicial",
+        "estaca_final": "estaca_final",
+        "estaca": "estaca",
+        "lado_pista": "lado_pista",
+        "tempo_manha": "tempo_manha",
+        "tempo_tarde": "tempo_tarde",
+        "resultado": "resultado",
+        "frente_servico": "frente_servico_id",
+    }
+
+    @staticmethod
+    def _fetch_active_schema(db: Session, src, tenant_id: int) -> "RegistroSchema | None":
+        """Fetch the active RegistroSchema for a registro or dict with obra_id/registro_schema_id."""
+        def _get(field):
+            return src.get(field) if isinstance(src, dict) else getattr(src, field, None)
+
+        schema_id = _get("registro_schema_id")
+        if schema_id:
+            return db.query(RegistroSchema).filter(RegistroSchema.id == schema_id).first()
+        obra_id = _get("obra_id")
+        if obra_id:
+            obra = db.query(Obra).filter(Obra.id == obra_id, Obra.tenant_id == tenant_id).first()
+            if obra:
+                if obra.tipo_obra_id:
+                    return (
+                        db.query(RegistroSchema)
+                        .filter(
+                            RegistroSchema.tenant_id == tenant_id,
+                            RegistroSchema.tipo_obra_id == obra.tipo_obra_id,
+                            RegistroSchema.ativo.is_(True),
+                        )
+                        .first()
+                    )
+                if obra.tipo_obra:
+                    return (
+                        db.query(RegistroSchema)
+                        .filter(
+                            RegistroSchema.tenant_id == tenant_id,
+                            RegistroSchema.tipo_obra == obra.tipo_obra,
+                            RegistroSchema.ativo.is_(True),
+                        )
+                        .first()
+                    )
+        return None
+
+    @staticmethod
+    def _missing_aprovado(src, schema: "RegistroSchema | None") -> list[str]:
+        """Return missing required field names for aprovado status.
+        src can be a Registro ORM instance or a plain dict."""
+        def _get(field):
+            return src.get(field) if isinstance(src, dict) else getattr(src, field, None)
+
+        missing: list[str] = []
+        if _get("data") in (None, ""):
+            missing.append("data")
+        if _get("usuario_registrador_id") in (None, ""):
+            missing.append("usuario_registrador_id")
+
+        campos = schema.campos_ativos if (schema and isinstance(getattr(schema, "campos_ativos", None), dict)) else None
+
+        if campos is None:
+            # No schema — fall back to hardcoded logic
+            payload = {
+                "data": _get("data"),
+                "frente_servico_id": _get("frente_servico_id"),
+                "usuario_registrador_id": _get("usuario_registrador_id"),
+                "estaca_inicial": _get("estaca_inicial"),
+                "estaca_final": _get("estaca_final"),
+                "estaca": _get("estaca"),
+                "metadata_json": _get("metadata_json"),
+                "resultado": _get("resultado"),
+                "tempo_manha": _get("tempo_manha"),
+                "tempo_tarde": _get("tempo_tarde"),
+            }
+            return RegistroRepository._required_missing_for_consolidated(payload)
+
+        for campo, required in campos.items():
+            if not required:
+                continue
+            attr = RegistroRepository._SCHEMA_CAMPO_TO_ATTR.get(campo)
+            if attr is None:
+                continue
+            val = _get(attr)
+            if campo == "resultado" and val in (None, ""):
+                if _get("estaca_inicial") is not None and _get("estaca_final") is not None:
+                    continue
+            if val in (None, ""):
+                missing.append(campo)
+
+        return missing
 
     @staticmethod
     def _required_missing_for_consolidated(payload: dict) -> list[str]:
@@ -414,6 +542,7 @@ class RegistroRepository:
         raw_text: str | None = None,
         source_message_id=None,
         status: RegistroStatus = RegistroStatus.PENDENTE,
+        registro_schema_id: int | None = None,
         tenant_id: int | None = None,
     ) -> Registro:
         tenant_id = _resolve_tenant_id(db, tenant_id)
@@ -431,19 +560,24 @@ class RegistroRepository:
         payload = {
             "data": data,
             "obra_id": obra_id,
+            "registro_schema_id": registro_schema_id,
             "frente_servico_id": frente_servico_id,
             "usuario_registrador_id": usuario_registrador_id,
             "estaca_inicial": estaca_inicial,
             "estaca_final": estaca_final,
+            "estaca": estaca,
+            "lado_pista": lado_pista,
             "resultado": resultado,
             "tempo_manha": tempo_manha,
             "tempo_tarde": tempo_tarde,
+            "metadata_json": metadata_json,
         }
-        if status == RegistroStatus.CONSOLIDADO:
-            missing = RegistroRepository._required_missing_for_consolidated(payload)
+        if status == RegistroStatus.APROVADO:
+            schema = RegistroRepository._fetch_active_schema(db, payload, tenant_id)
+            missing = RegistroRepository._missing_aprovado(payload, schema)
             if missing:
                 raise ValueError(
-                    "Nao e possivel marcar como consolidado sem campos basicos: " + ", ".join(missing)
+                    "Nao e possivel marcar como aprovado sem campos basicos: " + ", ".join(missing)
                 )
 
         registro = Registro(
@@ -453,6 +587,7 @@ class RegistroRepository:
             obra_id=obra_id,
             frente_servico_id=frente_servico_id,
             usuario_registrador_id=usuario_registrador_id,
+            registro_schema_id=registro_schema_id,
             estaca_inicial=estaca_inicial,
             estaca_final=estaca_final,
             estaca=estaca,
@@ -549,23 +684,12 @@ class RegistroRepository:
         ):
             registro.resultado = float(registro.estaca_final) - float(registro.estaca_inicial)
 
-        if registro.status == RegistroStatus.CONSOLIDADO:
-            payload = {
-                "data": registro.data,
-                "frente_servico_id": registro.frente_servico_id,
-                "usuario_registrador_id": registro.usuario_registrador_id,
-                "estaca_inicial": registro.estaca_inicial,
-                "estaca_final": registro.estaca_final,
-                "estaca": registro.estaca,
-                "metadata_json": registro.metadata_json,
-                "resultado": registro.resultado,
-                "tempo_manha": registro.tempo_manha,
-                "tempo_tarde": registro.tempo_tarde,
-            }
-            missing = RegistroRepository._required_missing_for_consolidated(payload)
+        if registro.status == RegistroStatus.APROVADO:
+            schema = RegistroRepository._fetch_active_schema(db, registro, tenant_id)
+            missing = RegistroRepository._missing_aprovado(registro, schema)
             if missing:
                 raise ValueError(
-                    "Registro consolidado ficou inconsistente. Campos ausentes: " + ", ".join(missing)
+                    "Registro aprovado ficou inconsistente. Campos ausentes: " + ", ".join(missing)
                 )
         db.commit()
         db.refresh(registro)
@@ -582,26 +706,13 @@ class RegistroRepository:
         if not registro:
             return None
 
-        if status == RegistroStatus.CONSOLIDADO:
-            payload = {
-                "data": registro.data,
-                "frente_servico_id": registro.frente_servico_id,
-                "usuario_registrador_id": registro.usuario_registrador_id,
-                "estaca_inicial": registro.estaca_inicial,
-                "estaca_final": registro.estaca_final,
-                "estaca": registro.estaca,
-                "metadata_json": registro.metadata_json,
-                "resultado": registro.resultado,
-                "tempo_manha": registro.tempo_manha,
-                "tempo_tarde": registro.tempo_tarde,
-            }
-            missing = RegistroRepository._required_missing_for_consolidated(payload)
+        if status == RegistroStatus.APROVADO:
+            schema = RegistroRepository._fetch_active_schema(db, registro, tenant_id)
+            missing = RegistroRepository._missing_aprovado(registro, schema)
             if missing:
                 raise ValueError(
-                    "Nao e possivel consolidar registro sem campos basicos: " + ", ".join(missing)
+                    "Nao e possivel aprovar registro sem campos basicos: " + ", ".join(missing)
                 )
-            if registro.resultado in (None, "") and payload.get("resultado") not in (None, ""):
-                registro.resultado = payload.get("resultado")
 
         registro.status = status
         db.commit()
@@ -966,12 +1077,212 @@ class UserInviteCodeRepository:
         return True
 
 
+class TipoObraRepository:
+    @staticmethod
+    def listar(db: Session, tenant_id: int, apenas_ativos: bool = True) -> list[TipoObra]:
+        q = db.query(TipoObra).filter(TipoObra.tenant_id == tenant_id)
+        if apenas_ativos:
+            q = q.filter(TipoObra.ativo.is_(True))
+        return q.order_by(TipoObra.nome).all()
+
+    @staticmethod
+    def obter_por_id(db: Session, tipo_obra_id: int, tenant_id: int) -> TipoObra | None:
+        return (
+            db.query(TipoObra)
+            .filter(TipoObra.id == tipo_obra_id, TipoObra.tenant_id == tenant_id)
+            .first()
+        )
+
+    @staticmethod
+    def obter_por_slug(db: Session, slug: str, tenant_id: int) -> TipoObra | None:
+        return (
+            db.query(TipoObra)
+            .filter(TipoObra.slug == slug.strip().lower(), TipoObra.tenant_id == tenant_id)
+            .first()
+        )
+
+    @staticmethod
+    def criar(
+        db: Session,
+        tenant_id: int,
+        slug: str,
+        nome: str,
+        descricao: str | None = None,
+        ativo: bool = True,
+    ) -> TipoObra:
+        tipo = TipoObra(
+            tenant_id=tenant_id,
+            slug=slug.strip().lower(),
+            nome=nome.strip(),
+            descricao=(descricao or "").strip() or None,
+            ativo=ativo,
+        )
+        db.add(tipo)
+        db.commit()
+        db.refresh(tipo)
+        return tipo
+
+    @staticmethod
+    def atualizar(db: Session, tipo_obra_id: int, tenant_id: int, **kwargs) -> TipoObra | None:
+        tipo = TipoObraRepository.obter_por_id(db, tipo_obra_id, tenant_id)
+        if not tipo:
+            return None
+        for key, value in kwargs.items():
+            if hasattr(tipo, key):
+                setattr(tipo, key, value)
+        db.commit()
+        db.refresh(tipo)
+        return tipo
+
+    @staticmethod
+    def seed_defaults(db: Session, tenant_id: int) -> None:
+        defaults = [
+            ("rodovia",   "Rodovia",   "Obras de construção e manutenção de rodovias"),
+            ("edificacao","Edificação", "Obras de construção civil e edificações"),
+        ]
+        for slug, nome, descricao in defaults:
+            if not TipoObraRepository.obter_por_slug(db, slug, tenant_id):
+                TipoObraRepository.criar(db, tenant_id, slug, nome, descricao)
+
+
+class RegistroSchemaRepository:
+    @staticmethod
+    def obter_por_id(db: Session, schema_id: int, tenant_id: int | None = None) -> RegistroSchema | None:
+        tenant_id = _resolve_tenant_id(db, tenant_id)
+        return (
+            db.query(RegistroSchema)
+            .filter(RegistroSchema.tenant_id == tenant_id, RegistroSchema.id == schema_id)
+            .first()
+        )
+
+    @staticmethod
+    def listar(db: Session, tenant_id: int) -> list[RegistroSchema]:
+        return (
+            db.query(RegistroSchema)
+            .filter(RegistroSchema.tenant_id == tenant_id)
+            .order_by(RegistroSchema.tipo_obra, RegistroSchema.id)
+            .all()
+        )
+
+    @staticmethod
+    def criar(
+        db: Session,
+        tenant_id: int,
+        tipo_obra: str | None,
+        nome: str,
+        campos_ativos: dict,
+        campos_extras: list,
+        ativo: bool = True,
+        tipo_obra_id: int | None = None,
+    ) -> RegistroSchema:
+        schema = RegistroSchema(
+            tenant_id=tenant_id,
+            tipo_obra=(tipo_obra or "").strip() or None,
+            tipo_obra_id=tipo_obra_id,
+            nome=nome.strip(),
+            campos_ativos=campos_ativos,
+            campos_extras=campos_extras,
+            ativo=ativo,
+        )
+        db.add(schema)
+        db.commit()
+        db.refresh(schema)
+        return schema
+
+    @staticmethod
+    def atualizar(db: Session, schema_id: int, tenant_id: int, **kwargs) -> RegistroSchema | None:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        schema = RegistroSchemaRepository.obter_por_id(db, schema_id, tenant_id)
+        if not schema:
+            return None
+        for key, value in kwargs.items():
+            if hasattr(schema, key):
+                setattr(schema, key, value)
+                if key in ("campos_ativos", "campos_extras"):
+                    flag_modified(schema, key)
+        db.commit()
+        db.refresh(schema)
+        return schema
+
+    @staticmethod
+    def deletar(db: Session, schema_id: int, tenant_id: int) -> bool:
+        schema = RegistroSchemaRepository.obter_por_id(db, schema_id, tenant_id)
+        if not schema:
+            return False
+        db.delete(schema)
+        db.commit()
+        return True
+
+    @staticmethod
+    def obter_ativo_por_tipo_obra(db: Session, tipo_obra: str, tenant_id: int) -> RegistroSchema | None:
+        return (
+            db.query(RegistroSchema)
+            .filter(
+                RegistroSchema.tenant_id == tenant_id,
+                RegistroSchema.tipo_obra == tipo_obra,
+                RegistroSchema.ativo.is_(True),
+            )
+            .first()
+        )
+
+    @staticmethod
+    def obter_ativo_por_tipo_obra_id(db: Session, tipo_obra_id: int, tenant_id: int) -> RegistroSchema | None:
+        return (
+            db.query(RegistroSchema)
+            .filter(
+                RegistroSchema.tenant_id == tenant_id,
+                RegistroSchema.tipo_obra_id == tipo_obra_id,
+                RegistroSchema.ativo.is_(True),
+            )
+            .first()
+        )
+
+    @staticmethod
+    def obter_ativo_para_obra(db: Session, obra_id: int, tenant_id: int) -> RegistroSchema | None:
+        obra = ObraRepository.obter_por_id(db, obra_id, tenant_id=tenant_id)
+        if not obra:
+            return None
+        if obra.tipo_obra_id:
+            return RegistroSchemaRepository.obter_ativo_por_tipo_obra_id(db, obra.tipo_obra_id, tenant_id)
+        if obra.tipo_obra:
+            return RegistroSchemaRepository.obter_ativo_por_tipo_obra(db, obra.tipo_obra, tenant_id)
+        return None
+
+
+class UsuarioObraRepository:
+    @staticmethod
+    def listar_obras_do_usuario(db: Session, usuario_id: int, tenant_id: int) -> list[dict]:
+        rows = (
+            db.query(UsuarioObra, Obra)
+            .join(Obra, Obra.id == UsuarioObra.obra_id)
+            .filter(
+                UsuarioObra.usuario_id == usuario_id,
+                UsuarioObra.tenant_id == tenant_id,
+            )
+            .all()
+        )
+        return [
+            {
+                "id": obra.id,
+                "nome": obra.nome,
+                "tipo_obra": obra.tipo_obra,
+                "eh_padrao": uo.eh_padrao,
+                "ativo": uo.ativo,
+            }
+            for uo, obra in rows
+        ]
+
+
 class Repository:
     usuarios = UsuarioRepository
     obras = ObraRepository
     frentes_servico = FrenteServicoRepository
     registros = RegistroRepository
     registro_imagens = RegistroImagemRepository
+    registro_schemas = RegistroSchemaRepository
+    tipos_obra = TipoObraRepository
+    usuario_obras = UsuarioObraRepository
     telegram_link_codes = TelegramLinkCodeRepository
     mensagens_campo = MensagemCampoRepository
     tenants = TenantRepository

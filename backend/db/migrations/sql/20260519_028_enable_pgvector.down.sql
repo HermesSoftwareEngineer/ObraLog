@@ -1,0 +1,2 @@
+-- Down: removing the extension would CASCADE to all vector columns -- only drop manually if sure
+-- DROP EXTENSION IF EXISTS vector CASCADE;

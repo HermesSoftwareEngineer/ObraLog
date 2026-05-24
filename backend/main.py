@@ -10,30 +10,33 @@ from backend.core.logger import logger as core_logger
 try:
     from .api.routes.webhook import telegram_blueprint
     from .api.routes.crud import api_blueprint
-    from .api.routes.diario import router as diario_router
+    from .api.routes.diario import router as diario_router, diarios_router, diarios_files_router
     from .api.routes.alerts import router as alerts_router
     from .api.routes.reports import router as reports_blueprint
     from .api.routes.auth import auth_blueprint
     from .api.routes.chat import router as chat_router
     from .api.routes.tenant import tenant_blueprint
     from .api.routes.dashboard import dashboard_blueprint
+    from .api.routes.admin import admin_blueprint
     from .services.telegram import start_polling, set_webhook
 except ImportError:
     from api.routes.webhook import telegram_blueprint
     from api.routes.crud import api_blueprint
-    from api.routes.diario import router as diario_router
+    from api.routes.diario import router as diario_router, diarios_router, diarios_files_router
     from api.routes.alerts import router as alerts_router
     from api.routes.reports import router as reports_blueprint
     from api.routes.auth import auth_blueprint
     from api.routes.chat import router as chat_router
     from api.routes.tenant import tenant_blueprint
     from api.routes.dashboard import dashboard_blueprint
+    from api.routes.admin import admin_blueprint
     from services.telegram import start_polling, set_webhook
 
 
 app = Flask(__name__)
 
-UPLOAD_DIR = Path(os.environ.get("REGISTRO_IMAGENS_DIR", str(Path("backend") / "uploads" / "registros")))
+_BACKEND_DIR = Path(__file__).resolve().parent  # ObraLog/backend/
+UPLOAD_DIR = Path(os.environ.get("REGISTRO_IMAGENS_DIR", str(_BACKEND_DIR / "uploads" / "registros")))
 
 
 def _parse_cors_origins() -> list[str]:
@@ -53,12 +56,15 @@ CORS(
 app.register_blueprint(telegram_blueprint)
 app.register_blueprint(api_blueprint)
 app.register_blueprint(diario_router)
+app.register_blueprint(diarios_router)
+app.register_blueprint(diarios_files_router)
 app.register_blueprint(alerts_router)
 app.register_blueprint(reports_blueprint)
 app.register_blueprint(auth_blueprint)
 app.register_blueprint(chat_router)
 app.register_blueprint(tenant_blueprint)
 app.register_blueprint(dashboard_blueprint)
+app.register_blueprint(admin_blueprint)
 
 
 def _should_start_polling_in_dev() -> bool:

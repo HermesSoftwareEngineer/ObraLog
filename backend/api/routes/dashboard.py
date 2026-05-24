@@ -81,7 +81,7 @@ def overview():
         # ── Filtro base de registros ──────────────────────────────────────
         reg_q = db.query(Registro).filter(
             Registro.tenant_id == tenant_id,
-            Registro.status != RegistroStatus.DESCARTADO,
+            Registro.status != RegistroStatus.REJEITADO,
         )
         if obra_id_param:
             reg_q = reg_q.filter(Registro.obra_id == obra_id_param)
@@ -93,7 +93,7 @@ def overview():
             db.query(func.coalesce(func.sum(Registro.resultado), 0))
             .filter(
                 Registro.tenant_id == tenant_id,
-                Registro.status != RegistroStatus.DESCARTADO,
+                Registro.status != RegistroStatus.REJEITADO,
                 *([] if not obra_id_param else [Registro.obra_id == obra_id_param]),
             )
             .scalar()
@@ -144,7 +144,7 @@ def overview():
             db.query(func.coalesce(func.sum(Registro.resultado), 0))
             .filter(
                 Registro.tenant_id == tenant_id,
-                Registro.status != RegistroStatus.DESCARTADO,
+                Registro.status != RegistroStatus.REJEITADO,
                 Registro.data >= start_date,
                 Registro.data <= end_date,
                 *([] if not obra_id_param else [Registro.obra_id == obra_id_param]),
@@ -157,7 +157,7 @@ def overview():
             db.query(func.count(func.distinct(Registro.data)))
             .filter(
                 Registro.tenant_id == tenant_id,
-                Registro.status != RegistroStatus.DESCARTADO,
+                Registro.status != RegistroStatus.REJEITADO,
                 Registro.data >= start_date,
                 Registro.data <= end_date,
                 Registro.tempo_manha == Clima.IMPRATICAVEL,
@@ -194,7 +194,7 @@ def overview():
             )
             .filter(
                 Registro.tenant_id == tenant_id,
-                Registro.status != RegistroStatus.DESCARTADO,
+                Registro.status != RegistroStatus.REJEITADO,
                 Registro.data >= start_date,
                 Registro.data <= end_date,
                 *([] if not obra_id_param else [Registro.obra_id == obra_id_param]),
@@ -226,7 +226,7 @@ def overview():
             .join(Registro, Registro.frente_servico_id == FrenteServico.id)
             .filter(
                 Registro.tenant_id == tenant_id,
-                Registro.status != RegistroStatus.DESCARTADO,
+                Registro.status != RegistroStatus.REJEITADO,
                 Registro.data >= start_date,
                 Registro.data <= end_date,
                 *([] if not obra_id_param else [Registro.obra_id == obra_id_param]),
@@ -286,7 +286,7 @@ def overview():
             .join(Registro, Registro.usuario_registrador_id == Usuario.id)
             .filter(
                 Registro.tenant_id == tenant_id,
-                Registro.status != RegistroStatus.DESCARTADO,
+                Registro.status != RegistroStatus.REJEITADO,
                 Registro.data >= start_date,
                 Registro.data <= end_date,
                 *([] if not obra_id_param else [Registro.obra_id == obra_id_param]),
@@ -409,7 +409,7 @@ def producao():
 
         base_filters = [
             Registro.tenant_id == tenant_id,
-            Registro.status != RegistroStatus.DESCARTADO,
+            Registro.status != RegistroStatus.REJEITADO,
             Registro.data >= data_inicio,
             Registro.data <= data_fim,
         ]
@@ -763,7 +763,7 @@ def equipe():
                 Registro,
                 (Registro.usuario_registrador_id == Usuario.id)
                 & (Registro.tenant_id == tenant_id)
-                & (Registro.status != RegistroStatus.DESCARTADO)
+                & (Registro.status != RegistroStatus.REJEITADO)
                 & (Registro.data >= start_date)
                 & (Registro.data <= end_date),
             )
@@ -809,7 +809,7 @@ def equipe():
             )
             .filter(
                 Registro.tenant_id == tenant_id,
-                Registro.status != RegistroStatus.DESCARTADO,
+                Registro.status != RegistroStatus.REJEITADO,
                 Registro.data >= start_date,
                 Registro.data <= end_date,
             )

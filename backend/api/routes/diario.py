@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from flask import Blueprint, jsonify, make_response, request, g
+from flask import Blueprint, jsonify, make_response, request, g, send_file
 
 from backend.api.routes.auth import require_auth
 from backend.api.schemas_diario import (
@@ -16,9 +16,12 @@ from backend.api.schemas_diario import (
 from backend.db.diario_repository import agrupar_por_data, get_diario_do_dia, get_registros_por_periodo
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
+from backend.db.models import DiarioVersao, NivelAcesso
 
 
 router = Blueprint("diario_v1", __name__, url_prefix="/api/v1/diario")
+diarios_router = Blueprint("diarios_v1", __name__, url_prefix="/api/v1/diarios")
+diarios_files_router = Blueprint("diarios_files_v1", __name__, url_prefix="/api/v1/diarios-files")
 
 
 def _json_error(message: str, status_code: int = 400):
@@ -277,3 +280,248 @@ def listar_frentes_diario():
             )
 
     return jsonify(payload)
+
+
+# ---------------------------------------------------------------------------
+# Diários persistidos — geração, versionamento e consulta
+# ---------------------------------------------------------------------------
+
+_NIVEL_GERENTE_ADMIN = {NivelAcesso.ADMINISTRADOR.value, NivelAcesso.GERENTE.value}
+
+
+def _check_gerente_admin():
+    """Returns (user, None) if access is granted, or (None, error_response) if denied."""
+    user = getattr(g, "current_user", None)
+    if not user:
+        return None, (_json_error("Usuário não autenticado.", 401))
+    nivel = user.nivel_acesso.value if hasattr(user.nivel_acesso, "value") else str(user.nivel_acesso)
+    if nivel not in _NIVEL_GERENTE_ADMIN:
+        return None, (_json_error("Acesso restrito a gerentes e administradores.", 403))
+    return user, None
+
+
+@diarios_router.post("/gerar")
+@require_auth
+def gerar_diario():
+    """Gera ou regera um diário para a obra/período. Requer gerente ou administrador."""
+    user, err = _check_gerente_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    try:
+        obra_id = int(data["obra_id"])
+        tipo = str(data.get("tipo", "diario")).strip()
+        data_inicio = date.fromisoformat(data["data_inicio"])
+        data_fim = date.fromisoformat(data["data_fim"])
+    except (KeyError, ValueError, TypeError) as exc:
+        return _json_error(f"Parâmetros inválidos: {exc}", 422)
+
+    if tipo not in ("diario", "semanal", "mensal"):
+        return _json_error("tipo deve ser 'diario', 'semanal' ou 'mensal'.", 422)
+    if data_fim < data_inicio:
+        return _json_error("data_fim não pode ser anterior a data_inicio.", 422)
+
+    tenant_id = getattr(g, "tenant_id", None)
+    if tenant_id is None:
+        return _json_error("Tenant não identificado.", 400)
+
+    motivo = str(data["motivo_regeracao"]).strip() if data.get("motivo_regeracao") else None
+    include_pending = bool(data.get("include_pending", False))
+
+    try:
+        from backend.services.diario_service import gerar_ou_regerar_diario
+        result = gerar_ou_regerar_diario(
+            obra_id=obra_id,
+            tenant_id=tenant_id,
+            tipo=tipo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            gerado_por=user.id,
+            motivo_regeracao=motivo,
+            include_pending=include_pending,
+        )
+        return jsonify(result), 201
+    except ValueError as exc:
+        return _json_error(str(exc), 404)
+    except RuntimeError as exc:
+        return _json_error(str(exc), 502)
+
+
+@diarios_router.post("/<string:diario_id>/finalizar")
+@require_auth
+def finalizar_diario(diario_id: str):
+    """Finaliza um diário. Requer gerente ou administrador."""
+    user, err = _check_gerente_admin()
+    if err:
+        return err
+
+    tenant_id = getattr(g, "tenant_id", None)
+    try:
+        from backend.services.diario_service import finalizar_diario as _finalizar
+        result = _finalizar(diario_id=diario_id, finalizado_por=user.id, tenant_id=tenant_id)
+        return jsonify(result)
+    except ValueError as exc:
+        return _json_error(str(exc), 404)
+
+
+@diarios_router.get("")
+@require_auth
+def listar_diarios():
+    """Lista diários do tenant com filtros opcionais e paginação."""
+    obra_id_raw = request.args.get("obra_id")
+    tipo = request.args.get("tipo")
+    status = request.args.get("status")
+    data_inicio_raw = request.args.get("data_inicio")
+    data_fim_raw = request.args.get("data_fim")
+
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        per_page = min(100, max(1, int(request.args.get("per_page", 20))))
+    except (TypeError, ValueError):
+        return _json_error("Parâmetros de paginação inválidos.", 422)
+
+    tenant_id = getattr(g, "tenant_id", None)
+
+    try:
+        from backend.db.models import Diario
+        from backend.services.diario_service import _diario_to_dict
+        with SessionLocal() as db:
+            q = db.query(Diario).filter(Diario.tenant_id == tenant_id)
+            if obra_id_raw:
+                try:
+                    obra_id = int(obra_id_raw)
+                except (TypeError, ValueError):
+                    return _json_error("obra_id deve ser um número inteiro.", 422)
+                q = q.filter(Diario.obra_id == obra_id)
+            if tipo:
+                q = q.filter(Diario.tipo == tipo)
+            if status:
+                q = q.filter(Diario.status == status)
+            if data_inicio_raw:
+                q = q.filter(Diario.data_inicio >= date.fromisoformat(data_inicio_raw))
+            if data_fim_raw:
+                q = q.filter(Diario.data_fim <= date.fromisoformat(data_fim_raw))
+            total = q.count()
+            diarios = (
+                q.order_by(Diario.data_inicio.desc())
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+                .all()
+            )
+            payload = [_diario_to_dict(d) for d in diarios]
+        return jsonify({
+            "items": payload,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": max(1, (total + per_page - 1) // per_page),
+        })
+    except ValueError as exc:
+        return _json_error(f"Parâmetro de data inválido: {exc}", 422)
+
+
+@diarios_router.get("/<string:diario_id>")
+@require_auth
+def obter_diario(diario_id: str):
+    """Retorna um diário específico com todas as versões."""
+    tenant_id = getattr(g, "tenant_id", None)
+    from backend.db.models import Diario, DiarioVersao as DV
+    with SessionLocal() as db:
+        diario = db.query(Diario).filter(
+            Diario.id == diario_id,
+            Diario.tenant_id == tenant_id,
+        ).first()
+        if not diario:
+            return _json_error("Diário não encontrado.", 404)
+        versoes = (
+            db.query(DV)
+            .filter(DV.diario_id == diario.id)
+            .order_by(DV.versao.desc())
+            .all()
+        )
+        from backend.services.diario_service import _diario_to_dict, _versao_to_dict
+        return jsonify(_diario_to_dict(diario, versoes))
+
+
+@diarios_router.get("/<string:diario_id>/versoes/<int:versao>/url")
+@require_auth
+def obter_url_versao(diario_id: str, versao: int):
+    """Retorna a signed URL do PDF de uma versão específica (válida por 1 hora)."""
+    tenant_id = getattr(g, "tenant_id", None)
+    from backend.db.models import DiarioVersao as DV
+    with SessionLocal() as db:
+        versao_obj = db.query(DV).filter(
+            DV.diario_id == diario_id,
+            DV.versao == versao,
+            DV.tenant_id == tenant_id,
+        ).first()
+        if not versao_obj:
+            return _json_error("Versão não encontrada.", 404)
+        storage_path = versao_obj.storage_path
+
+    from backend.utils.storage import get_signed_url_diario
+    url = get_signed_url_diario(storage_path, expires_in=3600)
+    if not url:
+        return _json_error("Não foi possível gerar a URL de download.", 502)
+    return jsonify({"url": url})
+
+
+@diarios_router.get("/<string:diario_id>/versoes/<int:versao>/exportar/excel")
+@require_auth
+def exportar_excel(diario_id: str, versao: int):
+    """Exporta registros de uma versão como planilha Excel."""
+    tenant_id = getattr(g, "tenant_id", None)
+    try:
+        from backend.services.diario_service import get_dados_para_exportar
+        diario_info, registros_rows = get_dados_para_exportar(diario_id, versao, tenant_id)
+    except ValueError as exc:
+        return _json_error(str(exc), 404)
+
+    try:
+        from backend.services.excel_service import gerar_excel_diario
+        xlsx_bytes = gerar_excel_diario(diario_info, registros_rows)
+    except Exception as exc:
+        return _json_error(f"Falha ao gerar Excel: {exc}", 502)
+
+    obra_nome = (diario_info.get("obra_nome") or "obra").replace(" ", "_")
+    filename = f"diario_{obra_nome}_v{versao}.xlsx"
+    response = make_response(xlsx_bytes)
+    response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@diarios_router.get("/<string:diario_id>/versoes/<int:versao>/exportar/word")
+@require_auth
+def exportar_word(diario_id: str, versao: int):
+    """Exporta registros de uma versão como documento Word."""
+    tenant_id = getattr(g, "tenant_id", None)
+    try:
+        from backend.services.diario_service import get_dados_para_exportar
+        diario_info, registros_rows = get_dados_para_exportar(diario_id, versao, tenant_id)
+    except ValueError as exc:
+        return _json_error(str(exc), 404)
+
+    try:
+        from backend.services.word_service import gerar_word_diario
+        docx_bytes = gerar_word_diario(diario_info, registros_rows)
+    except Exception as exc:
+        return _json_error(f"Falha ao gerar Word: {exc}", 502)
+
+    obra_nome = (diario_info.get("obra_nome") or "obra").replace(" ", "_")
+    filename = f"diario_{obra_nome}_v{versao}.docx"
+    response = make_response(docx_bytes)
+    response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@diarios_files_router.get("/<path:file_path>")
+def servir_pdf_local(file_path: str):
+    """Serve PDFs salvos localmente (fallback quando Supabase não está configurado)."""
+    from backend.utils.storage import get_local_pdf_path
+    abs_path = get_local_pdf_path(f"local/{file_path}")
+    if abs_path is None or not abs_path.exists():
+        return _json_error("Arquivo não encontrado.", 404)
+    return send_file(str(abs_path), mimetype="application/pdf")

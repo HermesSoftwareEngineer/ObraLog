@@ -65,6 +65,21 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
     context_block = (
         f"\n\nContexto operacional relevante:\n{retrieved_context}" if retrieved_context else ""
     )
+
+    memory_block = ""
+    if tenant_id is not None and user_query:
+        try:
+            from backend.db.session import SessionLocal
+            from backend.agents.session_service import buscar_memorias_relevantes
+            with SessionLocal() as _mem_db:
+                memorias = buscar_memorias_relevantes(_mem_db, tenant_id, user_query)
+            if memorias:
+                memory_block = (
+                    "\n\nMemórias de conversas anteriores relevantes:\n"
+                    + "\n---\n".join(memorias)
+                )
+        except Exception:
+            pass
     role_block = ""
     if actor_user_id is not None and actor_level is not None:
         role_block = (
@@ -109,7 +124,7 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             "oriente fluxo de solicitação/encaminhamento de criação de frente sem encerrar em bloqueio passivo."
         )
 
-    return SystemMessage(content=build_system_prompt() + role_block + location_block + context_block + user_hint_block)
+    return SystemMessage(content=build_system_prompt() + role_block + location_block + context_block + memory_block + user_hint_block)
 
 
 def _ensure_required_fields(tool_name: str, tool_args: dict, config: RunnableConfig | None = None) -> str | None:
@@ -118,7 +133,7 @@ def _ensure_required_fields(tool_name: str, tool_args: dict, config: RunnableCon
 
     if tool_name == "criar_registro":
         status = _normalize_text(str(tool_args.get("status") or ""))
-        if status != "consolidado":
+        if status != "aprovado":
             return None
 
         required = [
@@ -228,7 +243,7 @@ def _normalize_tool_output(tool_name: str, tool_output, config: RunnableConfig |
             registro = tool_output
         if isinstance(registro, dict):
             status = _normalize_text(str(registro.get("status") or ""))
-            if status != "consolidado":
+            if status != "aprovado":
                 business_rag = BusinessRAGService()
                 configurable = (config or {}).get("configurable", {})
                 sugestao = business_rag.sugerir_campos_faltantes(
@@ -334,6 +349,7 @@ def _resolve_tool_map(config: RunnableConfig | None = None):
     telegram_chat_id = configurable.get("telegram_chat_id")
     thread_id = configurable.get("thread_id")
     telegram_message_thread_id = configurable.get("telegram_message_thread_id")
+    conversa_id = configurable.get("conversa_id")
 
     tools = _get_business_tools(
         actor_user_id=int(actor_user_id),
@@ -349,6 +365,7 @@ def _resolve_tool_map(config: RunnableConfig | None = None):
             telegram_message_thread_id=int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
             actor_user_id=int(actor_user_id),
             actor_level=str(actor_level),
+            conversa_id=int(conversa_id) if conversa_id is not None else None,
         )
     )
     return {tool.name: tool for tool in tools}
@@ -367,6 +384,7 @@ def agent_step(state: State, config: RunnableConfig | None = None):
     telegram_chat_id = configurable.get("telegram_chat_id")
     thread_id = configurable.get("thread_id")
     telegram_message_thread_id = configurable.get("telegram_message_thread_id")
+    conversa_id = configurable.get("conversa_id")
     tools = _get_business_tools(
         actor_user_id=int(actor_user_id),
         actor_level=str(actor_level),
@@ -381,6 +399,7 @@ def agent_step(state: State, config: RunnableConfig | None = None):
             telegram_message_thread_id=int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
             actor_user_id=int(actor_user_id),
             actor_level=str(actor_level),
+            conversa_id=int(conversa_id) if conversa_id is not None else None,
         )
     )
     model = llm_main.bind_tools(tools)

@@ -4,10 +4,10 @@ from datetime import datetime
 from uuid import UUID
 
 from flask import Blueprint, g, jsonify, request
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, literal
 
 from backend.api.routes.auth import _is_admin, require_auth
-from backend.db.models import MensagemCampo, NivelAcesso, Usuario
+from backend.db.models import Conversa, MensagemCampo, NivelAcesso, Usuario
 from backend.db.session import SessionLocal
 
 
@@ -59,43 +59,68 @@ def listar_conversas():
         return offset_or_error
 
     offset = offset_or_error
+    ambiente_filter = (request.args.get("ambiente") or "prod").strip().lower()
+    if ambiente_filter not in {"dev", "prod"}:
+        ambiente_filter = "prod"
 
     with SessionLocal() as db:
-        # Subquery: última mensagem e contagem por chat_id
-        subq = (
+        # Subquery: latest ambiente per chat_id via window function
+        rn_col = func.row_number().over(
+            partition_by=Conversa.chat_id,
+            order_by=Conversa.iniciada_em.desc(),
+        ).label("rn")
+        ranked = (
+            db.query(
+                Conversa.chat_id.label("chat_id"),
+                Conversa.ambiente.label("ambiente"),
+                rn_col,
+            )
+            .subquery()
+        )
+        env_sq = (
+            db.query(ranked.c.chat_id, ranked.c.ambiente)
+            .filter(ranked.c.rn == 1)
+            .subquery()
+        )
+
+        # Aggregate MensagemCampo, join with ambiente, apply filter
+        agg = (
             db.query(
                 MensagemCampo.telegram_chat_id,
                 func.count(MensagemCampo.id).label("total_mensagens"),
                 func.max(MensagemCampo.recebida_em).label("ultima_mensagem_em"),
+                func.coalesce(env_sq.c.ambiente, literal("prod")).label("ambiente"),
             )
             .filter(MensagemCampo.telegram_chat_id.isnot(None))
-            .group_by(MensagemCampo.telegram_chat_id)
+            .outerjoin(env_sq, env_sq.c.chat_id == MensagemCampo.telegram_chat_id)
+            .group_by(MensagemCampo.telegram_chat_id, env_sq.c.ambiente)
             .subquery()
         )
 
+        filtered = db.query(agg).filter(agg.c.ambiente == ambiente_filter).subquery()
+
         total_conversas = (
-            db.query(func.count())
-            .select_from(subq)
-            .scalar()
+            db.query(func.count()).select_from(filtered).scalar()
         ) or 0
 
         rows = (
             db.query(
-                subq.c.telegram_chat_id,
-                subq.c.total_mensagens,
-                subq.c.ultima_mensagem_em,
+                filtered.c.telegram_chat_id,
+                filtered.c.total_mensagens,
+                filtered.c.ultima_mensagem_em,
+                filtered.c.ambiente,
                 Usuario.id.label("usuario_id"),
                 Usuario.nome.label("usuario_nome"),
                 Usuario.nivel_acesso.label("usuario_nivel_acesso"),
             )
-            .outerjoin(Usuario, Usuario.telegram_chat_id == subq.c.telegram_chat_id)
-            .order_by(desc(subq.c.ultima_mensagem_em))
+            .outerjoin(Usuario, Usuario.telegram_chat_id == filtered.c.telegram_chat_id)
+            .order_by(desc(filtered.c.ultima_mensagem_em))
             .offset(offset)
             .limit(per_page)
             .all()
         )
 
-        # Para cada conversa, buscar o texto da última mensagem
+        # Texto da última mensagem por chat_id
         chat_ids = [r.telegram_chat_id for r in rows]
         last_msgs: dict[str, str | None] = {}
         if chat_ids:
@@ -106,10 +131,7 @@ def listar_conversas():
                     .order_by(desc(MensagemCampo.recebida_em))
                     .first()
                 )
-                if msg:
-                    last_msgs[chat_id] = msg.texto_normalizado or msg.texto_bruto
-                else:
-                    last_msgs[chat_id] = None
+                last_msgs[chat_id] = (msg.texto_normalizado or msg.texto_bruto) if msg else None
 
         conversas = [
             {
@@ -117,6 +139,7 @@ def listar_conversas():
                 "total_mensagens": r.total_mensagens,
                 "ultima_mensagem_em": r.ultima_mensagem_em.isoformat() if r.ultima_mensagem_em else None,
                 "ultima_mensagem_texto": last_msgs.get(r.telegram_chat_id),
+                "ambiente": r.ambiente,
                 "usuario": {
                     "id": r.usuario_id,
                     "nome": r.usuario_nome,
@@ -131,6 +154,7 @@ def listar_conversas():
         "page": page,
         "per_page": per_page,
         "total": total_conversas,
+        "ambiente": ambiente_filter,
         "conversas": conversas,
     })
 

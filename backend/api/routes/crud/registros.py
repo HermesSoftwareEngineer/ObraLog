@@ -5,7 +5,7 @@ from uuid import uuid4
 from flask import request, send_from_directory, g
 from werkzeug.utils import secure_filename
 
-from backend.db.repository import Repository
+from backend.db.repository import Repository, RegistroSchemaRepository
 from backend.db.session import SessionLocal
 from backend.api.routes.auth import require_auth
 
@@ -25,6 +25,40 @@ from .base import (
 )
 
 
+def _enrich_with_schema(payload: dict, registro, db, tenant_id: int) -> None:
+    """Adiciona schema e campos_extras_valores ao payload de um registro."""
+    schema = None
+    if registro.registro_schema_id:
+        schema = RegistroSchemaRepository.obter_por_id(db, registro.registro_schema_id, tenant_id)
+    elif registro.obra_id:
+        schema = RegistroSchemaRepository.obter_ativo_para_obra(db, registro.obra_id, tenant_id)
+
+    if not schema:
+        payload["schema"] = None
+        payload["campos_extras_valores"] = {}
+        return
+
+    tipo_slug = schema.tipo_obra_ref.slug if schema.tipo_obra_ref else schema.tipo_obra
+    tipo_nome = schema.tipo_obra_ref.nome if schema.tipo_obra_ref else schema.tipo_obra
+    payload["schema"] = {
+        "id": schema.id,
+        "tipo_obra": tipo_slug,
+        "tipo_obra_id": schema.tipo_obra_id,
+        "tipo_obra_nome": tipo_nome,
+        "campos_ativos": schema.campos_ativos or {},
+        "campos_extras": schema.campos_extras or [],
+    }
+
+    extras_vals: dict = {}
+    meta = registro.metadata_json or {}
+    if isinstance(meta, dict) and schema.campos_extras:
+        for campo in schema.campos_extras:
+            key = campo.get("key")
+            if key and key in meta:
+                extras_vals[key] = meta[key]
+    payload["campos_extras_valores"] = extras_vals
+
+
 def _parse_registro_payload(data: dict):
     parsed = {}
 
@@ -33,6 +67,12 @@ def _parse_registro_payload(data: dict):
             parsed["obra_id"] = int(data["obra_id"])
         except (ValueError, TypeError):
             raise ValueError("obra_id deve ser um numero inteiro valido.") from None
+
+    if data.get("registro_schema_id") not in (None, ""):
+        try:
+            parsed["registro_schema_id"] = int(data["registro_schema_id"])
+        except (ValueError, TypeError):
+            raise ValueError("registro_schema_id deve ser um numero inteiro valido.") from None
 
     if data.get("status") is not None:
         parsed["status"] = _parse_registro_status(str(data.get("status")), "status")
@@ -116,33 +156,70 @@ def _parse_registro_payload(data: dict):
     if "source_message_id" in data:
         parsed["source_message_id"] = data.get("source_message_id")
 
+    # Campos extras do schema: mescla no metadata_json preservando tipo de localização
+    if data.get("campos_extras_valores") and isinstance(data["campos_extras_valores"], dict):
+        current_meta = parsed.get("metadata_json") or {}
+        parsed["metadata_json"] = {**current_meta, **data["campos_extras_valores"]}
+
     return parsed
 
 
 @api_blueprint.route("/registros", methods=["GET"])
+@require_auth
 def listar_registros():
     data_filter = request.args.get("data")
     obra_filter = request.args.get("obra_id")
     frente_filter = request.args.get("frente_servico_id")
     usuario_filter = request.args.get("usuario_id")
+    status_filter = request.args.get("status")
     tenant_id = getattr(g, "tenant_id", None)
 
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        per_page = min(200, max(1, int(request.args.get("per_page", 50))))
+    except (ValueError, TypeError):
+        return _json_error("Parametros page e per_page devem ser inteiros.")
+
+    parsed_status = None
+    if status_filter:
+        try:
+            parsed_status = _parse_registro_status(status_filter, "status")
+        except ValueError as exc:
+            return _json_error(str(exc))
+
     with SessionLocal() as db:
+        from backend.db.models import Registro, RegistroStatus as RS
+        q = db.query(Registro).filter(Registro.tenant_id == tenant_id)
+
         if data_filter:
             try:
-                registros = Repository.registros.listar_por_data(db, date.fromisoformat(data_filter), tenant_id=tenant_id)
+                q = q.filter(Registro.data == date.fromisoformat(data_filter))
             except Exception:
                 return _json_error("Parametro data invalido. Use YYYY-MM-DD.")
-        elif obra_filter:
-            registros = Repository.registros.listar_por_obra(db, int(obra_filter), tenant_id=tenant_id)
-        elif frente_filter:
-            registros = Repository.registros.listar_por_frente(db, int(frente_filter), tenant_id=tenant_id)
-        elif usuario_filter:
-            registros = Repository.registros.listar_por_usuario(db, int(usuario_filter), tenant_id=tenant_id)
-        else:
-            registros = Repository.registros.listar(db, tenant_id=tenant_id)
+        if obra_filter:
+            q = q.filter(Registro.obra_id == int(obra_filter))
+        if frente_filter:
+            q = q.filter(Registro.frente_servico_id == int(frente_filter))
+        if usuario_filter:
+            q = q.filter(Registro.usuario_registrador_id == int(usuario_filter))
+        if parsed_status is not None:
+            q = q.filter(Registro.status == parsed_status)
 
-        return [_to_dict(item) for item in registros]
+        total = q.count()
+        registros = (
+            q.order_by(Registro.data.desc(), Registro.id.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
+
+        return {
+            "items": [_to_dict(item) for item in registros],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": max(1, (total + per_page - 1) // per_page),
+        }
 
 
 @api_blueprint.route("/registros", methods=["POST"])
@@ -172,7 +249,9 @@ def obter_registro(registro_id: int):
         registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
         if not registro:
             return _json_error("Registro nao encontrado.", 404)
-        return _to_dict(registro)
+        payload = _to_dict(registro)
+        _enrich_with_schema(payload, registro, db, tenant_id)
+        return payload
 
 
 @api_blueprint.route("/registros/<int:registro_id>", methods=["PUT", "PATCH"])
@@ -250,6 +329,10 @@ def atualizar_registro(registro_id: int):
     if estaca_inicial is not None and estaca_final is not None and payload.get("resultado") is None:
         payload["resultado"] = float(estaca_final) - float(estaca_inicial)
 
+    if data.get("campos_extras_valores") and isinstance(data["campos_extras_valores"], dict):
+        current_meta = payload.get("metadata_json") or {}
+        payload["metadata_json"] = {**current_meta, **data["campos_extras_valores"]}
+
     with SessionLocal() as db:
         try:
             registro = Repository.registros.atualizar(db, registro_id, tenant_id=tenant_id, **payload)
@@ -257,7 +340,9 @@ def atualizar_registro(registro_id: int):
             return _json_error(str(exc), 422)
         if not registro:
             return _json_error("Registro nao encontrado.", 404)
-        return _to_dict(registro)
+        payload_resp = _to_dict(registro)
+        _enrich_with_schema(payload_resp, registro, db, tenant_id)
+        return payload_resp
 
 
 @api_blueprint.route("/registros/<int:registro_id>/status", methods=["PATCH"])

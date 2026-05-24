@@ -1,3 +1,5 @@
+from flask import request
+
 from backend.db.models import NivelAcesso
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
@@ -14,8 +16,6 @@ def listar_usuarios():
 
 @api_blueprint.route("/usuarios", methods=["POST"])
 def criar_usuario():
-    from flask import request
-
     data = request.get_json(silent=True) or {}
     try:
         nome = data["nome"]
@@ -64,8 +64,6 @@ def obter_usuario(usuario_id: int):
 
 @api_blueprint.route("/usuarios/<int:usuario_id>", methods=["PUT", "PATCH"])
 def atualizar_usuario(usuario_id: int):
-    from flask import request
-
     data = request.get_json(silent=True) or {}
     update_payload = {
         "nome": data.get("nome"),
@@ -96,3 +94,13 @@ def deletar_usuario(usuario_id: int):
         if not ok:
             return _json_error("Usuario nao encontrado.", 404)
         return {"ok": True}
+
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/obras", methods=["GET"])
+def listar_obras_do_usuario(usuario_id: int):
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        obras = Repository.usuario_obras.listar_obras_do_usuario(db, usuario_id)
+        return obras

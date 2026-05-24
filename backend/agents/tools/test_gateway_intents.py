@@ -87,8 +87,8 @@ class GatewayIntentNormalizationTests(unittest.TestCase):
         self.assertIn("deletar_tipo_alerta_operacional", tool_names)
 
     def test_requires_confirmation_is_disabled_for_status_updates(self):
-        self.assertFalse(_requires_confirmation_for_status_change("consolidado", intent="atualizar_registro"))
-        self.assertFalse(_requires_confirmation_for_status_change("revisado", intent="atualizar_registro"))
+        self.assertFalse(_requires_confirmation_for_status_change("aprovado", intent="atualizar_registro"))
+        self.assertFalse(_requires_confirmation_for_status_change("rejeitado", intent="atualizar_registro"))
 
     def test_anexar_imagem_without_confirmation_executes(self):
         fake_attach = _FakeInternalTool(
@@ -111,17 +111,17 @@ class GatewayIntentNormalizationTests(unittest.TestCase):
     def test_consolidar_status_without_confirmation_executes(self):
         fake_status = _FakeInternalTool(
             "atualizar_status_registro",
-            {"ok": True, "registro": {"id": 10, "status": "consolidado"}},
+            {"ok": True, "registro": {"id": 10, "status": "aprovado"}},
         )
 
         with patch("backend.agents.tools.gateway_tools.get_database_tools", return_value=[fake_status]):
             tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado")
 
         status_tool = next(tool for tool in tools if tool.name == "atualizar_status_registro_operacional")
-        result = status_tool.invoke({"registro_id": 10, "status": "consolidado", "confirmado": False})
+        result = status_tool.invoke({"registro_id": 10, "status": "aprovado", "confirmado": False})
 
         self.assertTrue(result.get("ok"))
-        self.assertEqual(((result.get("registro") or {}).get("status")), "consolidado")
+        self.assertEqual(((result.get("registro") or {}).get("status")), "aprovado")
 
     def test_criar_frente_executes_without_confirmation(self):
         fake_create = _FakeInternalTool(

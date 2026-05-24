@@ -54,6 +54,7 @@ def get_telegram_tools(
     telegram_message_thread_id: int | None,
     actor_user_id: int | None,
     actor_level: str | None,
+    conversa_id: int | None = None,
 ) -> list:
     if not chat_id:
         return []
@@ -186,4 +187,33 @@ def get_telegram_tools(
             "anonima": bool(anonima),
         }
 
-    return [enviar_botoes_resposta_rapida, enviar_enquete_checklist]
+    @tool
+    def encerrar_conversa_operacional() -> dict:
+        """Encerra a conversa atual a pedido do usuário. Use quando o usuário pedir explicitamente para encerrar, finalizar ou fechar a conversa."""
+        if actor_user_id is None:
+            return {"ok": False, "message": "Contexto de usuário não identificado para encerrar a conversa."}
+        try:
+            from backend.db.session import SessionLocal
+            from backend.agents.session_service import encerrar_conversa
+            from backend.db.models import Conversa
+            with SessionLocal() as db:
+                target_id = conversa_id
+                if target_id is None:
+                    conv = (
+                        db.query(Conversa)
+                        .filter(
+                            Conversa.usuario_id == actor_user_id,
+                            Conversa.encerrada_em.is_(None),
+                        )
+                        .order_by(Conversa.iniciada_em.desc())
+                        .first()
+                    )
+                    if not conv:
+                        return {"ok": False, "message": "Nenhuma conversa ativa encontrada para encerrar."}
+                    target_id = conv.id
+                encerrar_conversa(db, target_id)
+            return {"ok": True, "message": "Conversa encerrada com sucesso. Até logo!"}
+        except Exception as exc:
+            return {"ok": False, "message": f"Erro ao encerrar conversa: {exc}"}
+
+    return [enviar_botoes_resposta_rapida, enviar_enquete_checklist, encerrar_conversa_operacional]

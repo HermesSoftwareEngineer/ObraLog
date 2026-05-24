@@ -1,7 +1,11 @@
-from sqlalchemy import create_engine, text
+import logging
+
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
 from backend.core.config import settings
+
+logger = logging.getLogger("obralog.session")
 
 
 def _normalize_database_url(database_url: str) -> str:
@@ -11,6 +15,16 @@ def _normalize_database_url(database_url: str) -> str:
 
 
 engine = create_engine(_normalize_database_url(settings.database_url), pool_pre_ping=True)
+
+try:
+    from pgvector.psycopg import register_vector as _register_vector
+
+    @event.listens_for(engine, "connect")
+    def _on_connect(dbapi_conn, _):
+        _register_vector(dbapi_conn)
+except Exception:
+    pass
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -99,7 +113,7 @@ def ensure_runtime_migrations() -> None:
                 DO $$
                 BEGIN
                     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'registro_status') THEN
-                        CREATE TYPE registro_status AS ENUM ('pendente', 'consolidado', 'revisado', 'ativo', 'descartado');
+                        CREATE TYPE registro_status AS ENUM ('pendente', 'aprovado', 'rejeitado');
                     END IF;
                 END $$;
                 """
@@ -176,34 +190,75 @@ def ensure_runtime_migrations() -> None:
         )
         connection.execute(text("ALTER TABLE registros DROP CONSTRAINT IF EXISTS ck_registros_required_fields"))
         connection.execute(text("ALTER TABLE registros DROP CONSTRAINT IF EXISTS ck_registros_consolidado_campos_basicos"))
+        connection.execute(text("ALTER TABLE registros DROP CONSTRAINT IF EXISTS ck_registros_aprovado_campos_basicos"))
         connection.execute(
             text(
                 """
-                ALTER TABLE registros
-                ADD CONSTRAINT ck_registros_consolidado_campos_basicos
-                CHECK (
-                    status <> 'consolidado'
-                    OR (
-                        data IS NOT NULL
-                        AND frente_servico_id IS NOT NULL
-                        AND usuario_registrador_id IS NOT NULL
-                        AND tempo_manha IS NOT NULL
-                        AND tempo_tarde IS NOT NULL
-                        AND (
-                            (
-                                COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') IN ('texto', 'text')
-                                AND estaca IS NOT NULL
+                DO $$
+                BEGIN
+                    -- Adiciona constraint usando o valor correto conforme o enum atual
+                    IF EXISTS (
+                        SELECT 1 FROM pg_enum e
+                        JOIN pg_type t ON e.enumtypid = t.oid
+                        WHERE t.typname = 'registro_status' AND e.enumlabel = 'aprovado'
+                    ) THEN
+                        ALTER TABLE registros
+                        ADD CONSTRAINT ck_registros_aprovado_campos_basicos
+                        CHECK (
+                            status <> 'aprovado'
+                            OR (
+                                data IS NOT NULL
+                                AND frente_servico_id IS NOT NULL
+                                AND usuario_registrador_id IS NOT NULL
+                                AND tempo_manha IS NOT NULL
+                                AND tempo_tarde IS NOT NULL
+                                AND (
+                                    (
+                                        COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') IN ('texto', 'text')
+                                        AND estaca IS NOT NULL
+                                    )
+                                    OR
+                                    (
+                                        COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') NOT IN ('texto', 'text')
+                                        AND estaca_inicial IS NOT NULL
+                                        AND estaca_final IS NOT NULL
+                                        AND resultado IS NOT NULL
+                                    )
+                                )
                             )
-                            OR
-                            (
-                                COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') NOT IN ('texto', 'text')
-                                AND estaca_inicial IS NOT NULL
-                                AND estaca_final IS NOT NULL
-                                AND resultado IS NOT NULL
+                        ) NOT VALID;
+                    ELSIF EXISTS (
+                        SELECT 1 FROM pg_enum e
+                        JOIN pg_type t ON e.enumtypid = t.oid
+                        WHERE t.typname = 'registro_status' AND e.enumlabel = 'consolidado'
+                    ) THEN
+                        ALTER TABLE registros
+                        ADD CONSTRAINT ck_registros_consolidado_campos_basicos
+                        CHECK (
+                            status <> 'consolidado'
+                            OR (
+                                data IS NOT NULL
+                                AND frente_servico_id IS NOT NULL
+                                AND usuario_registrador_id IS NOT NULL
+                                AND tempo_manha IS NOT NULL
+                                AND tempo_tarde IS NOT NULL
+                                AND (
+                                    (
+                                        COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') IN ('texto', 'text')
+                                        AND estaca IS NOT NULL
+                                    )
+                                    OR
+                                    (
+                                        COALESCE(LOWER(metadata_json->>'tipo'), 'estaca') NOT IN ('texto', 'text')
+                                        AND estaca_inicial IS NOT NULL
+                                        AND estaca_final IS NOT NULL
+                                        AND resultado IS NOT NULL
+                                    )
+                                )
                             )
-                        )
-                    )
-                ) NOT VALID
+                        ) NOT VALID;
+                    END IF;
+                END $$;
                 """
             )
         )
@@ -372,6 +427,122 @@ def ensure_runtime_migrations() -> None:
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_type_aliases_normalized_alias_unique ON alert_type_aliases(normalized_alias)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_type_aliases_canonical_type ON alert_type_aliases(canonical_type)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_type_aliases_ativo ON alert_type_aliases(ativo)"))
+
+        # Sprint: Sessões de conversa + memória vetorial
+        # Wrapped in try/except: pgvector may not be available in all environments.
+        try:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            connection.execute(
+                text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS timeout_conversa_minutos INT NOT NULL DEFAULT 60")
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversas (
+                        id            BIGSERIAL PRIMARY KEY,
+                        tenant_id     INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                        usuario_id    INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+                        chat_id       VARCHAR NOT NULL,
+                        thread_id     VARCHAR NOT NULL,
+                        iniciada_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        encerrada_em  TIMESTAMPTZ,
+                        ultima_msg_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        resumo        TEXT,
+                        embedding     VECTOR(768)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_conversas_tenant_usuario ON conversas(tenant_id, usuario_id)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_conversas_aberta ON conversas(tenant_id, ultima_msg_em) WHERE encerrada_em IS NULL"
+                )
+            )
+        except Exception as _vec_exc:
+            logger.warning(
+                "pgvector indisponível; sessões de conversa desabilitadas: %s", _vec_exc
+            )
+
+        # Sprint: Diários de Obra
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'diario_tipo') THEN
+                        CREATE TYPE diario_tipo AS ENUM ('diario', 'semanal', 'mensal');
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'diario_status') THEN
+                        CREATE TYPE diario_status AS ENUM ('rascunho', 'finalizado');
+                    END IF;
+                END $$;
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS diarios (
+                    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    obra_id        INT NOT NULL REFERENCES obras(id)    ON DELETE RESTRICT,
+                    tenant_id      INT NOT NULL REFERENCES tenants(id)  ON DELETE RESTRICT,
+                    tipo           diario_tipo   NOT NULL DEFAULT 'diario',
+                    status         diario_status NOT NULL DEFAULT 'rascunho',
+                    data_inicio    DATE NOT NULL,
+                    data_fim       DATE NOT NULL,
+                    versao_atual   INT NOT NULL DEFAULT 1,
+                    gerado_por     INT REFERENCES usuarios(id) ON DELETE SET NULL,
+                    gerado_em      TIMESTAMPTZ,
+                    finalizado_por INT REFERENCES usuarios(id) ON DELETE SET NULL,
+                    finalizado_em  TIMESTAMPTZ,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT diarios_unique_periodo UNIQUE (obra_id, tipo, data_inicio, data_fim)
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_diarios_obra_tipo ON diarios(obra_id, tipo)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_diarios_tenant    ON diarios(tenant_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_diarios_status    ON diarios(status)"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS diario_registros (
+                    id          SERIAL PRIMARY KEY,
+                    diario_id   UUID NOT NULL REFERENCES diarios(id)   ON DELETE CASCADE,
+                    registro_id INT  NOT NULL REFERENCES registros(id) ON DELETE RESTRICT,
+                    tenant_id   INT  NOT NULL REFERENCES tenants(id)   ON DELETE RESTRICT,
+                    UNIQUE(diario_id, registro_id)
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_diario_registros_diario   ON diario_registros(diario_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_diario_registros_registro ON diario_registros(registro_id)"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS diario_versoes (
+                    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    diario_id        UUID NOT NULL REFERENCES diarios(id)  ON DELETE CASCADE,
+                    tenant_id        INT  NOT NULL REFERENCES tenants(id)  ON DELETE RESTRICT,
+                    versao           INT  NOT NULL,
+                    storage_path     VARCHAR NOT NULL,
+                    storage_url      VARCHAR,
+                    gerado_por       INT REFERENCES usuarios(id) ON DELETE SET NULL,
+                    gerado_em        TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    motivo_regeracao TEXT,
+                    registros_ids    JSONB NOT NULL DEFAULT '[]',
+                    UNIQUE(diario_id, versao)
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_diario_versoes_diario ON diario_versoes(diario_id)"))
 
 
 ensure_runtime_migrations()

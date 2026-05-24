@@ -40,6 +40,7 @@ ALLOWED_EXECUTION_INTENTS = {
     "consolidar_registro",
     "gerenciar_frente_servico",
     "gerenciar_tipo_alerta",
+    "gerar_diario",
 }
 
 EXECUTION_INTENT_ALIASES = {
@@ -64,6 +65,10 @@ EXECUTION_INTENT_ALIASES = {
     "deletar_tipo_alerta": "gerenciar_tipo_alerta",
     "remover_tipo_alerta": "gerenciar_tipo_alerta",
     "consolidar": "consolidar_registro",
+    "gerar_diario_obra": "gerar_diario",
+    "criar_diario": "gerar_diario",
+    "regerar_diario": "gerar_diario",
+    "diario_obra": "gerar_diario",
 }
 
 
@@ -92,6 +97,7 @@ ExecutionIntentLiteral = Literal[
     "registrar_alerta",
     "gerenciar_frente_servico",
     "gerenciar_tipo_alerta",
+    "gerar_diario",
 ]
 
 
@@ -1496,7 +1502,7 @@ def get_gateway_tools(
         confirmado: bool = False,
         intencao: ExecutionIntentLiteral = "atualizar_registro",
     ) -> dict:
-        """Anexa imagem (URL externa) a um registro operacional, incluindo registros consolidados, sem confirmacao explicita."""
+        """Anexa imagem (URL externa) a um registro operacional, incluindo registros aprovados, sem confirmacao explicita."""
         intencao_resolvida = _normalize_execution_intent(intencao, default="atualizar_registro")
 
         request = _request(
@@ -1526,6 +1532,97 @@ def get_gateway_tools(
             return {"ok": True, "resultado": result}
 
         return _execute_gateway(lambda: router.execucao_sem_confirmacao(request, handler, intent=intencao_resolvida))
+
+    @tool
+    def gerar_diario_obra(
+        obra_id: int | None = None,
+        tipo: str = "diario",
+        data_inicio: str | None = None,
+        data_fim: str | None = None,
+        motivo_regeracao: str | None = None,
+        intencao: ExecutionIntentLiteral = "gerar_diario",
+    ) -> dict:
+        """Gera ou regera o diario de obra para um periodo. Use quando o engenheiro solicitar o diario via chat. Pergunte a data se nao for informada."""
+        from datetime import date as _date
+
+        today = _date.today().isoformat()
+        obra_id_resolvido = obra_id or obra_id_ativa
+        if obra_id_resolvido is None:
+            return {
+                "ok": False,
+                "message": "obra_id nao informado e nenhuma obra ativa no contexto. Pergunte ao usuario qual obra deseja.",
+                "next_steps": ["pedir obra_id ao usuario", "listar obras disponíveis"],
+            }
+
+        data_inicio_norm = parse_iso_date(data_inicio or today, "data_inicio").isoformat()
+
+        if data_fim:
+            data_fim_norm = parse_iso_date(data_fim, "data_fim").isoformat()
+        elif tipo == "semanal":
+            from datetime import timedelta
+            inicio = _date.fromisoformat(data_inicio_norm)
+            data_fim_norm = (inicio + timedelta(days=6)).isoformat()
+        elif tipo == "mensal":
+            import calendar
+            inicio = _date.fromisoformat(data_inicio_norm)
+            ultimo_dia = calendar.monthrange(inicio.year, inicio.month)[1]
+            data_fim_norm = inicio.replace(day=ultimo_dia).isoformat()
+        else:
+            data_fim_norm = data_inicio_norm
+
+        intencao_resolvida = _normalize_execution_intent(intencao, default="gerar_diario")
+        request_obj = _request(
+            "gerar_diario_obra",
+            payload={
+                "obra_id": obra_id_resolvido,
+                "tipo": tipo,
+                "data_inicio": data_inicio_norm,
+                "data_fim": data_fim_norm,
+                "motivo_regeracao": motivo_regeracao,
+            },
+            action_route="execucao",
+            intent=intencao_resolvida,
+            business_tool="gerar_diario_obra",
+            technical_operation="gerar_diario",
+        )
+
+        def handler(_: GatewayRequest) -> dict:
+            if tenant_id is None:
+                return {"ok": False, "message": "tenant_id nao disponivel no contexto."}
+            try:
+                from backend.services.diario_service import gerar_ou_regerar_diario
+                from datetime import date as _d
+                result = gerar_ou_regerar_diario(
+                    obra_id=int(obra_id_resolvido),
+                    tenant_id=int(tenant_id),
+                    tipo=tipo,
+                    data_inicio=_d.fromisoformat(data_inicio_norm),
+                    data_fim=_d.fromisoformat(data_fim_norm),
+                    gerado_por=int(actor_user_id),
+                    motivo_regeracao=motivo_regeracao,
+                )
+                versao_url = None
+                if result.get("versoes"):
+                    versao_url = result["versoes"][0].get("storage_url")
+                return {
+                    "ok": True,
+                    "diario_id": result.get("id"),
+                    "versao_atual": result.get("versao_atual"),
+                    "status": result.get("status"),
+                    "periodo": f"{result.get('data_inicio')} a {result.get('data_fim')}",
+                    "url_pdf": versao_url,
+                    "message": (
+                        f"Diário {'gerado' if result.get('versao_atual') == 1 else 'regerado'} com sucesso. "
+                        f"Versão {result.get('versao_atual')}."
+                        + (f" PDF disponível em: {versao_url}" if versao_url else "")
+                    ),
+                }
+            except ValueError as exc:
+                return {"ok": False, "message": str(exc)}
+            except RuntimeError as exc:
+                return {"ok": False, "message": str(exc)}
+
+        return _execute_gateway(lambda: router.execucao_sem_confirmacao(request_obj, handler, intent=intencao_resolvida))
 
     @tool
     def buscar_contexto_operacional(pergunta: str, k: int = 3) -> dict:
@@ -1578,4 +1675,5 @@ def get_gateway_tools(
         atualizar_status_registro_operacional,
         anexar_imagem_registro_operacional,
         buscar_contexto_operacional,
+        gerar_diario_obra,
     ]
