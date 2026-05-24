@@ -2,7 +2,7 @@ from datetime import datetime, date, time
 import uuid
 from enum import Enum
 
-from sqlalchemy import Boolean, Column, Date, DateTime, DECIMAL, Enum as SQLEnum, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func, BigInteger, JSON, text as sa_text
+from sqlalchemy import Boolean, Column, Date, DateTime, DECIMAL, Enum as SQLEnum, ForeignKey, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, func, BigInteger, JSON, text as sa_text
 from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -144,6 +144,8 @@ class Tenant(Base):
     conversas           = relationship("Conversa",         back_populates="tenant", cascade="all, delete-orphan")
     diarios             = relationship("Diario",           back_populates="tenant", cascade="all, delete-orphan")
     tipos_obra          = relationship("TipoObra",         back_populates="tenant", cascade="all, delete-orphan")
+    assinatura          = relationship("TenantAssinatura",  back_populates="tenant", uselist=False)
+    transacoes_credito  = relationship("CreditoTransacao",  back_populates="tenant")
 
 
 class TipoObra(Base):
@@ -608,3 +610,52 @@ class DiarioVersao(Base):
 
     diario  = relationship("Diario",  back_populates="versoes")
     gerador = relationship("Usuario", foreign_keys=[gerado_por])
+
+
+# =====================
+# SPRINT: SISTEMA DE CRÉDITOS
+# =====================
+
+class Plano(Base):
+    __tablename__ = "planos"
+
+    id                    = Column(Integer, primary_key=True)
+    nome                  = Column(String(50), nullable=False, unique=True)
+    creditos_mensais      = Column(Integer, nullable=False)
+    preco_mensal          = Column(Numeric(10, 2), nullable=True)
+    custo_credito_avulso  = Column(Numeric(10, 4), nullable=True)
+    ativo                 = Column(Boolean, nullable=False, default=True)
+    criado_em             = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    assinaturas = relationship("TenantAssinatura", back_populates="plano")
+
+
+class TenantAssinatura(Base):
+    __tablename__ = "tenant_assinaturas"
+
+    id                   = Column(Integer, primary_key=True)
+    tenant_id            = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    plano_id             = Column(Integer, ForeignKey("planos.id",  ondelete="RESTRICT"), nullable=False)
+    status               = Column(String(20), nullable=False, default="ativa")
+    creditos_plano       = Column(Integer, nullable=False)
+    creditos_avulsos     = Column(Integer, nullable=False, default=0)
+    proximo_reset_em     = Column(DateTime(timezone=True), nullable=False, index=True)
+    criada_em            = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    atualizada_em        = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    tenant = relationship("Tenant", back_populates="assinatura")
+    plano  = relationship("Plano",  back_populates="assinaturas")
+
+
+class CreditoTransacao(Base):
+    __tablename__ = "credito_transacoes"
+
+    id            = Column(PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()"))
+    tenant_id     = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    operacao      = Column(String(50), nullable=False)
+    creditos      = Column(Integer, nullable=False)
+    descricao     = Column(Text, nullable=True)
+    referencia_id = Column(String(100), nullable=True)
+    criada_em     = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    tenant = relationship("Tenant", back_populates="transacoes_credito")

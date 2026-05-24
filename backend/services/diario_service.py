@@ -276,6 +276,12 @@ def gerar_ou_regerar_diario(
         db.refresh(diario)
         db.refresh(versao_obj)
 
+        try:
+            from backend.services.credito_service import debitar_creditos
+            debitar_creditos(db, tenant_id, "gerar_diario", referencia_id=diario_id_str)
+        except Exception as _exc:
+            logger.warning("Falha ao debitar créditos do diário %s: %s", diario_id_str, _exc)
+
         versoes = (
             db.query(DiarioVersao)
             .filter(DiarioVersao.diario_id == diario.id)

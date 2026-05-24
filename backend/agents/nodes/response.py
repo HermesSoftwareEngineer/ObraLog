@@ -14,12 +14,15 @@ except ImportError:
 import unicodedata
 import os
 from datetime import datetime
+import logging
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from ..gateway.location_profile import build_location_profile
 from ..gateway.rag_service import BusinessRAGService
+
+logger = logging.getLogger("obralog.agent.response")
 
 
 def _normalize_text(value: str) -> str:
@@ -376,8 +379,34 @@ def agent_step(state: State, config: RunnableConfig | None = None):
     system_message = _build_system_message(state_messages, config)
     actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile = _resolve_actor_context(config)
 
+    if tenant_id is not None:
+        try:
+            from backend.db.session import SessionLocal as _SL
+            from backend.services.credito_service import verificar_saldo as _verificar_saldo
+            with _SL() as _db:
+                if not _verificar_saldo(_db, int(tenant_id)):
+                    return {
+                        "messages": [
+                            AIMessage(content=(
+                                "⚠️ Seu plano não tem créditos disponíveis. "
+                                "Entre em contato com o administrador para recarregar."
+                            ))
+                        ]
+                    }
+        except Exception as _saldo_exc:
+            logger.warning("Falha ao verificar saldo de créditos: %s", _saldo_exc)
+
     if actor_user_id is None or actor_level is None:
         response = llm_main.invoke([system_message] + state_messages)
+        if tenant_id is not None:
+            try:
+                from backend.db.session import SessionLocal as _SL
+                from backend.services.credito_service import debitar_creditos as _debitar
+                _conversa_id = (config or {}).get("configurable", {}).get("conversa_id")
+                with _SL() as _db:
+                    _debitar(_db, int(tenant_id), "mensagem_agente", referencia_id=str(_conversa_id) if _conversa_id else None)
+            except Exception as _exc:
+                logger.warning("Falha ao debitar créditos: %s", _exc)
         return {"messages": [response]}
 
     configurable = (config or {}).get("configurable", {})
@@ -404,6 +433,14 @@ def agent_step(state: State, config: RunnableConfig | None = None):
     )
     model = llm_main.bind_tools(tools)
     response = model.invoke([system_message] + state_messages)
+    if tenant_id is not None:
+        try:
+            from backend.db.session import SessionLocal as _SL
+            from backend.services.credito_service import debitar_creditos as _debitar
+            with _SL() as _db:
+                _debitar(_db, int(tenant_id), "mensagem_agente", referencia_id=str(conversa_id) if conversa_id else None)
+        except Exception as _exc:
+            logger.warning("Falha ao debitar créditos: %s", _exc)
     return {"messages": [response]}
 
 

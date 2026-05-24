@@ -485,6 +485,71 @@ def ensure_runtime_migrations() -> None:
         )
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_diario_versoes_diario ON diario_versoes(diario_id)"))
 
+        # Sprint: Sistema de Créditos
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS planos (
+                    id                      SERIAL PRIMARY KEY,
+                    nome                    VARCHAR(50) NOT NULL UNIQUE,
+                    creditos_mensais        INT NOT NULL,
+                    preco_mensal            NUMERIC(10, 2),
+                    custo_credito_avulso    NUMERIC(10, 4),
+                    ativo                   BOOLEAN NOT NULL DEFAULT true,
+                    criado_em               TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS tenant_assinaturas (
+                    id                  SERIAL PRIMARY KEY,
+                    tenant_id           INT NOT NULL UNIQUE REFERENCES tenants(id) ON DELETE CASCADE,
+                    plano_id            INT NOT NULL REFERENCES planos(id) ON DELETE RESTRICT,
+                    status              VARCHAR(20) NOT NULL DEFAULT 'ativa',
+                    creditos_plano      INT NOT NULL,
+                    creditos_avulsos    INT NOT NULL DEFAULT 0,
+                    proximo_reset_em    TIMESTAMPTZ NOT NULL,
+                    criada_em           TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    atualizada_em       TIMESTAMPTZ
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_tenant_assinaturas_tenant ON tenant_assinaturas(tenant_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_tenant_assinaturas_proximo_reset ON tenant_assinaturas(proximo_reset_em)"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS credito_transacoes (
+                    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id      INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    operacao       VARCHAR(50) NOT NULL,
+                    creditos       INT NOT NULL,
+                    descricao      TEXT,
+                    referencia_id  VARCHAR(100),
+                    criada_em      TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_credito_transacoes_tenant ON credito_transacoes(tenant_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_credito_transacoes_criada_em ON credito_transacoes(criada_em)"))
+        connection.execute(
+            text(
+                """
+                INSERT INTO planos (nome, creditos_mensais, preco_mensal, custo_credito_avulso, ativo)
+                VALUES
+                    ('starter',     500,  97.00,  0.30, true),
+                    ('pro',        2000, 247.00,  0.22, true),
+                    ('enterprise', 8000, 597.00,  0.15, true)
+                ON CONFLICT (nome) DO NOTHING
+                """
+            )
+        )
+
 
 ensure_runtime_migrations()
 
