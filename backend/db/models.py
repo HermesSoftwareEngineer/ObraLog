@@ -276,18 +276,17 @@ class FrenteServico(Base):
     encarregado_responsavel = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
     observacao = Column(String, nullable=True)
     obra_id = Column(Integer, ForeignKey("obras.id", ondelete="SET NULL"), nullable=True, index=True)
+    registro_schema_id = Column(Integer, ForeignKey("registro_schemas.id", ondelete="SET NULL"), nullable=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
 
     tenant = relationship("Tenant", back_populates="frentes_servico")
     encarregado = relationship("Usuario", back_populates="frentes_servico")
     registros = relationship("Registro", back_populates="frente_servico")
     obra = relationship("Obra", back_populates="frentes_servico", foreign_keys=[obra_id])
+    registro_schema = relationship("RegistroSchema", back_populates="frentes_servico", foreign_keys=[registro_schema_id])
 
 class RegistroSchema(Base):
     __tablename__ = "registro_schemas"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "tipo_obra_id", name="uq_registro_schemas_tenant_tipo_id"),
-    )
 
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
@@ -302,6 +301,7 @@ class RegistroSchema(Base):
 
     tenant = relationship("Tenant", back_populates="registro_schemas")
     tipo_obra_ref = relationship("TipoObra", back_populates="registro_schemas")
+    frentes_servico = relationship("FrenteServico", back_populates="registro_schema", foreign_keys="FrenteServico.registro_schema_id")
 
 
 class Registro(Base):

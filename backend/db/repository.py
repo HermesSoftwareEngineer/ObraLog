@@ -323,11 +323,29 @@ class UsuarioRepository:
         db.commit()
         return True
 
+_UNSET = object()
+
+
 class FrenteServicoRepository:
     @staticmethod
-    def criar(db: Session, nome: str, encarregado_responsavel: int | None = None, observacao: str | None = None, obra_id: int | None = None, tenant_id: int | None = None) -> FrenteServico:
+    def criar(
+        db: Session,
+        nome: str,
+        encarregado_responsavel: int | None = None,
+        observacao: str | None = None,
+        obra_id: int | None = None,
+        registro_schema_id: int | None = None,
+        tenant_id: int | None = None,
+    ) -> FrenteServico:
         tenant_id = _resolve_tenant_id(db, tenant_id)
-        frente = FrenteServico(tenant_id=tenant_id, nome=nome, encarregado_responsavel=encarregado_responsavel, observacao=observacao, obra_id=obra_id)
+        frente = FrenteServico(
+            tenant_id=tenant_id,
+            nome=nome,
+            encarregado_responsavel=encarregado_responsavel,
+            observacao=observacao,
+            obra_id=obra_id,
+            registro_schema_id=registro_schema_id,
+        )
         db.add(frente)
         db.commit()
         db.refresh(frente)
@@ -348,7 +366,14 @@ class FrenteServicoRepository:
         return db.query(FrenteServico).filter(FrenteServico.tenant_id == tenant_id).all()
 
     @staticmethod
-    def atualizar(db: Session, frente_id: int, tenant_id: int | None = None, obra_id: int | None = None, **dados) -> FrenteServico | None:
+    def atualizar(
+        db: Session,
+        frente_id: int,
+        tenant_id: int | None = None,
+        obra_id: int | None = None,
+        registro_schema_id=_UNSET,
+        **dados,
+    ) -> FrenteServico | None:
         tenant_id = _resolve_tenant_id(db, tenant_id)
         frente = (
             db.query(FrenteServico)
@@ -359,6 +384,8 @@ class FrenteServicoRepository:
             return None
         if obra_id is not None:
             frente.obra_id = obra_id
+        if registro_schema_id is not _UNSET:
+            frente.registro_schema_id = registro_schema_id
         for chave, valor in dados.items():
             if hasattr(frente, chave) and valor is not None:
                 setattr(frente, chave, valor)
@@ -409,37 +436,31 @@ class RegistroRepository:
 
     @staticmethod
     def _fetch_active_schema(db: Session, src, tenant_id: int) -> "RegistroSchema | None":
-        """Fetch the active RegistroSchema for a registro or dict with obra_id/registro_schema_id."""
+        """Fetch the active RegistroSchema for a registro or dict.
+
+        Priority:
+        1. registro_schema_id explicit on the registro
+        2. registro_schema_id on the frente_servico linked to the registro
+        """
         def _get(field):
             return src.get(field) if isinstance(src, dict) else getattr(src, field, None)
 
         schema_id = _get("registro_schema_id")
         if schema_id:
             return db.query(RegistroSchema).filter(RegistroSchema.id == schema_id).first()
-        obra_id = _get("obra_id")
-        if obra_id:
-            obra = db.query(Obra).filter(Obra.id == obra_id, Obra.tenant_id == tenant_id).first()
-            if obra:
-                if obra.tipo_obra_id:
-                    return (
-                        db.query(RegistroSchema)
-                        .filter(
-                            RegistroSchema.tenant_id == tenant_id,
-                            RegistroSchema.tipo_obra_id == obra.tipo_obra_id,
-                            RegistroSchema.ativo.is_(True),
-                        )
-                        .first()
-                    )
-                if obra.tipo_obra:
-                    return (
-                        db.query(RegistroSchema)
-                        .filter(
-                            RegistroSchema.tenant_id == tenant_id,
-                            RegistroSchema.tipo_obra == obra.tipo_obra,
-                            RegistroSchema.ativo.is_(True),
-                        )
-                        .first()
-                    )
+
+        frente_id = _get("frente_servico_id")
+        if frente_id:
+            frente = db.query(FrenteServico).filter(
+                FrenteServico.id == frente_id,
+                FrenteServico.tenant_id == tenant_id,
+            ).first()
+            if frente and frente.registro_schema_id:
+                return db.query(RegistroSchema).filter(
+                    RegistroSchema.id == frente.registro_schema_id,
+                    RegistroSchema.tenant_id == tenant_id,
+                ).first()
+
         return None
 
     @staticmethod
@@ -458,20 +479,10 @@ class RegistroRepository:
         campos = schema.campos_ativos if (schema and isinstance(getattr(schema, "campos_ativos", None), dict)) else None
 
         if campos is None:
-            # No schema — fall back to hardcoded logic
-            payload = {
-                "data": _get("data"),
-                "frente_servico_id": _get("frente_servico_id"),
-                "usuario_registrador_id": _get("usuario_registrador_id"),
-                "estaca_inicial": _get("estaca_inicial"),
-                "estaca_final": _get("estaca_final"),
-                "estaca": _get("estaca"),
-                "metadata_json": _get("metadata_json"),
-                "resultado": _get("resultado"),
-                "tempo_manha": _get("tempo_manha"),
-                "tempo_tarde": _get("tempo_tarde"),
-            }
-            return RegistroRepository._required_missing_for_consolidated(payload)
+            # Sem schema configurado — valida apenas campos universais
+            if _get("frente_servico_id") in (None, ""):
+                missing.append("frente_servico_id")
+            return missing
 
         for campo, required in campos.items():
             if not required:
@@ -656,6 +667,33 @@ class RegistroRepository:
         )
 
     @staticmethod
+    def _limpar_extras_schema_anterior(
+        db: Session, registro: "Registro", old_frente_id: int | None, tenant_id: int
+    ) -> None:
+        """Remove de metadata_json os campos_extras do schema antigo após troca de frente."""
+        from sqlalchemy.orm.attributes import flag_modified
+        if not old_frente_id or not isinstance(registro.metadata_json, dict):
+            return
+        old_frente = db.query(FrenteServico).filter(
+            FrenteServico.id == old_frente_id,
+            FrenteServico.tenant_id == tenant_id,
+        ).first()
+        if not old_frente or not old_frente.registro_schema_id:
+            return
+        old_schema = db.query(RegistroSchema).filter(
+            RegistroSchema.id == old_frente.registro_schema_id,
+            RegistroSchema.tenant_id == tenant_id,
+        ).first()
+        if not old_schema or not old_schema.campos_extras:
+            return
+        old_keys = {c["key"] for c in old_schema.campos_extras if c.get("key")}
+        if not old_keys:
+            return
+        new_meta = {k: v for k, v in registro.metadata_json.items() if k not in old_keys}
+        registro.metadata_json = new_meta if new_meta else None
+        flag_modified(registro, "metadata_json")
+
+    @staticmethod
     def atualizar(db: Session, registro_id: int, tenant_id: int | None = None, **dados) -> Registro | None:
         tenant_id = _resolve_tenant_id(db, tenant_id)
 
@@ -671,11 +709,18 @@ class RegistroRepository:
         )
         if not registro:
             return None
+
+        old_frente_id = registro.frente_servico_id
+
         if "pista" in dados and dados.get("lado_pista") is None:
             dados["lado_pista"] = dados.get("pista")
         for chave, valor in dados.items():
             if hasattr(registro, chave) and valor is not None:
                 setattr(registro, chave, valor)
+
+        new_frente_id = dados.get("frente_servico_id")
+        if new_frente_id is not None and int(new_frente_id) != (old_frente_id or 0):
+            RegistroRepository._limpar_extras_schema_anterior(db, registro, old_frente_id, tenant_id)
 
         if (
             dados.get("resultado") is None
@@ -1248,6 +1293,24 @@ class RegistroSchemaRepository:
         if obra.tipo_obra:
             return RegistroSchemaRepository.obter_ativo_por_tipo_obra(db, obra.tipo_obra, tenant_id)
         return None
+
+    @staticmethod
+    def obter_para_frente(db: Session, frente_id: int, tenant_id: int) -> RegistroSchema | None:
+        frente = (
+            db.query(FrenteServico)
+            .filter(FrenteServico.id == frente_id, FrenteServico.tenant_id == tenant_id)
+            .first()
+        )
+        if not frente or not frente.registro_schema_id:
+            return None
+        return (
+            db.query(RegistroSchema)
+            .filter(
+                RegistroSchema.id == frente.registro_schema_id,
+                RegistroSchema.tenant_id == tenant_id,
+            )
+            .first()
+        )
 
 
 class UsuarioObraRepository:

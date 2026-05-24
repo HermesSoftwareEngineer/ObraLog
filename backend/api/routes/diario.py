@@ -474,13 +474,13 @@ def exportar_excel(diario_id: str, versao: int):
     tenant_id = getattr(g, "tenant_id", None)
     try:
         from backend.services.diario_service import get_dados_para_exportar
-        diario_info, registros_rows = get_dados_para_exportar(diario_id, versao, tenant_id)
+        diario_info, registros_rows, frentes_schemas = get_dados_para_exportar(diario_id, versao, tenant_id)
     except ValueError as exc:
         return _json_error(str(exc), 404)
 
     try:
         from backend.services.excel_service import gerar_excel_diario
-        xlsx_bytes = gerar_excel_diario(diario_info, registros_rows)
+        xlsx_bytes = gerar_excel_diario(diario_info, registros_rows, frentes_schemas)
     except Exception as exc:
         return _json_error(f"Falha ao gerar Excel: {exc}", 502)
 
@@ -499,13 +499,13 @@ def exportar_word(diario_id: str, versao: int):
     tenant_id = getattr(g, "tenant_id", None)
     try:
         from backend.services.diario_service import get_dados_para_exportar
-        diario_info, registros_rows = get_dados_para_exportar(diario_id, versao, tenant_id)
+        diario_info, registros_rows, frentes_schemas = get_dados_para_exportar(diario_id, versao, tenant_id)
     except ValueError as exc:
         return _json_error(str(exc), 404)
 
     try:
         from backend.services.word_service import gerar_word_diario
-        docx_bytes = gerar_word_diario(diario_info, registros_rows)
+        docx_bytes = gerar_word_diario(diario_info, registros_rows, frentes_schemas)
     except Exception as exc:
         return _json_error(f"Falha ao gerar Word: {exc}", 502)
 

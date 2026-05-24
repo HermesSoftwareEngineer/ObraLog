@@ -3,8 +3,7 @@ from uuid import UUID
 
 from langchain_core.tools import tool
 
-from backend.db.models import NivelAcesso
-from backend.db.models import RegistroStatus
+from backend.db.models import FrenteServico, NivelAcesso, RegistroStatus
 from backend.db.repository import Repository, RegistroSchemaRepository
 from backend.db.session import SessionLocal
 
@@ -99,6 +98,16 @@ def build_registros_tools(
                     frente_servico_nome=frente_servico_nome,
                     tenant_id=tenant_id,
                 )
+
+            # Deriva obra da frente quando não informada explicitamente,
+            # evitando registros com obra_id=NULL que ficam invisíveis no diário.
+            if obra_id is None and resolved_frente_id is not None:
+                frente = db.query(FrenteServico).filter(
+                    FrenteServico.id == resolved_frente_id,
+                    FrenteServico.tenant_id == tenant_id,
+                ).first()
+                if frente and frente.obra_id:
+                    obra_id = frente.obra_id
 
             registro_schema_id = None
             if obra_id is not None:

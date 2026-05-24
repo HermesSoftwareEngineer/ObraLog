@@ -6,12 +6,12 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from backend.db.models import (
     Diario, DiarioRegistro, DiarioStatus, DiarioTipo, DiarioVersao,
-    Obra, Registro, RegistroStatus, Tenant, Usuario,
+    FrenteServico, Obra, Registro, RegistroSchema, RegistroStatus, Tenant, Usuario,
 )
 from backend.db.session import SessionLocal
 
@@ -59,15 +59,21 @@ def _get_registros_para_diario(
     statuses = [RegistroStatus.APROVADO]
     if include_pending:
         statuses.append(RegistroStatus.PENDENTE)
+    # Registros podem ter obra_id nulo quando criados via bot sem obra explícita.
+    # Nesses casos, a obra é derivada de FrenteServico.obra_id.
     return (
         db.query(Registro)
+        .outerjoin(FrenteServico, Registro.frente_servico_id == FrenteServico.id)
         .options(selectinload(Registro.frente_servico), selectinload(Registro.imagens))
         .filter(
-            Registro.obra_id == obra_id,
             Registro.tenant_id == tenant_id,
             Registro.status.in_(statuses),
             Registro.data >= data_inicio,
             Registro.data <= data_fim,
+            or_(
+                Registro.obra_id == obra_id,
+                and_(Registro.obra_id.is_(None), FrenteServico.obra_id == obra_id),
+            ),
         )
         .order_by(Registro.data.asc(), Registro.id.asc())
         .all()
@@ -83,11 +89,17 @@ def _registro_to_row(r: Registro, include_imagens: bool = False) -> dict:
         "data": r.data.isoformat() if r.data else None,
         "frente_servico_id": r.frente_servico_id,
         "frente_servico_nome": frente_nome,
+        "registro_schema_id": r.registro_schema_id,
+        "estaca_inicial": float(r.estaca_inicial) if r.estaca_inicial is not None else None,
+        "estaca_final": float(r.estaca_final) if r.estaca_final is not None else None,
+        "estaca": r.estaca,
         "resultado": float(r.resultado) if r.resultado is not None else None,
+        "lado_pista": r.lado_pista.value if hasattr(r.lado_pista, "value") else str(r.lado_pista or ""),
         "tempo_manha": r.tempo_manha.value if hasattr(r.tempo_manha, "value") else str(r.tempo_manha or ""),
         "tempo_tarde": r.tempo_tarde.value if hasattr(r.tempo_tarde, "value") else str(r.tempo_tarde or ""),
         "observacao": r.observacao,
         "status": r.status.value if hasattr(r.status, "value") else str(r.status or ""),
+        "metadata_json": r.metadata_json or {},
     }
     if include_imagens:
         row["imagens"] = [
@@ -100,6 +112,41 @@ def _registro_to_row(r: Registro, include_imagens: bool = False) -> dict:
             for img in (getattr(r, "imagens", None) or [])
         ]
     return row
+
+
+def _build_frentes_schemas(db: Session, registros: list[Registro]) -> dict:
+    """Builds {frente_id: {"nome": str, "campos_ativos": dict, "campos_extras": list}}."""
+    result: dict = {}
+    schema_cache: dict = {}
+    for r in registros:
+        frente = getattr(r, "frente_servico", None)
+        fid = frente.id if frente else None
+        if fid in result:
+            continue
+        schema_id = (frente.registro_schema_id if frente else None) or r.registro_schema_id
+        schema = None
+        if schema_id:
+            if schema_id not in schema_cache:
+                schema_cache[schema_id] = db.query(RegistroSchema).filter(RegistroSchema.id == schema_id).first()
+            schema = schema_cache.get(schema_id)
+        campos_ativos = schema.campos_ativos if (schema and isinstance(getattr(schema, "campos_ativos", None), dict)) else {}
+        campos_extras = schema.campos_extras if (schema and isinstance(getattr(schema, "campos_extras", None), list)) else []
+        logger.info(
+            "[_build_frentes_schemas] fid=%s frente=%s schema_id=%s schema_found=%s "
+            "campos_ativos=%s campos_extras_count=%s",
+            fid,
+            frente.nome if frente else None,
+            schema_id,
+            schema is not None,
+            campos_ativos,
+            len(campos_extras),
+        )
+        result[fid] = {
+            "nome": frente.nome if frente else "Sem frente",
+            "campos_ativos": campos_ativos,
+            "campos_extras": campos_extras,
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +224,7 @@ def gerar_ou_regerar_diario(
         gerado_por_user = db.query(Usuario).filter(Usuario.id == gerado_por).first() if gerado_por else None
         gerado_por_nome = gerado_por_user.nome if gerado_por_user else "sistema"
         registros_rows = [_registro_to_row(r, include_imagens=True) for r in registros]
+        frentes_schemas = _build_frentes_schemas(db, registros)
 
         diario_info = {
             "obra_id": obra_id,
@@ -193,7 +241,7 @@ def gerar_ou_regerar_diario(
 
         # Generate PDF
         try:
-            pdf_bytes = gerar_pdf_diario(diario_info, registros_rows)
+            pdf_bytes = gerar_pdf_diario(diario_info, registros_rows, frentes_schemas)
         except Exception as exc:
             db.rollback()
             raise RuntimeError(f"Falha ao gerar PDF: {exc}") from exc
@@ -316,10 +364,12 @@ def get_dados_para_exportar(diario_id: str, versao: int, tenant_id: int) -> tupl
             regs = _get_registros_para_diario(
                 db, diario.obra_id, tenant_id,
                 diario.data_inicio, diario.data_fim,
+                include_pending=bool(versao_obj.include_pending),
             )
 
         registros_rows = [_registro_to_row(r, include_imagens=True) for r in regs]
-        return diario_info, registros_rows
+        frentes_schemas = _build_frentes_schemas(db, regs)
+        return diario_info, registros_rows, frentes_schemas
 
 
 def buscar_diario(

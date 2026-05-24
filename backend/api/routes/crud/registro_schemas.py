@@ -127,13 +127,6 @@ def criar_registro_schema():
 
         tipo_obra_slug = tipo_obj.slug
 
-        # Prevenir schema duplicado para o mesmo tipo_obra_id
-        existing = RegistroSchemaRepository.obter_ativo_por_tipo_obra_id(db, tipo_obra_id, tenant_id)
-        if existing:
-            return _json_error(
-                f"Já existe um schema ativo para o tipo '{tipo_obj.nome}'. Edite o existente ou desative-o.",
-                409,
-            )
         schema = RegistroSchemaRepository.criar(
             db,
             tenant_id=tenant_id,
