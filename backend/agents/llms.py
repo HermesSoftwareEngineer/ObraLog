@@ -17,25 +17,28 @@ google_api_key = os.environ.get("GOOGLE_API_KEY")
 if not google_api_key:
     raise RuntimeError("GOOGLE_API_KEY não configurada.")
 
+# Agente principal — thinking moderado, temperatura baixa para respostas consistentes
 llm_main = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.5-flash",      # novo Flash com melhor custo-benefício em agentes
     google_api_key=google_api_key,
-    thinking_budget=2048,
+    thinking_level="medium",        # era thinking_budget=2048 (API antiga)
+    temperature=0.2,
 )
 
-# Roteador e caminho simples — sem thinking, temperatura 0, respostas rápidas e diretas
+# Roteador e caminho simples — sem thinking, temperatura zero, respostas rápidas e diretas
 llm_fast = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.5-flash",
     google_api_key=google_api_key,
-    thinking_budget=0,
+    thinking_level="minimal",       # era thinking_budget=0
     temperature=0,
 )
 
-# Planejador — thinking moderado, usado só para estruturar o plano de execução
+# Planejador — thinking mais alto para estruturar planos de execução
 llm_planner = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.5-flash",
     google_api_key=google_api_key,
-    thinking_budget=1024,
+    thinking_level="high",          # era thinking_budget=1024
+    temperature=0.1,
 )
 
 
