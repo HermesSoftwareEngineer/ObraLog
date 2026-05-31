@@ -1,8 +1,7 @@
 import unittest
 
-from backend.agents.gateway.contracts import ActorContext, GatewayRequest, GatewayRequestMeta
+from backend.agents.gateway import run_consulta
 from backend.agents.gateway.errors import GatewayValidationError
-from backend.agents.gateway.gateway_service import GatewayService
 from backend.agents.gateway.mappers import (
     has_technical_keys,
     map_consultar_alertas_operacionais_output,
@@ -186,10 +185,7 @@ class GatewayBusinessOutputTests(unittest.TestCase):
                     "atualizar_status_registro",
                     lambda args: {
                         "ok": True,
-                        "registro": {
-                            "id": args.get("registro_id"),
-                            "status": args.get("status"),
-                        },
+                        "registro": {"id": args.get("registro_id"), "status": args.get("status")},
                     },
                 ),
             ]
@@ -199,13 +195,7 @@ class GatewayBusinessOutputTests(unittest.TestCase):
             tools = gateway_tools_module.get_gateway_tools(actor_user_id=1, actor_level="encarregado")
             atualizar_status = next(tool for tool in tools if tool.name == "atualizar_status_registro_operacional")
 
-            response = atualizar_status.invoke(
-                {
-                    "registro_id": 321,
-                    "status": "aprovado",
-                    "confirmado": True,
-                }
-            )
+            response = atualizar_status.invoke({"registro_id": 321, "status": "aprovado", "confirmado": True})
 
             self.assertTrue(response.get("ok"))
             self.assertFalse(has_technical_keys(response))
@@ -213,21 +203,18 @@ class GatewayBusinessOutputTests(unittest.TestCase):
         finally:
             gateway_tools_module.get_database_tools = original_get_database_tools
 
-    def test_gateway_service_maps_value_error_to_validation_error(self):
-        service = GatewayService()
-        request = GatewayRequest(
-            actor=ActorContext(actor_user_id=1, actor_level="encarregado"),
-            meta=GatewayRequestMeta(operation="op_teste", action_route="consulta"),
-            payload={},
+    def test_gateway_maps_value_error_to_validation_error_response(self):
+        # Verifica que um ValueError no handler é convertido para resposta de validação sem lançar exceção
+        response = run_consulta(
+            actor_level="encarregado",
+            actor_user_id=1,
+            operation="op_teste",
+            handler=lambda: (_ for _ in ()).throw(ValueError("entrada invalida")),
         )
 
-        with self.assertRaises(GatewayValidationError) as ctx:
-            service.execute_consulta(request, lambda req: (_ for _ in ()).throw(ValueError("entrada invalida")))
-
-        exc = ctx.exception
-        self.assertEqual(exc.status_code, 422)
-        self.assertEqual(exc.code, "gateway_validation_error")
-        self.assertIn("entrada invalida", exc.message)
+        self.assertFalse(response.get("ok"))
+        self.assertEqual(response.get("code"), "gateway_validation_error")
+        self.assertIn("entrada invalida", response.get("error", ""))
 
     def test_frente_not_found_message_guides_user_to_business_name(self):
         original_get_database_tools = gateway_tools_module.get_database_tools
@@ -260,17 +247,15 @@ class GatewayBusinessOutputTests(unittest.TestCase):
             tools = gateway_tools_module.get_gateway_tools(actor_user_id=1, actor_level="encarregado")
             criar = next(tool for tool in tools if tool.name == "registrar_producao_diaria")
 
-            response = criar.invoke(
-                {
-                    "data": "2026-04-14",
-                    "frente_servico": "CAUCAIA - TRECHO DA PARADA DE ONIBUS",
-                    "estaca_inicial": 0.0,
-                    "estaca_final": 1.0,
-                    "tempo_manha": "limpo",
-                    "tempo_tarde": "limpo",
-                    "confirmado": True,
-                }
-            )
+            response = criar.invoke({
+                "data": "2026-04-14",
+                "frente_servico": "CAUCAIA - TRECHO DA PARADA DE ONIBUS",
+                "estaca_inicial": 0.0,
+                "estaca_final": 1.0,
+                "tempo_manha": "limpo",
+                "tempo_tarde": "limpo",
+                "confirmado": True,
+            })
 
             self.assertFalse(response.get("ok"))
             self.assertIn("Use o nome da frente de servico", response.get("message", ""))
@@ -294,10 +279,7 @@ class GatewayBusinessOutputTests(unittest.TestCase):
             del actor_user_id
             del actor_level
             return [
-                _FakeTool(
-                    "listar_frentes_servico",
-                    lambda args: [{"id": 1, "nome": "Terraplenagem Norte"}],
-                ),
+                _FakeTool("listar_frentes_servico", lambda args: [{"id": 1, "nome": "Terraplenagem Norte"}]),
                 _FakeTool("criar_registro", lambda args: {"ok": True, "registro": {"id": 1}}),
             ]
 
@@ -306,17 +288,15 @@ class GatewayBusinessOutputTests(unittest.TestCase):
             tools = gateway_tools_module.get_gateway_tools(actor_user_id=1, actor_level="encarregado")
             registrar = next(tool for tool in tools if tool.name == "registrar_producao_diaria")
 
-            response = registrar.invoke(
-                {
-                    "data": "2026-04-14",
-                    "frente_servico": "Terraplenagem Norte",
-                    "estaca_inicial": 0.0,
-                    "estaca_final": 1.0,
-                    "tempo_manha": "limpo",
-                    "tempo_tarde": "limpo",
-                    "confirmado": False,
-                }
-            )
+            response = registrar.invoke({
+                "data": "2026-04-14",
+                "frente_servico": "Terraplenagem Norte",
+                "estaca_inicial": 0.0,
+                "estaca_final": 1.0,
+                "tempo_manha": "limpo",
+                "tempo_tarde": "limpo",
+                "confirmado": False,
+            })
 
             self.assertTrue(response.get("ok"))
             self.assertIn("registro", response)

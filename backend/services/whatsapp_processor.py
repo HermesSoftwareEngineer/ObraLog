@@ -215,9 +215,22 @@ class MessageProcessor:
     def _invoke_agent(
         self, text: str, config: dict, phone: str, raw_messages: list
     ) -> dict:
+        invoke_config = {**config, "recursion_limit": 14}
         try:
-            response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
+            response = graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
         except Exception as exc:
+            try:
+                from langgraph.errors import GraphRecursionError
+                if isinstance(exc, GraphRecursionError):
+                    logger.warning("Graph atingiu recursion_limit WA - phone=%s", phone)
+                    persistence.mark_error(raw_messages, "recursion_limit")
+                    self._send_reply(
+                        phone,
+                        "⚠️ Sua solicitação ficou complexa demais. Tente dividir em partes menores.",
+                    )
+                    return {"ok": False, "phone": phone, "reason": "recursion_limit"}
+            except ImportError:
+                pass
             logger.error("Erro ao invocar graph WA - phone=%s: %s", phone, exc, exc_info=True)
             persistence.mark_error(raw_messages, str(exc))
             self._send_reply(

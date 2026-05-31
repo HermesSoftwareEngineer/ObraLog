@@ -33,23 +33,19 @@ class BusinessRAGService:
                 "frente_servico": frente_servico,
                 "schema_configurado": False,
                 "campos_obrigatorios": [],
-                "campos_opcionais": [],
+                "campos_localizacao": [],
                 "campos_extras": [],
                 "message": "Frente nao possui schema configurado. Use os campos padrao de producao_diaria.",
             }
 
-        campos_ativos = getattr(schema, "campos_ativos", None) or {}
+        # Filtra False por compatibilidade com registros antigos gravados antes da sanitização na API.
+        campos_ativos = {c: v for c, v in (getattr(schema, "campos_ativos", None) or {}).items() if v}
         recognized = RegistroRepository._SCHEMA_CAMPO_TO_ATTR
         _location_campos = {"localizacao", "estaca_inicial", "estaca_final"}
-        obrigatorios = [c for c, req in campos_ativos.items() if req and c in recognized and c not in _location_campos]
-        opcionais = [c for c, req in campos_ativos.items() if not req and c in recognized and c not in _location_campos]
-        extras = self._schema_campos_extras(schema)
 
-        localizacao_campos = {
-            c: ("obrigatorio" if req else "opcional")
-            for c, req in campos_ativos.items()
-            if c in _location_campos
-        }
+        obrigatorios = [c for c in campos_ativos if c in recognized and c not in _location_campos]
+        campos_localizacao = [c for c in campos_ativos if c in _location_campos]
+        extras = self._schema_campos_extras(schema)
 
         return {
             "ok": True,
@@ -57,9 +53,8 @@ class BusinessRAGService:
             "schema_configurado": True,
             "schema_nome": getattr(schema, "nome", None),
             "campos_obrigatorios": obrigatorios,
-            "campos_opcionais": opcionais,
+            "campos_localizacao": campos_localizacao,
             "campos_extras": extras,
-            "campos_localizacao": localizacao_campos,
         }
 
     def consultar_padroes_operacionais(self, pergunta: str, k: int = 3) -> dict:
@@ -180,11 +175,6 @@ class BusinessRAGService:
         location_profile: str | None = None,
         schema: "RegistroSchema | None" = None,
     ) -> list[str]:
-        profile = build_location_profile(location_profile)
-        location_type_value = self._value_for_field("tipo_localizacao", dados_parciais)
-        has_location_type = not self._is_missing(location_type_value)
-        location_required = profile.required_fields if has_location_type else []
-
         normalized_type = (tipo_registro or "").strip().lower()
         if normalized_type not in {"producao_diaria", "alerta_operacional"}:
             return []
@@ -192,22 +182,30 @@ class BusinessRAGService:
         if normalized_type == "alerta_operacional":
             return ["tipo_alerta", "descricao", "severidade", "local"]
 
-        # producao_diaria: campos universais sempre exigidos
+        # producao_diaria: localização vem do schema quando existe, do perfil do tenant quando não existe.
+        # Se o schema não tem nenhum campo de localização configurado, localização não é cobrada —
+        # independentemente do perfil padrão do tenant.
+        _location_campos = {"localizacao", "estaca_inicial", "estaca_final"}
+
+        if schema is not None:
+            campos_ativos = {c for c, v in (getattr(schema, "campos_ativos", None) or {}).items() if v}
+            schema_location = [c for c in campos_ativos if c in _location_campos]
+            location_required = schema_location
+        else:
+            profile = build_location_profile(location_profile)
+            location_type_value = self._value_for_field("tipo_localizacao", dados_parciais)
+            has_location_type = not self._is_missing(location_type_value)
+            location_required = profile.required_fields if has_location_type else []
+
         universal = ["data", "frente_servico"] + location_required
 
         if schema is None:
             # Sem schema: usa base conservador hardcoded
             return universal + ["tempo_manha", "tempo_tarde"]
 
-        # Com schema: campos_ativos é a fonte de verdade para campos não-universais
+        # Com schema: campos_ativos é a fonte de verdade para campos não-universais.
         recognized = RegistroRepository._SCHEMA_CAMPO_TO_ATTR
-        _location_campos = {"localizacao", "estaca_inicial", "estaca_final"}
-        campos_ativos = getattr(schema, "campos_ativos", None) or {}
-
-        schema_required = [
-            campo for campo, required in campos_ativos.items()
-            if required and campo in recognized and campo not in _location_campos
-        ]
+        schema_required = [c for c in campos_ativos if c in recognized and c not in _location_campos]
 
         extras_required = [
             extra["chave"] for extra in self._schema_campos_extras(schema)

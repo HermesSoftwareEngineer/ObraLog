@@ -8,7 +8,7 @@ from flask import Blueprint, g, jsonify, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from backend.db.models import NivelAcesso
+from backend.db.models import NivelAcesso, Tenant
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 
@@ -184,14 +184,52 @@ def login():
         if user.senha and not user.senha.startswith(("pbkdf2:", "scrypt:")):
             user = Repository.usuarios.atualizar(db, user.id, senha=generate_password_hash(senha))
 
-    token = _issue_token(user.id, user.email, user.tenant_id)
-    return jsonify({"ok": True, "token": token, "user": _user_payload(user)})
+        tenants = []
+        active_tenant_id = user.tenant_id
+        if _is_admin(user):
+            tenants = Repository.usuario_tenants.listar_tenants_do_usuario(db, user.id)
+            padrao = next((t for t in tenants if t["eh_padrao"]), None)
+            if padrao:
+                active_tenant_id = padrao["id"]
+
+    token = _issue_token(user.id, user.email, active_tenant_id)
+    payload = _user_payload(user)
+    if tenants:
+        payload["tenants"] = tenants
+    return jsonify({"ok": True, "token": token, "user": payload})
 
 
 @auth_blueprint.get("/me")
 @require_auth
 def me():
-    return jsonify({"ok": True, "user": _user_payload(g.current_user)})
+    payload = _user_payload(g.current_user)
+    if _is_admin(g.current_user):
+        with SessionLocal() as db:
+            payload["tenants"] = Repository.usuario_tenants.listar_tenants_do_usuario(db, g.current_user.id)
+    return jsonify({"ok": True, "user": payload})
+
+
+@auth_blueprint.post("/switch-tenant")
+@require_auth
+def switch_tenant():
+    if not _is_admin(g.current_user):
+        return _json_error("Apenas administradores podem trocar de tenant.", 403)
+
+    data = request.get_json(silent=True) or {}
+    tenant_id = data.get("tenant_id")
+    if not tenant_id:
+        return _json_error("Campo obrigatório: tenant_id.")
+
+    with SessionLocal() as db:
+        if not Repository.usuario_tenants.tem_acesso(db, g.current_user.id, int(tenant_id)):
+            return _json_error("Tenant não acessível para este usuário.", 403)
+        tenant_obj = db.query(Tenant).filter(Tenant.id == int(tenant_id)).first()
+        if not tenant_obj:
+            return _json_error("Tenant não encontrado.", 404)
+        tenant_data = {"id": tenant_obj.id, "nome": tenant_obj.nome, "slug": tenant_obj.slug}
+
+    token = _issue_token(g.current_user.id, g.current_user.email, int(tenant_id))
+    return jsonify({"ok": True, "token": token, "tenant_id": int(tenant_id), "tenant": tenant_data})
 
 
 @auth_blueprint.patch("/link-telegram")

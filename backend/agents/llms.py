@@ -20,6 +20,22 @@ if not google_api_key:
 llm_main = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=google_api_key,
+    thinking_budget=2048,
+)
+
+# Roteador e caminho simples — sem thinking, temperatura 0, respostas rápidas e diretas
+llm_fast = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=google_api_key,
+    thinking_budget=0,
+    temperature=0,
+)
+
+# Planejador — thinking moderado, usado só para estruturar o plano de execução
+llm_planner = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=google_api_key,
+    thinking_budget=1024,
 )
 
 

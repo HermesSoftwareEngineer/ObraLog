@@ -20,6 +20,7 @@ try:
     from .api.routes.dashboard import dashboard_blueprint
     from .api.routes.admin import admin_blueprint
     from .api.routes.creditos import creditos_v1
+    from .api.routes.agent_events import router as agent_events_router
     from .services.telegram import start_polling, set_webhook
 except ImportError:
     from api.routes.webhook import telegram_blueprint
@@ -34,6 +35,7 @@ except ImportError:
     from api.routes.dashboard import dashboard_blueprint
     from api.routes.admin import admin_blueprint
     from api.routes.creditos import creditos_v1
+    from api.routes.agent_events import router as agent_events_router
     from services.telegram import start_polling, set_webhook
 
 
@@ -71,6 +73,7 @@ app.register_blueprint(tenant_blueprint)
 app.register_blueprint(dashboard_blueprint)
 app.register_blueprint(admin_blueprint)
 app.register_blueprint(creditos_v1)
+app.register_blueprint(agent_events_router)
 
 
 def _should_start_polling_in_dev() -> bool:
@@ -110,6 +113,11 @@ if _bot_channel == "telegram":
         polling_thread = threading.Thread(target=start_polling, name="telegram-polling", daemon=True)
         polling_thread.start()
         app.logger.info("Telegram polling iniciado automaticamente em modo desenvolvimento.")
+        # Worker inline: em dev/polling não há processo separado, então rodamos aqui
+        from backend.workers.agent_worker import run_worker as _run_worker
+        worker_thread = threading.Thread(target=_run_worker, name="agent-worker", daemon=True)
+        worker_thread.start()
+        app.logger.info("Agent worker iniciado em thread de background (modo desenvolvimento).")
     elif os.environ.get("TELEGRAM_POLLING_IN_DEV", "true").lower() not in {"1", "true", "yes", "on"}:
         public_url = os.environ.get("PUBLIC_BASE_URL")
         if public_url:

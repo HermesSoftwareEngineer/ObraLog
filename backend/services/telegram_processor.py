@@ -17,6 +17,7 @@ try:
 except ImportError:
     from agents.graph import graph  # type: ignore[no-redef]
 
+from backend.db.models import UsuarioObra
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 from backend.services.telegram_client import BotClient
@@ -41,6 +42,46 @@ _RESET_COMMANDS = {
 
 def _is_reset_command(text: str) -> bool:
     return text.strip().lower() in _RESET_COMMANDS
+
+
+def _resolver_tenant_ativo(db, usuario) -> int | None:
+    """Para admins, usa o tenant marcado como padrão em usuario_tenants.
+    Fallback: usuario.tenant_id (comportamento original para não-admins).
+    """
+    nivel = (
+        usuario.nivel_acesso.value
+        if hasattr(usuario.nivel_acesso, "value")
+        else str(usuario.nivel_acesso)
+    )
+    if nivel == "administrador":
+        tenant_id = Repository.usuario_tenants.obter_tenant_padrao(db, usuario.id)
+        if tenant_id is not None:
+            return tenant_id
+    return getattr(usuario, "tenant_id", None)
+
+
+def _resolver_obra_ativa(db, usuario_id: int, tenant_id: int) -> int | None:
+    """Resolve a obra ativa do usuário automaticamente quando possível.
+
+    - 1 obra: usa diretamente.
+    - Várias obras com uma marcada como padrão: usa a padrão.
+    - Várias obras sem padrão: retorna None — agente pergunta ao usuário.
+    """
+    obras = (
+        db.query(UsuarioObra)
+        .filter(
+            UsuarioObra.usuario_id == usuario_id,
+            UsuarioObra.tenant_id == tenant_id,
+            UsuarioObra.ativo.is_(True),
+        )
+        .all()
+    )
+    if len(obras) == 1:
+        return obras[0].obra_id
+    padrao = next((o for o in obras if o.eh_padrao), None)
+    if padrao:
+        return padrao.obra_id
+    return None
 
 
 def _new_thread_id(chat_id) -> str:
@@ -165,18 +206,21 @@ class MessageProcessor:
             usuario.id, chat_id, thread_id, len(extracted),
         )
 
+        # Resolve ou cria a sessão de conversa e determina a obra ativa do usuário
         tenant_id = getattr(usuario, "tenant_id", None)
-
-        # Resolve or create the current open conversation session
         conversa_id = None
+        obra_id_ativa = None
         try:
             from backend.core.config import get_ambiente
             with SessionLocal() as db:
+                tenant_id = _resolver_tenant_ativo(db, usuario)
                 conversa = get_or_create_conversa(
                     db, usuario.id, tenant_id, str(chat_id), thread_id,
                     ambiente=get_ambiente(),
                 )
                 conversa_id = conversa.id
+                if tenant_id is not None:
+                    obra_id_ativa = _resolver_obra_ativa(db, usuario.id, tenant_id)
         except Exception as exc:
             logger.warning("Falha ao obter/criar conversa: %s", exc)
 
@@ -202,7 +246,7 @@ class MessageProcessor:
 
         runtime_location = resolve_runtime_location_context(
             tenant_id=tenant_id,
-            obra_id_ativa=None,
+            obra_id_ativa=obra_id_ativa,
         )
         config["configurable"].update(runtime_location)
 
@@ -248,9 +292,22 @@ class MessageProcessor:
     def _invoke_agent(
         self, text: str, config: dict, chat_id, raw_messages: list
     ) -> dict:
+        invoke_config = {**config, "recursion_limit": 14}
         try:
-            response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
+            response = graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
         except Exception as exc:
+            try:
+                from langgraph.errors import GraphRecursionError
+                if isinstance(exc, GraphRecursionError):
+                    logger.warning("Graph atingiu recursion_limit - chat_id=%s", chat_id)
+                    persistence.mark_error(raw_messages, "recursion_limit")
+                    self._send_reply(
+                        chat_id,
+                        "⚠️ Sua solicitação ficou complexa demais. Tente dividir em partes menores.",
+                    )
+                    return {"ok": False, "chat_id": chat_id, "reason": "recursion_limit"}
+            except ImportError:
+                pass
             logger.error("Erro ao invocar graph - chat_id=%s: %s", chat_id, exc, exc_info=True)
             persistence.mark_error(raw_messages, str(exc))
             self._send_reply(

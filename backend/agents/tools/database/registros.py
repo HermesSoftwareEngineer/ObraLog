@@ -60,6 +60,8 @@ def build_registros_tools(
         raw_text: str | None = None,
         source_message_id: str | None = None,
         status: str | None = None,
+        campos_extras_valores: dict | None = None,
+        resultado: float | None = None,
     ) -> dict:
         """Cria registro no diario; permite payload parcial. Consolidado exige campos basicos preenchidos."""
         assert_permission(actor_level, "create", "registros")
@@ -76,8 +78,8 @@ def build_registros_tools(
         end_value = localizacao.get("valor_final", estaca_final if estaca_final is not None else km_final)
         detail_value = localizacao.get("detalhe_texto", local_descritivo)
 
-        resultado = None
-        if start_value is not None and end_value is not None:
+        # Prioridade: resultado explícito > calculado das estacas
+        if resultado is None and start_value is not None and end_value is not None:
             resultado = float(end_value) - float(start_value)
 
         parsed_status = _parse_registro_status(status) or RegistroStatus.PENDENTE
@@ -119,6 +121,11 @@ def build_registros_tools(
                 if obra_schema:
                     registro_schema_id = obra_schema.id
 
+            # Mescla campos extras do schema no metadata_json, igual ao padrão da rota REST
+            metadata = {"tipo": location_type}
+            if campos_extras_valores and isinstance(campos_extras_valores, dict):
+                metadata = {**metadata, **campos_extras_valores}
+
             registro = Repository.registros.criar(
                 db=db,
                 tenant_id=tenant_id,
@@ -129,7 +136,7 @@ def build_registros_tools(
                 estaca_inicial=float(start_value) if start_value is not None else None,
                 estaca_final=float(end_value) if end_value is not None else None,
                 localizacao=(str(detail_value).strip() or None) if detail_value is not None else None,
-                metadata_json={"tipo": location_type},
+                metadata_json=metadata,
                 resultado=resultado,
                 tempo_manha=parsed_tempo_manha,
                 tempo_tarde=parsed_tempo_tarde,

@@ -1,6 +1,6 @@
 from flask import request
 
-from backend.db.models import NivelAcesso
+from backend.db.models import NivelAcesso, Obra, Tenant
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 
@@ -96,11 +96,115 @@ def deletar_usuario(usuario_id: int):
         return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Obras do usuário
+# ---------------------------------------------------------------------------
+
 @api_blueprint.route("/usuarios/<int:usuario_id>/obras", methods=["GET"])
 def listar_obras_do_usuario(usuario_id: int):
     with SessionLocal() as db:
         usuario = Repository.usuarios.obter_por_id(db, usuario_id)
         if not usuario:
             return _json_error("Usuario nao encontrado.", 404)
-        obras = Repository.usuario_obras.listar_obras_do_usuario(db, usuario_id)
+        obras = Repository.usuario_obras.listar_obras_do_usuario(db, usuario_id, usuario.tenant_id)
         return obras
+
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/obras", methods=["POST"])
+def associar_obra_ao_usuario(usuario_id: int):
+    data = request.get_json(silent=True) or {}
+    obra_id = data.get("obra_id")
+    if not obra_id:
+        return _json_error("Campo obrigatorio: obra_id.")
+
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        obra = db.query(Obra).filter(Obra.id == int(obra_id)).first()
+        if not obra:
+            return _json_error("Obra nao encontrada.", 404)
+        uo = Repository.usuario_obras.associar(
+            db, usuario_id, int(obra_id), obra.tenant_id
+        )
+        return {"ok": True, "obra_id": uo.obra_id, "eh_padrao": uo.eh_padrao}, 201
+
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/obras/<int:obra_id>", methods=["DELETE"])
+def desassociar_obra_do_usuario(usuario_id: int, obra_id: int):
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        ok = Repository.usuario_obras.desassociar(db, usuario_id, obra_id, usuario.tenant_id)
+        if not ok:
+            return _json_error("Associacao nao encontrada.", 404)
+        return {"ok": True}
+
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/obras/<int:obra_id>/padrao", methods=["PATCH"])
+def definir_obra_padrao_do_usuario(usuario_id: int, obra_id: int):
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        ok = Repository.usuario_obras.definir_padrao(db, usuario_id, obra_id, usuario.tenant_id)
+        if not ok:
+            return _json_error("Associacao nao encontrada.", 404)
+        return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Tenants do usuário (admins multi-tenant)
+# ---------------------------------------------------------------------------
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/tenants", methods=["GET"])
+def listar_tenants_do_usuario(usuario_id: int):
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        tenants = Repository.usuario_tenants.listar_tenants_do_usuario(db, usuario_id)
+        return tenants
+
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/tenants", methods=["POST"])
+def associar_tenant_ao_usuario(usuario_id: int):
+    data = request.get_json(silent=True) or {}
+    tenant_id = data.get("tenant_id")
+    if not tenant_id:
+        return _json_error("Campo obrigatorio: tenant_id.")
+
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        tenant = db.query(Tenant).filter(Tenant.id == int(tenant_id)).first()
+        if not tenant:
+            return _json_error("Tenant nao encontrado.", 404)
+        ut = Repository.usuario_tenants.associar(db, usuario_id, int(tenant_id))
+        return {"ok": True, "tenant_id": ut.tenant_id, "eh_padrao": ut.eh_padrao}, 201
+
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/tenants/<int:tenant_id>", methods=["DELETE"])
+def desassociar_tenant_do_usuario(usuario_id: int, tenant_id: int):
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        ok = Repository.usuario_tenants.desassociar(db, usuario_id, tenant_id)
+        if not ok:
+            return _json_error("Associacao nao encontrada.", 404)
+        return {"ok": True}
+
+
+@api_blueprint.route("/usuarios/<int:usuario_id>/tenants/<int:tenant_id>/padrao", methods=["PATCH"])
+def definir_tenant_padrao_do_usuario(usuario_id: int, tenant_id: int):
+    with SessionLocal() as db:
+        usuario = Repository.usuarios.obter_por_id(db, usuario_id)
+        if not usuario:
+            return _json_error("Usuario nao encontrado.", 404)
+        ok = Repository.usuario_tenants.definir_padrao(db, usuario_id, tenant_id)
+        if not ok:
+            return _json_error("Associacao nao encontrada.", 404)
+        return {"ok": True}

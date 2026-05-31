@@ -141,6 +141,7 @@ class Tenant(Base):
     user_invite_codes   = relationship("UserInviteCode",   back_populates="tenant", cascade="all, delete-orphan")
     registro_schemas    = relationship("RegistroSchema",   back_populates="tenant")
     usuario_obras       = relationship("UsuarioObra",      back_populates="tenant")
+    usuario_tenants     = relationship("UsuarioTenant",    back_populates="tenant", cascade="all, delete-orphan")
     conversas           = relationship("Conversa",         back_populates="tenant", cascade="all, delete-orphan")
     diarios             = relationship("Diario",           back_populates="tenant", cascade="all, delete-orphan")
     tipos_obra          = relationship("TipoObra",         back_populates="tenant", cascade="all, delete-orphan")
@@ -268,7 +269,8 @@ class Usuario(Base):
         foreign_keys="AlertRead.worker_id",
     )
     mensagens_campo = relationship("MensagemCampo", back_populates="usuario")
-    usuario_obras = relationship("UsuarioObra", back_populates="usuario", cascade="all, delete-orphan")
+    usuario_obras   = relationship("UsuarioObra",   back_populates="usuario", cascade="all, delete-orphan")
+    usuario_tenants = relationship("UsuarioTenant", back_populates="usuario", cascade="all, delete-orphan")
     conversas = relationship("Conversa", back_populates="usuario", cascade="all, delete-orphan")
 
 class FrenteServico(Base):
@@ -390,6 +392,22 @@ class UsuarioObra(Base):
     usuario = relationship("Usuario", back_populates="usuario_obras")
     obra = relationship("Obra", back_populates="usuario_obras")
     tenant = relationship("Tenant", back_populates="usuario_obras")
+
+
+class UsuarioTenant(Base):
+    __tablename__ = "usuario_tenants"
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "tenant_id", name="uq_usuario_tenants_usuario_tenant"),
+    )
+
+    id         = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id",  ondelete="CASCADE"), nullable=False, index=True)
+    eh_padrao  = Column(Boolean, nullable=False, default=False)
+    ativo      = Column(Boolean, nullable=False, default=True)
+
+    usuario = relationship("Usuario", back_populates="usuario_tenants")
+    tenant  = relationship("Tenant",  back_populates="usuario_tenants")
 
 
 class MensagemCampo(Base):

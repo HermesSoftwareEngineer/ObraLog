@@ -74,9 +74,17 @@ def atualizar_ultima_mensagem(
     if texto:
         if not conversa.resumo:
             conversa.resumo = texto[:500]
+
         embedding = gerar_embedding(texto)
         if embedding is not None:
-            conversa.embedding = embedding
+            # ORM não sabe fazer cast list → vector no psycopg3, gerando ::VARCHAR.
+            # Flush os campos simples primeiro, depois atualiza embedding via raw SQL.
+            db.flush()
+            emb_literal = "[" + ",".join(str(v) for v in embedding) + "]"
+            db.execute(
+                text("UPDATE conversas SET embedding = CAST(:emb AS vector) WHERE id = :id"),
+                {"emb": emb_literal, "id": conversa_id},
+            )
 
     db.commit()
 

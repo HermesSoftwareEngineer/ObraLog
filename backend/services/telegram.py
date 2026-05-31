@@ -17,6 +17,7 @@ from backend.services.telegram_client import bot_client
 from backend.services.telegram_processor import MessageProcessor
 from backend.services.telegram_poll import PollAnswerHandler
 from backend.services.telegram_poller import Poller
+from backend.workers.agent_worker import enqueue as _enqueue_job
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +99,10 @@ class _ImageBatchDebouncer:
             return
 
         try:
-            self._processor.process(updates)
+            chat_id = str(key[0])
+            _enqueue_job("telegram", chat_id, updates)
         except Exception as exc:
-            logger.error("Erro ao processar lote de imagens do Telegram: %s", exc, exc_info=True)
+            logger.error("Erro ao enfileirar lote de imagens do Telegram: %s", exc, exc_info=True)
 
 
 _image_batcher = _ImageBatchDebouncer(_processor, wait_seconds=_image_batch_wait_seconds())
@@ -130,10 +132,22 @@ def handle_telegram_update(update: dict, *, typing_already_sent: bool = False) -
             "pending_images": pending,
         }
 
+    # Envia typing imediato para feedback visual enquanto o worker processa
     if not typing_already_sent:
         if cid := chat.get("id"):
-            bot_client.send_typing(cid, message.get("message_thread_id"))
-    return _processor.process([update])
+            try:
+                bot_client.send_typing(cid, message.get("message_thread_id"))
+            except Exception:
+                pass
+
+    chat_id = str(chat.get("id", ""))
+    try:
+        _enqueue_job("telegram", chat_id, [update])
+    except Exception as exc:
+        logger.error("Falha ao enfileirar job Telegram chat_id=%s: %s", chat_id, exc, exc_info=True)
+        return {"ok": False, "error": "Falha ao enfileirar mensagem."}
+
+    return {"ok": True, "queued": True}
 
 
 def set_webhook(base_url: str) -> None:

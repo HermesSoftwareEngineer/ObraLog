@@ -1,4 +1,5 @@
 import logging
+import os
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
@@ -19,6 +20,10 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_size=3,
     max_overflow=2,
+    # prepare_threshold=None: desabilita auto-prepare do psycopg3.
+    # Necessário com connection poolers (PgBouncer/Supabase) em transaction mode,
+    # onde prepared statements não sobrevivem ao retorno da conexão ao pool.
+    connect_args={"prepare_threshold": None},
 )
 
 try:
@@ -34,6 +39,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def ensure_runtime_migrations() -> None:
+    if os.environ.get("DISABLE_RUNTIME_MIGRATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        logger.info("DISABLE_RUNTIME_MIGRATIONS=true — runtime migrations bloqueadas.")
+        return
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telefone VARCHAR"))
         connection.execute(

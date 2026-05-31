@@ -12,6 +12,7 @@ from backend.db.models import (
     RegistroSchema,
     TipoObra,
     UsuarioObra,
+    UsuarioTenant,
     TelegramLinkCode,
     MensagemCampo,
     Tenant,
@@ -1419,6 +1420,157 @@ class UsuarioObraRepository:
             for uo, obra in rows
         ]
 
+    @staticmethod
+    def associar(db: Session, usuario_id: int, obra_id: int, tenant_id: int, eh_padrao: bool = False) -> UsuarioObra:
+        existing = (
+            db.query(UsuarioObra)
+            .filter(UsuarioObra.usuario_id == usuario_id, UsuarioObra.obra_id == obra_id)
+            .first()
+        )
+        if existing:
+            existing.ativo = True
+            existing.eh_padrao = eh_padrao
+            db.commit()
+            db.refresh(existing)
+            return existing
+        uo = UsuarioObra(usuario_id=usuario_id, obra_id=obra_id, tenant_id=tenant_id, eh_padrao=eh_padrao)
+        db.add(uo)
+        db.commit()
+        db.refresh(uo)
+        return uo
+
+    @staticmethod
+    def desassociar(db: Session, usuario_id: int, obra_id: int, tenant_id: int) -> bool:
+        uo = (
+            db.query(UsuarioObra)
+            .filter(
+                UsuarioObra.usuario_id == usuario_id,
+                UsuarioObra.obra_id == obra_id,
+                UsuarioObra.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not uo:
+            return False
+        db.delete(uo)
+        db.commit()
+        return True
+
+    @staticmethod
+    def definir_padrao(db: Session, usuario_id: int, obra_id: int, tenant_id: int) -> bool:
+        db.query(UsuarioObra).filter(
+            UsuarioObra.usuario_id == usuario_id,
+            UsuarioObra.tenant_id == tenant_id,
+        ).update({"eh_padrao": False})
+        uo = (
+            db.query(UsuarioObra)
+            .filter(
+                UsuarioObra.usuario_id == usuario_id,
+                UsuarioObra.obra_id == obra_id,
+                UsuarioObra.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not uo:
+            db.commit()
+            return False
+        uo.eh_padrao = True
+        db.commit()
+        return True
+
+
+class UsuarioTenantRepository:
+    @staticmethod
+    def listar_tenants_do_usuario(db: Session, usuario_id: int) -> list[dict]:
+        rows = (
+            db.query(UsuarioTenant, Tenant)
+            .join(Tenant, Tenant.id == UsuarioTenant.tenant_id)
+            .filter(UsuarioTenant.usuario_id == usuario_id, UsuarioTenant.ativo.is_(True))
+            .order_by(UsuarioTenant.eh_padrao.desc())
+            .all()
+        )
+        return [
+            {
+                "id": tenant.id,
+                "nome": tenant.nome,
+                "slug": tenant.slug,
+                "eh_padrao": ut.eh_padrao,
+            }
+            for ut, tenant in rows
+        ]
+
+    @staticmethod
+    def obter_tenant_padrao(db: Session, usuario_id: int) -> int | None:
+        """Retorna tenant_id marcado como padrão; fallback para o primeiro ativo."""
+        rows = (
+            db.query(UsuarioTenant)
+            .filter(UsuarioTenant.usuario_id == usuario_id, UsuarioTenant.ativo.is_(True))
+            .order_by(UsuarioTenant.eh_padrao.desc())
+            .all()
+        )
+        return rows[0].tenant_id if rows else None
+
+    @staticmethod
+    def tem_acesso(db: Session, usuario_id: int, tenant_id: int) -> bool:
+        return (
+            db.query(UsuarioTenant)
+            .filter(
+                UsuarioTenant.usuario_id == usuario_id,
+                UsuarioTenant.tenant_id == tenant_id,
+                UsuarioTenant.ativo.is_(True),
+            )
+            .first()
+        ) is not None
+
+    @staticmethod
+    def associar(db: Session, usuario_id: int, tenant_id: int, eh_padrao: bool = False) -> UsuarioTenant:
+        existing = (
+            db.query(UsuarioTenant)
+            .filter(UsuarioTenant.usuario_id == usuario_id, UsuarioTenant.tenant_id == tenant_id)
+            .first()
+        )
+        if existing:
+            existing.ativo = True
+            existing.eh_padrao = eh_padrao
+            db.commit()
+            db.refresh(existing)
+            return existing
+        ut = UsuarioTenant(usuario_id=usuario_id, tenant_id=tenant_id, eh_padrao=eh_padrao)
+        db.add(ut)
+        db.commit()
+        db.refresh(ut)
+        return ut
+
+    @staticmethod
+    def desassociar(db: Session, usuario_id: int, tenant_id: int) -> bool:
+        ut = (
+            db.query(UsuarioTenant)
+            .filter(UsuarioTenant.usuario_id == usuario_id, UsuarioTenant.tenant_id == tenant_id)
+            .first()
+        )
+        if not ut:
+            return False
+        db.delete(ut)
+        db.commit()
+        return True
+
+    @staticmethod
+    def definir_padrao(db: Session, usuario_id: int, tenant_id: int) -> bool:
+        db.query(UsuarioTenant).filter(
+            UsuarioTenant.usuario_id == usuario_id,
+        ).update({"eh_padrao": False})
+        ut = (
+            db.query(UsuarioTenant)
+            .filter(UsuarioTenant.usuario_id == usuario_id, UsuarioTenant.tenant_id == tenant_id)
+            .first()
+        )
+        if not ut:
+            db.commit()
+            return False
+        ut.eh_padrao = True
+        db.commit()
+        return True
+
 
 class Repository:
     usuarios = UsuarioRepository
@@ -1429,6 +1581,7 @@ class Repository:
     registro_schemas = RegistroSchemaRepository
     tipos_obra = TipoObraRepository
     usuario_obras = UsuarioObraRepository
+    usuario_tenants = UsuarioTenantRepository
     telegram_link_codes = TelegramLinkCodeRepository
     mensagens_campo = MensagemCampoRepository
     tenants = TenantRepository

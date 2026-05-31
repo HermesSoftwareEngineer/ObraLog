@@ -28,12 +28,18 @@ def _schema_to_dict(s) -> dict:
         "tipo_obra_id": s.tipo_obra_id,
         "tipo_obra_nome": tipo_nome,
         "nome": s.nome,
-        "campos_ativos": s.campos_ativos or {},
+        "campos_ativos": _sanitizar_campos_ativos(s.campos_ativos or {}),
         "campos_extras": s.campos_extras or [],
         "ativo": s.ativo,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
     }
+
+
+def _sanitizar_campos_ativos(raw: dict) -> dict:
+    """Remove entradas False de campos_ativos — False significa 'não está no schema',
+    que é semanticamente idêntico a não existir no dict."""
+    return {campo: True for campo, ativo in raw.items() if ativo}
 
 
 def _validate_campos_extras(extras) -> str | None:
@@ -102,9 +108,10 @@ def criar_registro_schema():
     if not tipo_obra_id and not tipo_obra_str:
         return _json_error("Campo obrigatório: tipo_obra_id ou tipo_obra.")
 
-    campos_ativos = data.get("campos_ativos") or {}
-    if not isinstance(campos_ativos, dict):
+    campos_ativos_raw = data.get("campos_ativos") or {}
+    if not isinstance(campos_ativos_raw, dict):
         return _json_error("campos_ativos deve ser um objeto {campo: bool}.")
+    campos_ativos = _sanitizar_campos_ativos(campos_ativos_raw)
 
     campos_extras = data.get("campos_extras") or []
     validation_error = _validate_campos_extras(campos_extras)
@@ -184,7 +191,7 @@ def atualizar_registro_schema(schema_id: int):
     if "campos_ativos" in data:
         if not isinstance(data["campos_ativos"], dict):
             return _json_error("campos_ativos deve ser um objeto {campo: bool}.")
-        updates["campos_ativos"] = data["campos_ativos"]
+        updates["campos_ativos"] = _sanitizar_campos_ativos(data["campos_ativos"])
 
     if "campos_extras" in data:
         validation_error = _validate_campos_extras(data["campos_extras"])

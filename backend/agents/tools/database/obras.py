@@ -10,7 +10,14 @@ def build_obras_tools(actor_user_id: int, actor_level: str, tenant_id: int | Non
     del actor_user_id
 
     @tool
-    def criar_obra(nome: str, codigo: str | None = None, descricao: str | None = None, ativo: bool = True) -> dict:
+    def criar_obra(
+        nome: str,
+        codigo: str | None = None,
+        descricao: str | None = None,
+        ativo: bool = True,
+        tipo_obra: str | None = None,
+        tipo_obra_id: int | None = None,
+    ) -> dict:
         """Cria obra para vinculação em registros e alertas."""
         assert_permission(actor_level, "create", "frentes_servico")
         with SessionLocal() as db:
@@ -20,6 +27,8 @@ def build_obras_tools(actor_user_id: int, actor_level: str, tenant_id: int | Non
                 codigo=codigo,
                 descricao=descricao,
                 ativo=bool(ativo),
+                tipo_obra=tipo_obra,
+                tipo_obra_id=tipo_obra_id,
                 tenant_id=tenant_id,
             )
             return to_dict(obra)

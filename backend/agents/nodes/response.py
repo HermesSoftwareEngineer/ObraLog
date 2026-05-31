@@ -1,47 +1,47 @@
+"""Simple agent node (router loop) and shared _build_system_message."""
 try:
     from ..llms import llm_main
     from ..state import State
-    from ..tools import get_database_tools, get_gateway_tools, get_telegram_tools
     from ..prompts import build_system_prompt
     from ..context.vector_context import get_context_for_query
+    from ..nodes._tool_utils import (
+        resolve_actor_context,
+        resolve_tool_map,
+        get_business_tools,
+        ensure_required_fields,
+        normalize_tool_output,
+        normalize_text,
+        last_human_text,
+        debit_credits,
+    )
 except ImportError:
-    from llms import llm_main
-    from state import State
-    from tools import get_database_tools, get_gateway_tools, get_telegram_tools
-    from prompts import build_system_prompt
-    from context.vector_context import get_context_for_query
+    from llms import llm_main  # type: ignore
+    from state import State  # type: ignore
+    from prompts import build_system_prompt  # type: ignore
+    from context.vector_context import get_context_for_query  # type: ignore
+    from nodes._tool_utils import (  # type: ignore
+        resolve_actor_context,
+        resolve_tool_map,
+        get_business_tools,
+        ensure_required_fields,
+        normalize_tool_output,
+        normalize_text,
+        last_human_text,
+        debit_credits,
+    )
 
-import unicodedata
-import os
 from datetime import datetime
 import logging
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from ..gateway.location_profile import build_location_profile
-from ..gateway.rag_service import BusinessRAGService
-
 logger = logging.getLogger("obralog.agent.response")
 
 
-def _normalize_text(value: str) -> str:
-    text = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-    return " ".join(text.lower().strip().split())
-
-
-def _last_human_text(messages: list) -> str:
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            content = msg.content
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and isinstance(item.get("text"), str):
-                        return item["text"]
-    return ""
-
+# ---------------------------------------------------------------------------
+# System message builder — shared by router, responder, and simple agent
+# ---------------------------------------------------------------------------
 
 def _build_system_message(state_messages: list, config: RunnableConfig | None = None) -> SystemMessage:
     configurable = (config or {}).get("configurable", {})
@@ -63,26 +63,35 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
         yyyy, mm, dd = conversation_date.split("-")
         conversation_date_br = f"{dd}/{mm}/{yyyy}"
 
-    user_query = _last_human_text(state_messages)
+    user_query = last_human_text(state_messages)
     retrieved_context = get_context_for_query(user_query)
     context_block = (
         f"\n\nContexto operacional relevante:\n{retrieved_context}" if retrieved_context else ""
     )
 
     memory_block = ""
-    if tenant_id is not None and user_query:
+    tenant_snapshot_block = ""
+    if tenant_id is not None:
         try:
             from backend.db.session import SessionLocal
+            from backend.agents.context.tenant_snapshot import build_tenant_snapshot
             from backend.agents.session_service import buscar_memorias_relevantes
-            with SessionLocal() as _mem_db:
-                memorias = buscar_memorias_relevantes(_mem_db, tenant_id, user_query)
-            if memorias:
-                memory_block = (
-                    "\n\nMemórias de conversas anteriores relevantes:\n"
-                    + "\n---\n".join(memorias)
+            with SessionLocal() as _snap_db:
+                snapshot = build_tenant_snapshot(
+                    _snap_db, tenant_id, obra_id_ativa, actor_level
                 )
+                if snapshot:
+                    tenant_snapshot_block = f"\n\n{snapshot}"
+                if user_query:
+                    memorias = buscar_memorias_relevantes(_snap_db, tenant_id, user_query)
+                    if memorias:
+                        memory_block = (
+                            "\n\nMemórias de conversas anteriores relevantes:\n"
+                            + "\n---\n".join(memorias)
+                        )
         except Exception:
             pass
+
     role_block = ""
     if actor_user_id is not None and actor_level is not None:
         role_block = (
@@ -112,7 +121,7 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
         )
 
     user_hint_block = ""
-    normalized_query = _normalize_text(user_query)
+    normalized_query = normalize_text(user_query)
     incident_signals = ["nao chegou", "atras", "quebrou", "nao veio", "faltou", "incidente", "problema"]
     if any(signal in normalized_query for signal in incident_signals):
         user_hint_block += (
@@ -127,322 +136,12 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             "oriente fluxo de solicitação/encaminhamento de criação de frente sem encerrar em bloqueio passivo."
         )
 
-    return SystemMessage(content=build_system_prompt() + role_block + location_block + context_block + memory_block + user_hint_block)
+    return SystemMessage(content=build_system_prompt() + role_block + tenant_snapshot_block + location_block + context_block + memory_block + user_hint_block)
 
 
-def _ensure_required_fields(tool_name: str, tool_args: dict, config: RunnableConfig | None = None) -> str | None:
-    configurable = (config or {}).get("configurable", {})
-    profile = build_location_profile(configurable.get("location_profile")).mode
-
-    if tool_name == "criar_registro":
-        status = _normalize_text(str(tool_args.get("status") or ""))
-        if status != "aprovado":
-            return None
-
-        required = [
-            "data",
-            "tempo_manha",
-            "tempo_tarde",
-        ]
-        if profile == "km":
-            required.extend(["km_inicial", "km_final"])
-        elif profile == "texto":
-            required.append("local_descritivo")
-        else:
-            required.extend(["estaca_inicial", "estaca_final"])
-
-        missing = [field for field in required if tool_args.get(field) in (None, "")]
-
-        localizacao = tool_args.get("localizacao") if isinstance(tool_args.get("localizacao"), dict) else {}
-        if profile in {"estaca", "km"}:
-            if tool_args.get("estaca_inicial") in (None, "") and tool_args.get("km_inicial") in (None, "") and localizacao.get("valor_inicial") in (None, ""):
-                missing.append("valor_inicial")
-            if tool_args.get("estaca_final") in (None, "") and tool_args.get("km_final") in (None, "") and localizacao.get("valor_final") in (None, ""):
-                missing.append("valor_final")
-        if profile == "texto" and tool_args.get("local_descritivo") in (None, "") and localizacao.get("detalhe_texto") in (None, ""):
-            missing.append("local_descritivo")
-
-        if not tool_args.get("frente_servico_id") and not tool_args.get("frente_servico_nome"):
-            missing.append("frente_servico_nome")
-
-        if not missing:
-            return None
-
-        return (
-            "Dados obrigatórios faltando para criar registro: "
-            + ", ".join(missing)
-            + ". Colete os campos faltantes antes de salvar."
-        )
-
-    if tool_name == "criar_alerta":
-        required = ["type"]
-        missing = [field for field in required if tool_args.get(field) in (None, "")]
-
-        if not missing:
-            return None
-
-        return (
-            "Dados obrigatórios faltando para criar alerta: "
-            + ", ".join(missing)
-            + ". Colete os campos faltantes antes de salvar."
-        )
-
-    return None
-
-
-def _normalize_tool_output(tool_name: str, tool_output, config: RunnableConfig | None = None):
-    if tool_name == "listar_registros" and isinstance(tool_output, list):
-        if not tool_output:
-            return {
-                "ok": True,
-                "total": 0,
-                "items": [],
-                "message": "Nenhum registro encontrado para os filtros informados.",
-                "next_steps": [
-                    "consultar outra data",
-                    "consultar outra frente de servico",
-                    "buscar por usuario/equipe",
-                    "revisar nome da frente",
-                ],
-            }
-        return {"ok": True, "total": len(tool_output), "items": tool_output}
-
-    if tool_name == "listar_frentes_servico" and isinstance(tool_output, list):
-        normalized_names = [_normalize_text(str(item.get("nome", ""))) for item in tool_output if isinstance(item, dict)]
-        duplicates = sorted({name for name in normalized_names if normalized_names.count(name) > 1 and name})
-        if duplicates:
-            return {
-                "ok": True,
-                "total": len(tool_output),
-                "items": tool_output,
-                "warning": "Possiveis nomes duplicados/similares de frente encontrados.",
-                "normalized_duplicates": duplicates,
-            }
-        return {"ok": True, "total": len(tool_output), "items": tool_output}
-
-    if tool_name == "listar_alertas" and isinstance(tool_output, dict):
-        if tool_output.get("ok") and tool_output.get("total") == 0:
-            payload = dict(tool_output)
-            payload.setdefault(
-                "next_steps",
-                [
-                    "consultar outro status",
-                    "consultar outra severidade",
-                    "listar alertas por periodo no diario",
-                    "listar alertas recentes sem filtros",
-                ],
-            )
-            return payload
-        return tool_output
-
-    if tool_name in {
-        "criar_registro",
-        "atualizar_registro",
-        "registrar_producao_diaria",
-        "atualizar_status_registro_operacional",
-    } and isinstance(tool_output, dict):
-        registro = tool_output.get("registro")
-        if tool_name == "criar_registro" and not isinstance(registro, dict):
-            registro = tool_output
-        if isinstance(registro, dict):
-            status = _normalize_text(str(registro.get("status") or ""))
-            if status != "aprovado":
-                business_rag = BusinessRAGService()
-                configurable = (config or {}).get("configurable", {})
-                sugestao = business_rag.sugerir_campos_faltantes(
-                    tipo_registro="producao_diaria",
-                    dados_parciais=registro,
-                    tenant_id=configurable.get("tenant_id"),
-                    obra_id_ativa=configurable.get("obra_id_ativa"),
-                    location_profile=configurable.get("location_profile"),
-                )
-                payload = dict(tool_output)
-                if sugestao.get("ok"):
-                    payload["faltantes"] = sugestao.get("faltantes", [])
-                    payload["validacoes"] = sugestao.get("validacoes", [])
-                    payload["completo_para_consolidar"] = bool(sugestao.get("pronto_para_consolidar"))
-                    if payload["faltantes"] or payload["validacoes"]:
-                        payload["next_steps"] = [
-                            "coletar campos faltantes para consolidacao",
-                            "atualizar o mesmo registro com as novas informacoes",
-                            "consolidar somente quando estiver completo",
-                        ]
-                return payload
-
-    return tool_output
-
-
-def _resolve_actor_context(config: RunnableConfig | None = None) -> tuple[int | None, str | None, int | None, int | None, str | None]:
-    configurable = (config or {}).get("configurable", {})
-    actor_user_id = configurable.get("actor_user_id")
-    actor_level = configurable.get("actor_level")
-    tenant_id = configurable.get("tenant_id")
-    obra_id_ativa = configurable.get("obra_id_ativa")
-    location_profile = configurable.get("location_profile")
-    return actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile
-
-
-def _is_gateway_enabled() -> bool:
-    raw = os.environ.get("AGENT_USE_GATEWAY", "true").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-def _get_business_tools(
-    actor_user_id: int,
-    actor_level: str,
-    *,
-    tenant_id: int | None,
-    obra_id_ativa: int | None,
-    location_profile: str | None,
-):
-    if _is_gateway_enabled():
-        try:
-            return get_gateway_tools(
-                actor_user_id=actor_user_id,
-                actor_level=actor_level,
-                tenant_id=tenant_id,
-                obra_id_ativa=obra_id_ativa,
-                location_profile=location_profile,
-            )
-        except TypeError:
-            return get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
-        except NameError:
-            from ..tools import get_gateway_tools as lazy_get_gateway_tools
-
-            try:
-                return lazy_get_gateway_tools(
-                    actor_user_id=actor_user_id,
-                    actor_level=actor_level,
-                    tenant_id=tenant_id,
-                    obra_id_ativa=obra_id_ativa,
-                    location_profile=location_profile,
-                )
-            except TypeError:
-                return lazy_get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
-
-    try:
-        return get_database_tools(
-            actor_user_id=actor_user_id,
-            actor_level=actor_level,
-            tenant_id=tenant_id,
-            location_profile=location_profile,
-        )
-    except TypeError:
-        return get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
-    except NameError:
-        from ..tools import get_database_tools as lazy_get_database_tools
-
-        try:
-            return lazy_get_database_tools(
-                actor_user_id=actor_user_id,
-                actor_level=actor_level,
-                tenant_id=tenant_id,
-                location_profile=location_profile,
-            )
-        except TypeError:
-            return lazy_get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
-
-
-def _resolve_tool_map(config: RunnableConfig | None = None):
-    actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile = _resolve_actor_context(config)
-    if actor_user_id is None or actor_level is None:
-        return {}
-
-    configurable = (config or {}).get("configurable", {})
-    telegram_chat_id = configurable.get("telegram_chat_id")
-    thread_id = configurable.get("thread_id")
-    telegram_message_thread_id = configurable.get("telegram_message_thread_id")
-    conversa_id = configurable.get("conversa_id")
-
-    tools = _get_business_tools(
-        actor_user_id=int(actor_user_id),
-        actor_level=str(actor_level),
-        tenant_id=int(tenant_id) if tenant_id is not None else None,
-        obra_id_ativa=int(obra_id_ativa) if obra_id_ativa is not None else None,
-        location_profile=str(location_profile) if location_profile is not None else None,
-    )
-    tools.extend(
-        get_telegram_tools(
-            chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
-            thread_id=str(thread_id) if thread_id is not None else None,
-            telegram_message_thread_id=int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
-            actor_user_id=int(actor_user_id),
-            actor_level=str(actor_level),
-            conversa_id=int(conversa_id) if conversa_id is not None else None,
-        )
-    )
-    return {tool.name: tool for tool in tools}
-
-
-def agent_step(state: State, config: RunnableConfig | None = None):
-    state_messages = list(state["messages"])
-    system_message = _build_system_message(state_messages, config)
-    actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile = _resolve_actor_context(config)
-
-    if tenant_id is not None:
-        try:
-            from backend.db.session import SessionLocal as _SL
-            from backend.services.credito_service import verificar_saldo as _verificar_saldo
-            with _SL() as _db:
-                if not _verificar_saldo(_db, int(tenant_id)):
-                    return {
-                        "messages": [
-                            AIMessage(content=(
-                                "⚠️ Seu plano não tem créditos disponíveis. "
-                                "Entre em contato com o administrador para recarregar."
-                            ))
-                        ]
-                    }
-        except Exception as _saldo_exc:
-            logger.warning("Falha ao verificar saldo de créditos: %s", _saldo_exc)
-
-    if actor_user_id is None or actor_level is None:
-        response = llm_main.invoke([system_message] + state_messages)
-        if tenant_id is not None:
-            try:
-                from backend.db.session import SessionLocal as _SL
-                from backend.services.credito_service import debitar_creditos as _debitar
-                _conversa_id = (config or {}).get("configurable", {}).get("conversa_id")
-                with _SL() as _db:
-                    _debitar(_db, int(tenant_id), "mensagem_agente", referencia_id=str(_conversa_id) if _conversa_id else None)
-            except Exception as _exc:
-                logger.warning("Falha ao debitar créditos: %s", _exc)
-        return {"messages": [response]}
-
-    configurable = (config or {}).get("configurable", {})
-    telegram_chat_id = configurable.get("telegram_chat_id")
-    thread_id = configurable.get("thread_id")
-    telegram_message_thread_id = configurable.get("telegram_message_thread_id")
-    conversa_id = configurable.get("conversa_id")
-    tools = _get_business_tools(
-        actor_user_id=int(actor_user_id),
-        actor_level=str(actor_level),
-        tenant_id=int(tenant_id) if tenant_id is not None else None,
-        obra_id_ativa=int(obra_id_ativa) if obra_id_ativa is not None else None,
-        location_profile=str(location_profile) if location_profile is not None else None,
-    )
-    tools.extend(
-        get_telegram_tools(
-            chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
-            thread_id=str(thread_id) if thread_id is not None else None,
-            telegram_message_thread_id=int(telegram_message_thread_id) if telegram_message_thread_id is not None else None,
-            actor_user_id=int(actor_user_id),
-            actor_level=str(actor_level),
-            conversa_id=int(conversa_id) if conversa_id is not None else None,
-        )
-    )
-    model = llm_main.bind_tools(tools)
-    response = model.invoke([system_message] + state_messages)
-    if tenant_id is not None:
-        try:
-            from backend.db.session import SessionLocal as _SL
-            from backend.services.credito_service import debitar_creditos as _debitar
-            with _SL() as _db:
-                _debitar(_db, int(tenant_id), "mensagem_agente", referencia_id=str(conversa_id) if conversa_id else None)
-        except Exception as _exc:
-            logger.warning("Falha ao debitar créditos: %s", _exc)
-    return {"messages": [response]}
-
+# ---------------------------------------------------------------------------
+# Simple tools step — shared between router loop and legacy usage
+# ---------------------------------------------------------------------------
 
 def tools_step(state: State, config: RunnableConfig | None = None):
     messages = list(state["messages"])
@@ -453,35 +152,38 @@ def tools_step(state: State, config: RunnableConfig | None = None):
     if not isinstance(last_message, AIMessage) or not getattr(last_message, "tool_calls", None):
         return {"messages": []}
 
-    tool_map = _resolve_tool_map(config)
+    # Filter out escalate_to_planner calls — they should not be executed
+    real_tool_calls = [
+        tc for tc in last_message.tool_calls
+        if tc.get("name") != "escalate_to_planner"
+    ]
+    if not real_tool_calls:
+        return {"messages": []}
+
+    tool_map = resolve_tool_map(config)
     tool_messages = []
-    for tool_call in last_message.tool_calls:
+
+    for tool_call in real_tool_calls:
         tool_name = tool_call.get("name")
         tool_args = tool_call.get("args", {})
         tool_instance = tool_map.get(tool_name)
+
         if not tool_instance:
             tool_output = {"ok": False, "message": f"Tool inexistente: {tool_name}"}
         else:
-            required_error = _ensure_required_fields(tool_name, tool_args, config)
+            required_error = ensure_required_fields(tool_name, tool_args, config)
             if required_error:
                 tool_output = {"ok": False, "message": required_error}
-                tool_messages.append(
-                    ToolMessage(
-                        content=str(tool_output),
-                        tool_call_id=tool_call["id"],
-                    )
-                )
+                tool_messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_call["id"]))
                 continue
 
             try:
                 tool_output = tool_instance.invoke(tool_args)
-                tool_output = _normalize_tool_output(tool_name, tool_output, config)
+                tool_output = normalize_tool_output(tool_name, tool_output, config)
             except PermissionError:
-                last_human = _normalize_text(_last_human_text(messages))
+                last_human = normalize_text(last_human_text(messages))
                 if "engenheiro" in last_human and tool_name in {
-                    "criar_frente_servico",
-                    "atualizar_frente_servico",
-                    "deletar_frente_servico",
+                    "criar_frente_servico", "atualizar_frente_servico", "deletar_frente_servico",
                 }:
                     tool_output = {
                         "ok": False,
@@ -495,21 +197,16 @@ def tools_step(state: State, config: RunnableConfig | None = None):
             except Exception as exc:
                 tool_output = {"ok": False, "message": str(exc)}
 
-        tool_messages.append(
-            ToolMessage(
-                content=str(tool_output),
-                tool_call_id=tool_call["id"],
-            )
-        )
+        tool_messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_call["id"]))
 
     return {"messages": tool_messages}
 
 
 def should_continue_to_tools(state: State) -> str:
+    """Legacy routing function — kept for compatibility."""
     messages = list(state["messages"])
     if not messages:
         return "end"
-
     last_message = messages[-1]
     if isinstance(last_message, AIMessage) and getattr(last_message, "tool_calls", None):
         return "tools"
@@ -517,4 +214,6 @@ def should_continue_to_tools(state: State) -> str:
 
 
 def responder(state: State, config: RunnableConfig | None = None):
-    return agent_step(state, config)
+    """Legacy entry point kept for compatibility."""
+    from ..nodes.responder import responder_node
+    return responder_node(state, config)
