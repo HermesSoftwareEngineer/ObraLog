@@ -113,11 +113,6 @@ if _bot_channel == "telegram":
         polling_thread = threading.Thread(target=start_polling, name="telegram-polling", daemon=True)
         polling_thread.start()
         app.logger.info("Telegram polling iniciado automaticamente em modo desenvolvimento.")
-        # Worker inline: em dev/polling não há processo separado, então rodamos aqui
-        from backend.workers.agent_worker import run_worker as _run_worker
-        worker_thread = threading.Thread(target=_run_worker, name="agent-worker", daemon=True)
-        worker_thread.start()
-        app.logger.info("Agent worker iniciado em thread de background (modo desenvolvimento).")
     elif os.environ.get("TELEGRAM_POLLING_IN_DEV", "true").lower() not in {"1", "true", "yes", "on"}:
         public_url = os.environ.get("PUBLIC_BASE_URL")
         if public_url:
@@ -128,6 +123,11 @@ if _bot_channel == "telegram":
                 app.logger.error(f"Erro ao configurar webhook automaticamente: {e}")
         else:
             app.logger.warning("TELEGRAM_POLLING_IN_DEV desativado, mas PUBLIC_BASE_URL não está configurada. Webhook automático ignorado.")
+
+    from backend.workers.agent_worker import run_worker as _run_worker
+    _worker_thread = threading.Thread(target=_run_worker, name="agent-worker", daemon=True)
+    _worker_thread.start()
+    app.logger.info("Agent worker iniciado em thread de background.")
 elif _bot_channel == "whatsapp":
     app.logger.info(
         "Canal WhatsApp ativo. Webhook disponível em POST /whatsapp/webhook. "
