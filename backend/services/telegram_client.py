@@ -217,9 +217,9 @@ class BotClient:
         return self.submit(self.download_file_async(file_id))
 
     def get_image_url(self, file_id: str) -> str:
+        # PTB v20+ already sets file_path to the full URL internally
         file_obj = self.submit(self.bot.get_file(file_id))
-        token = os.environ.get("TELEGRAM_TOKEN", "")
-        return f"https://api.telegram.org/file/bot{token}/{file_obj.file_path}"
+        return file_obj.file_path
 
 
 # Singleton used by all service modules.

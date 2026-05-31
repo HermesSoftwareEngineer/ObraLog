@@ -28,6 +28,16 @@ def _json_error(message: str, status_code: int = 400):
     return jsonify({"ok": False, "error": message}), status_code
 
 
+def _sniff_image_mime(data: bytes) -> str:
+    if data[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg'
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/jpeg'
+
+
 def _to_float(value) -> float:
     if value is None:
         return 0.0
@@ -302,22 +312,48 @@ def _check_gerente_admin():
 
 @diarios_router.get("/imagens/<int:imagem_id>")
 def servir_imagem_registro(imagem_id: int):
-    """Serve a registro image by ID. No auth required — browsers load <img> without headers.
-    Consistent with the PDF file-serving endpoint (servir_pdf_local)."""
-    from flask import redirect, send_file
+    """Serve a registro image by ID. No auth required — browsers load <img> without headers."""
+    from flask import redirect, send_file, Response
+    from pathlib import Path
     from backend.db.models import RegistroImagem
+    from backend.utils.storage import download_imagem_registro, _LOCAL_IMG_PREFIX
+    from backend.api.routes.crud.base import UPLOAD_DIR
+
     with SessionLocal() as db:
         img = db.query(RegistroImagem).filter(RegistroImagem.id == imagem_id).first()
         if not img:
             return _json_error("Imagem não encontrada.", 404)
-        if img.external_url:
-            return redirect(img.external_url)
-        if img.storage_path:
-            from pathlib import Path
-            p = Path(img.storage_path)
-            if p.exists():
-                return send_file(str(p.resolve()), mimetype=img.mime_type or "image/jpeg")
-        return _json_error("Arquivo de imagem não disponível.", 404)
+
+    storage_path = img.storage_path or ""
+
+    # ── Supabase private bucket: proxy bytes with correct Content-Type ──────
+    # Redirect to signed URL was avoided: Supabase stores these images as
+    # application/octet-stream (Telegram's Content-Type), so browsers would
+    # not render them. We proxy and sniff the real mime from magic bytes.
+    if storage_path and not storage_path.startswith(_LOCAL_IMG_PREFIX):
+        p = Path(storage_path)
+        if not p.is_absolute():
+            data = download_imagem_registro(storage_path)
+            if data:
+                return Response(data, mimetype=_sniff_image_mime(data), headers={
+                    "Cache-Control": "public, max-age=3600",
+                })
+
+    # ── Local file (new "local-img/" prefix or legacy absolute/relative path) ─
+    if storage_path:
+        p = Path(storage_path)
+        if storage_path.startswith(_LOCAL_IMG_PREFIX):
+            p = UPLOAD_DIR / storage_path.removeprefix(_LOCAL_IMG_PREFIX)
+        elif not p.is_absolute():
+            p = UPLOAD_DIR / p.name
+        if p.exists():
+            return send_file(str(p.resolve()), mimetype=img.mime_type or "image/jpeg")
+
+    # ── Fallback: external_url (legacy Telegram URLs etc.) ─────────────────
+    if img.external_url and img.external_url.startswith(("http://", "https://")):
+        return redirect(img.external_url)
+
+    return _json_error("Arquivo de imagem não disponível.", 404)
 
 
 @diarios_router.post("/gerar")

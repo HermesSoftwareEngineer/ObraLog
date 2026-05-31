@@ -8,7 +8,6 @@ CREATE TABLE tenants (
   nome          VARCHAR(200) NOT NULL,
   slug          VARCHAR(100) NOT NULL,
   tipo_negocio  VARCHAR(100),
-  location_type VARCHAR(50)  NOT NULL DEFAULT 'estaca',
   ativo         BOOLEAN      NOT NULL DEFAULT true,
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
   CONSTRAINT uq_tenants_slug UNIQUE (slug)

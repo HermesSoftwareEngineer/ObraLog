@@ -25,7 +25,6 @@ def _tenant_payload(tenant: Tenant) -> dict:
         "tenant_id": tenant.id,
         "nome": tenant.nome,
         "slug": tenant.slug,
-        "location_type": tenant.location_type,
         "tipo_negocio": tenant.tipo_negocio,
         "ativo": tenant.ativo,
         "cnpj": tenant.cnpj,
@@ -51,17 +50,10 @@ def _get_tenant(tenant_id: int):
 
 
 def _apply_update(tenant_id: int, data: dict):
-    location_type = data.get("location_type")
-    if location_type is not None and location_type not in ["estaca", "km", "text"]:
-        return None, _json_error("location_type inválido. Use 'estaca', 'km' ou 'text'.", 400)
-
     with SessionLocal() as db:
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenant:
             return None, _json_error("Tenant não encontrado.", 404)
-
-        if location_type is not None:
-            tenant.location_type = location_type
 
         for field in _UPDATABLE_FIELDS:
             if field in data:

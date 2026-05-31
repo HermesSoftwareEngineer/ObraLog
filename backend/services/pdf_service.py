@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import io
+import logging
 from datetime import date, datetime
 from typing import Any
+
+logger = logging.getLogger("obralog.pdf_service")
 
 
 # Canonical column order for campos_ativos keys (skip "frente_servico" — redundant per-table)
@@ -19,6 +22,15 @@ _CAMPOS_ORDER = [
 
 
 def _fetch_image_bytes(img: dict, timeout: int = 6) -> bytes | None:
+    storage_path = img.get("storage_path") or ""
+    if storage_path:
+        try:
+            from backend.utils.storage import download_imagem_registro
+            data = download_imagem_registro(storage_path)
+            if data:
+                return data
+        except Exception as exc:
+            logger.warning("Falha ao obter imagem %s: %s", storage_path, exc)
     url = img.get("external_url") or ""
     if url and url.startswith(("http://", "https://")):
         try:
@@ -26,17 +38,8 @@ def _fetch_image_bytes(img: dict, timeout: int = 6) -> bytes | None:
             req = urllib.request.Request(url, headers={"User-Agent": "ObraLog/1.0"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
-        except Exception:
-            pass
-    storage_path = img.get("storage_path") or ""
-    if storage_path:
-        try:
-            from pathlib import Path
-            p = Path(storage_path)
-            if p.exists():
-                return p.read_bytes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Falha ao baixar imagem %s: %s", url[:100], exc)
     return None
 
 

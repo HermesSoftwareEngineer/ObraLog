@@ -74,7 +74,7 @@ class BusinessRAGUserInstructionsTests(unittest.TestCase):
             Repository.frentes_servico.obter_por_id = original_frentes_obter
             Repository.usuarios.obter_por_id = original_usuarios_obter
 
-    def test_sugerir_campos_faltantes_usa_perfil_localizacao_km(self):
+    def test_sugerir_campos_faltantes_sem_schema_location_required_vazio(self):
         service = BusinessRAGService()
         response = service.sugerir_campos_faltantes(
             "producao_diaria",
@@ -86,13 +86,12 @@ class BusinessRAGUserInstructionsTests(unittest.TestCase):
             },
             tenant_id=99,
             obra_id_ativa=123,
-            location_profile="km",
         )
 
         self.assertTrue(response.get("ok"))
-        self.assertEqual(response.get("perfil_localizacao"), "km")
-        self.assertIn("tipo_localizacao", response.get("obrigatorios", []))
-        self.assertIn("tipo_localizacao", response.get("faltantes", []))
+        self.assertNotIn("perfil_localizacao", response)
+        self.assertNotIn("estaca_inicial", response.get("obrigatorios", []))
+        self.assertNotIn("km_inicial", response.get("obrigatorios", []))
 
     def test_sugerir_campos_faltantes_infer_texto_por_local_descritivo(self):
         service = BusinessRAGService()
@@ -105,11 +104,10 @@ class BusinessRAGUserInstructionsTests(unittest.TestCase):
                 "tempo_tarde": "limpo",
                 "local_descritivo": "Armazem",
             },
-            location_profile="estaca",
         )
 
         self.assertTrue(response.get("ok"))
-        self.assertEqual(response.get("perfil_localizacao"), "texto")
+        self.assertNotIn("perfil_localizacao", response)
         self.assertNotIn("estaca_inicial", response.get("faltantes", []))
         self.assertNotIn("estaca_final", response.get("faltantes", []))
 

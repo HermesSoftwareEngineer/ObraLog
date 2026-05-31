@@ -31,7 +31,6 @@ from backend.agents.gateway import (
     run_consulta,
     run_execucao,
 )
-from backend.agents.gateway.location_profile import build_location_profile
 from backend.agents.gateway.mappers import (
     map_alerta_to_business,
     map_consultar_alertas_operacionais_output,
@@ -169,14 +168,12 @@ def get_gateway_tools(
     *,
     tenant_id: int | None = None,
     obra_id_ativa: int | None = None,
-    location_profile: str | None = None,
 ):
     """Retorna as 32 tools com contexto de ator/tenant capturado em closure.
 
-    actor_user_id, actor_level, tenant_id, obra_id_ativa e location_profile
+    actor_user_id, actor_level, tenant_id e obra_id_ativa
     são passados uma vez aqui e acessados via closure em cada invocação de tool.
     """
-    resolved_location_mode = build_location_profile(location_profile).mode
     business_rag = BusinessRAGService()
 
     # Fallback de compatibilidade: get_database_tools pode ou não aceitar kwargs extras
@@ -185,7 +182,6 @@ def get_gateway_tools(
             actor_user_id,
             actor_level,
             tenant_id=tenant_id,
-            location_profile=resolved_location_mode,
         )
     except TypeError:
         database_tools = get_database_tools(actor_user_id, actor_level)
@@ -257,7 +253,7 @@ def get_gateway_tools(
             return "estaca"
         if has_detail:
             return "texto"
-        return resolved_location_mode
+        return "estaca"
 
     def _resolve_obra_selection(obra_id: int | None = None, obra: str | None = None) -> dict:
         """Resolve obra por ID direto ou por nome (exato, parcial, ambíguo), com orientação ao usuário."""
@@ -380,7 +376,6 @@ def get_gateway_tools(
                 requested_frente_nome=(frente_servico or None),
             )
             payload = strip_technical_keys(mapped)
-            payload["perfil_localizacao"] = resolved_location_mode
             payload["tenant_id"] = tenant_id
             return payload
 
@@ -486,7 +481,6 @@ def get_gateway_tools(
             raw = result if isinstance(result, dict) else {"resultado": result}
             mapped = map_consultar_producao_periodo_output(raw, frentes_by_id=_build_frentes_by_id())
             payload = strip_technical_keys(mapped)
-            payload["perfil_localizacao"] = resolved_location_mode
             payload["tenant_id"] = tenant_id
             return payload
 
@@ -612,7 +606,6 @@ def get_gateway_tools(
                 dados_parciais=dados_parciais or {},
                 tenant_id=tenant_id,
                 obra_id_ativa=obra_id_ativa,
-                location_profile=resolved_location_mode,
             )
 
         return _consulta("sugerir_campos_faltantes", handler)
@@ -714,11 +707,9 @@ def get_gateway_tools(
                     "observacao": observacao,
                 },
                 tenant_id=tenant_id,
-                location_profile=resolved_location_mode,
             )
             return {
                 "registro": result if isinstance(result, dict) else {"resultado": result},
-                "perfil_localizacao": mode,
                 "tenant_id": tenant_id,
                 "campos_pendentes_schema": schema_ctx.get("faltantes", []) if schema_ctx.get("ok") else [],
                 "campos_extras_schema": schema_ctx.get("campos_extras", []),

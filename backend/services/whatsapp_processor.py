@@ -24,7 +24,6 @@ from backend.services.whatsapp_client import WhatsAppClient
 from backend.services.whatsapp_extractor import MessageExtractor, extract_text_content
 from backend.services.whatsapp_linker import UserLinker
 from backend.services import whatsapp_persistence as persistence
-from backend.agents.gateway.location_profile import resolve_runtime_location_context
 from backend.agents.session_service import get_or_create_conversa, atualizar_ultima_mensagem
 
 logger = logging.getLogger(__name__)
@@ -172,13 +171,9 @@ class MessageProcessor:
                 ),
                 "actor_name": usuario.nome,
                 "actor_chat_display_name": display_name,
+                "obra_id_ativa": None,
             }
         }
-
-        runtime_location = resolve_runtime_location_context(
-            tenant_id=tenant_id, obra_id_ativa=None,
-        )
-        config["configurable"].update(runtime_location)
 
         batched_text = _build_batched_text(extracted)
         result = self._invoke_agent(batched_text, config, phone, raw_messages)

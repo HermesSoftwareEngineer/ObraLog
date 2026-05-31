@@ -8,11 +8,9 @@ from langchain_core.runnables import RunnableConfig
 
 try:
     from ..tools import get_database_tools, get_gateway_tools, get_telegram_tools
-    from ..gateway.location_profile import build_location_profile
     from ..gateway.rag_service import BusinessRAGService
 except ImportError:
     from tools import get_database_tools, get_gateway_tools, get_telegram_tools  # type: ignore
-    from gateway.location_profile import build_location_profile  # type: ignore
     from gateway.rag_service import BusinessRAGService  # type: ignore
 
 logger = logging.getLogger("obralog.agent.tool_utils")
@@ -43,7 +41,6 @@ def resolve_actor_context(config: RunnableConfig | None = None) -> tuple:
         configurable.get("actor_level"),
         configurable.get("tenant_id"),
         configurable.get("obra_id_ativa"),
-        configurable.get("location_profile"),
     )
 
 
@@ -58,7 +55,6 @@ def get_business_tools(
     *,
     tenant_id: int | None,
     obra_id_ativa: int | None,
-    location_profile: str | None,
 ):
     if _is_gateway_enabled():
         try:
@@ -67,7 +63,6 @@ def get_business_tools(
                 actor_level=actor_level,
                 tenant_id=tenant_id,
                 obra_id_ativa=obra_id_ativa,
-                location_profile=location_profile,
             )
         except TypeError:
             return get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
@@ -75,15 +70,14 @@ def get_business_tools(
             from ..tools import get_gateway_tools as _lazy
             try:
                 return _lazy(actor_user_id=actor_user_id, actor_level=actor_level,
-                             tenant_id=tenant_id, obra_id_ativa=obra_id_ativa,
-                             location_profile=location_profile)
+                             tenant_id=tenant_id, obra_id_ativa=obra_id_ativa)
             except TypeError:
                 return _lazy(actor_user_id=actor_user_id, actor_level=actor_level)
 
     try:
         return get_database_tools(
             actor_user_id=actor_user_id, actor_level=actor_level,
-            tenant_id=tenant_id, location_profile=location_profile,
+            tenant_id=tenant_id,
         )
     except TypeError:
         return get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
@@ -91,13 +85,13 @@ def get_business_tools(
         from ..tools import get_database_tools as _lazy  # type: ignore
         try:
             return _lazy(actor_user_id=actor_user_id, actor_level=actor_level,
-                         tenant_id=tenant_id, location_profile=location_profile)
+                         tenant_id=tenant_id)
         except TypeError:
             return _lazy(actor_user_id=actor_user_id, actor_level=actor_level)
 
 
 def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
-    actor_user_id, actor_level, tenant_id, obra_id_ativa, location_profile = resolve_actor_context(config)
+    actor_user_id, actor_level, tenant_id, obra_id_ativa = resolve_actor_context(config)
     if actor_user_id is None or actor_level is None:
         return {}
 
@@ -112,7 +106,6 @@ def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
         actor_level=str(actor_level),
         tenant_id=int(tenant_id) if tenant_id is not None else None,
         obra_id_ativa=int(obra_id_ativa) if obra_id_ativa is not None else None,
-        location_profile=str(location_profile) if location_profile is not None else None,
     )
     tools.extend(
         get_telegram_tools(
@@ -128,32 +121,13 @@ def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
 
 
 def ensure_required_fields(tool_name: str, tool_args: dict, config: RunnableConfig | None = None) -> str | None:
-    configurable = (config or {}).get("configurable", {})
-    profile = build_location_profile(configurable.get("location_profile")).mode
-
     if tool_name == "criar_registro":
         status = normalize_text(str(tool_args.get("status") or ""))
         if status != "aprovado":
             return None
 
         required = ["data", "tempo_manha", "tempo_tarde"]
-        if profile == "km":
-            required.extend(["km_inicial", "km_final"])
-        elif profile == "texto":
-            required.append("local_descritivo")
-        else:
-            required.extend(["estaca_inicial", "estaca_final"])
-
         missing = [f for f in required if tool_args.get(f) in (None, "")]
-
-        localizacao = tool_args.get("localizacao") if isinstance(tool_args.get("localizacao"), dict) else {}
-        if profile in {"estaca", "km"}:
-            if tool_args.get("estaca_inicial") in (None, "") and tool_args.get("km_inicial") in (None, "") and localizacao.get("valor_inicial") in (None, ""):
-                missing.append("valor_inicial")
-            if tool_args.get("estaca_final") in (None, "") and tool_args.get("km_final") in (None, "") and localizacao.get("valor_final") in (None, ""):
-                missing.append("valor_final")
-        if profile == "texto" and tool_args.get("local_descritivo") in (None, "") and localizacao.get("detalhe_texto") in (None, ""):
-            missing.append("local_descritivo")
 
         if not tool_args.get("frente_servico_id") and not tool_args.get("frente_servico_nome"):
             missing.append("frente_servico_nome")
@@ -217,7 +191,6 @@ def normalize_tool_output(tool_name: str, tool_output, config: RunnableConfig | 
                     dados_parciais=registro,
                     tenant_id=configurable.get("tenant_id"),
                     obra_id_ativa=configurable.get("obra_id_ativa"),
-                    location_profile=configurable.get("location_profile"),
                 )
                 payload = dict(tool_output)
                 if sugestao.get("ok"):

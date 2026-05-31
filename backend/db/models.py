@@ -112,7 +112,6 @@ class Tenant(Base):
     nome         = Column(String(200), nullable=False)
     slug         = Column(String(100), nullable=False, unique=True, index=True)
     tipo_negocio = Column(String(100), nullable=True)
-    location_type = Column(String(50), nullable=False, server_default="estaca")
     timeout_conversa_minutos = Column(Integer, nullable=False, server_default="60")
     ativo        = Column(Boolean, nullable=False, default=True)
     created_at   = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

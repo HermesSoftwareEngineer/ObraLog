@@ -136,6 +136,32 @@ elif _bot_channel == "whatsapp":
     )
 
 
+def _run_encerrar_conversas_loop(interval_seconds: int = 600) -> None:
+    import time
+    from backend.jobs.encerrar_conversas import run as _encerrar
+
+    while True:
+        try:
+            _encerrar()
+        except Exception as exc:
+            app.logger.error("Erro no job encerrar_conversas: %s", exc)
+        time.sleep(interval_seconds)
+
+
+def _start_encerrar_conversas_scheduler() -> None:
+    # Flush imediato ao subir + loop periódico a cada 10 min
+    t = threading.Thread(
+        target=_run_encerrar_conversas_loop,
+        name="encerrar-conversas-scheduler",
+        daemon=True,
+    )
+    t.start()
+    app.logger.info("Scheduler de encerramento de conversas iniciado (intervalo: 10 min).")
+
+
+_start_encerrar_conversas_scheduler()
+
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})

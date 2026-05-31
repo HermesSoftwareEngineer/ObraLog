@@ -1,0 +1,1 @@
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS location_type VARCHAR DEFAULT 'estaca';

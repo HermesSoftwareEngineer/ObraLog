@@ -238,6 +238,9 @@ def criar_registro():
     except ValueError as exc:
         return _json_error(str(exc))
 
+    if parsed.get("obra_id") is None:
+        return _json_error("Campo obrigatorio ausente: obra_id", 422)
+
     with SessionLocal() as db:
         try:
             registro = Repository.registros.criar(db=db, **parsed)
@@ -414,19 +417,27 @@ def upload_imagem_registro(registro_id: int):
         if total >= MAX_IMAGENS_POR_REGISTRO:
             return _json_error("Limite de 30 imagens por registro atingido.", 409)
 
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         original_name = secure_filename(uploaded.filename or "imagem")
         extension = _guess_extension(original_name, mime_type)
-        file_name = f"registro_{registro_id}_{uuid4().hex}{extension}"
-        full_path = UPLOAD_DIR / file_name
-        uploaded.save(full_path)
+        img_bytes = uploaded.read()
+        file_size = len(img_bytes)
 
-        file_size = full_path.stat().st_size if full_path.exists() else None
-        relative_path = str(full_path).replace("\\", "/")
+        from backend.utils.storage import upload_imagem_registro as _upload_storage
+        try:
+            storage_path = _upload_storage(
+                tenant_id=registro.tenant_id,
+                registro_id=registro_id,
+                img_bytes=img_bytes,
+                mime_type=mime_type,
+                suffix=extension,
+            )
+        except Exception as exc:
+            return _json_error(f"Falha ao armazenar imagem: {exc}", 502)
+
         imagem = Repository.registro_imagens.criar(
             db,
             registro_id=registro_id,
-            storage_path=relative_path,
+            storage_path=storage_path,
             mime_type=mime_type,
             file_size=file_size,
             origem="api",

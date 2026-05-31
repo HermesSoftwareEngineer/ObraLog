@@ -7,6 +7,7 @@ extract text, resolve the user, run the agent, and send the reply.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime
 
@@ -29,7 +30,6 @@ from backend.services.telegram_extractor import (
 )
 from backend.services import telegram_persistence as persistence
 from backend.services.telegram_linker import UserLinker
-from backend.agents.gateway.location_profile import resolve_runtime_location_context
 from backend.agents.session_service import get_or_create_conversa, atualizar_ultima_mensagem
 
 logger = logging.getLogger(__name__)
@@ -241,14 +241,9 @@ class MessageProcessor:
                 ),
                 "actor_name": usuario.nome,
                 "actor_chat_display_name": display_name,
+                "obra_id_ativa": obra_id_ativa,
             }
         }
-
-        runtime_location = resolve_runtime_location_context(
-            tenant_id=tenant_id,
-            obra_id_ativa=obra_id_ativa,
-        )
-        config["configurable"].update(runtime_location)
 
         batched_text = _build_batched_text(extracted)
         typing_stop = self._typing.start(chat_id=chat_id, message_thread_id=thread_hint)
@@ -289,12 +284,27 @@ class MessageProcessor:
         )
         return {"ok": True, "chat_id": chat_id, "reason": "contexto_reiniciado", "thread_id": new_tid}
 
+    def _invoke_with_retry(self, text: str, invoke_config: dict, chat_id) -> dict:
+        """Retry once on stale-connection errors; the pool replaces the bad connection automatically."""
+        import psycopg
+        for attempt in range(2):
+            try:
+                return graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
+            except psycopg.OperationalError as exc:
+                if attempt == 0:
+                    logger.warning(
+                        "Conexão stale com checkpointer, retentando - chat_id=%s: %s", chat_id, exc
+                    )
+                    time.sleep(0.5)
+                    continue
+                raise
+
     def _invoke_agent(
         self, text: str, config: dict, chat_id, raw_messages: list
     ) -> dict:
         invoke_config = {**config, "recursion_limit": 14}
         try:
-            response = graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
+            response = self._invoke_with_retry(text, invoke_config, chat_id)
         except Exception as exc:
             try:
                 from langgraph.errors import GraphRecursionError

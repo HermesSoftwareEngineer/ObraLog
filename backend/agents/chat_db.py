@@ -17,10 +17,12 @@ try:
 	pool_max_size = int(os.environ.get("CHECKPOINTER_POOL_MAX_SIZE", "5"))
 
 	# Use a pool so closed/stale connections are replaced automatically in long-lived prod workers.
+	# reconnect_timeout ensures the pool keeps trying to rebuild connections after a server bounce.
 	pool = ConnectionPool(
 		conninfo=DB_URI,
 		min_size=pool_min_size,
 		max_size=pool_max_size,
+		reconnect_timeout=30,
 		kwargs={
 			"autocommit": True,
 			"prepare_threshold": None,

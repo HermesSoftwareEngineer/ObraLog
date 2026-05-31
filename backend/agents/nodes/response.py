@@ -53,9 +53,6 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
     conversation_date_br = configurable.get("conversation_date_br")
     tenant_id = configurable.get("tenant_id")
     obra_id_ativa = configurable.get("obra_id_ativa")
-    location_profile = configurable.get("location_profile")
-    location_required_fields = configurable.get("location_required_fields") or []
-    location_labels = configurable.get("location_labels") or {}
 
     if not conversation_date:
         conversation_date = datetime.now().date().isoformat()
@@ -106,20 +103,6 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             f"- Obra ativa: {obra_id_ativa if obra_id_ativa is not None else 'não informada'}"
         )
 
-    location_block = ""
-    if location_profile:
-        required_labels = ", ".join(str(item) for item in location_required_fields)
-        labels = ", ".join(
-            f"{key}={value}" for key, value in location_labels.items()
-        ) if isinstance(location_labels, dict) else ""
-        location_block = (
-            "\n\nPerfil de localização ativo:\n"
-            f"- Perfil: {location_profile}\n"
-            f"- Campos obrigatórios de local: {required_labels or 'não informado'}\n"
-            f"- Labels de negócio: {labels or 'não informado'}\n"
-            "- Não misture regras de localização entre tenants."
-        )
-
     user_hint_block = ""
     normalized_query = normalize_text(user_query)
     incident_signals = ["nao chegou", "atras", "quebrou", "nao veio", "faltou", "incidente", "problema"]
@@ -136,7 +119,7 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             "oriente fluxo de solicitação/encaminhamento de criação de frente sem encerrar em bloqueio passivo."
         )
 
-    return SystemMessage(content=build_system_prompt() + role_block + tenant_snapshot_block + location_block + context_block + memory_block + user_hint_block)
+    return SystemMessage(content=build_system_prompt() + role_block + tenant_snapshot_block + context_block + memory_block + user_hint_block)
 
 
 # ---------------------------------------------------------------------------

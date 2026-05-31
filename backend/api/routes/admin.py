@@ -11,7 +11,7 @@ from backend.db.session import SessionLocal
 admin_blueprint = Blueprint("admin_v1", __name__, url_prefix="/api/v1/admin")
 
 _UPDATABLE_FIELDS = [
-    "nome", "tipo_negocio", "location_type", "ativo",
+    "nome", "tipo_negocio", "ativo",
     "cnpj", "razao_social", "nome_fantasia",
     "logradouro", "numero", "complemento", "cep", "cidade", "estado",
     "telefone_comercial", "email_comercial",
@@ -29,7 +29,6 @@ def _serialize_tenant(t) -> dict:
         "slug": t.slug,
         "ativo": t.ativo,
         "tipo_negocio": t.tipo_negocio,
-        "location_type": t.location_type,
         "cnpj": t.cnpj,
         "razao_social": t.razao_social,
         "nome_fantasia": t.nome_fantasia,
@@ -101,17 +100,12 @@ def criar_tenant():
     if not slug:
         return _json_error("Slug inválido.")
 
-    location_type = data.get("location_type", "estaca")
-    if location_type not in ("estaca", "km", "text"):
-        return _json_error("location_type inválido. Use 'estaca', 'km' ou 'text'.")
-
     try:
         with SessionLocal() as db:
             tenant = Tenant(
                 nome=nome,
                 slug=slug,
                 tipo_negocio=data.get("tipo_negocio") or None,
-                location_type=location_type,
                 ativo=bool(data.get("ativo", True)),
                 cnpj=data.get("cnpj") or None,
                 razao_social=data.get("razao_social") or None,
@@ -161,10 +155,6 @@ def atualizar_tenant(tenant_id: int):
         return _json_error("Apenas administrador pode editar unidades.", 403)
 
     data = request.get_json(silent=True) or {}
-
-    location_type = data.get("location_type")
-    if location_type is not None and location_type not in ("estaca", "km", "text"):
-        return _json_error("location_type inválido. Use 'estaca', 'km' ou 'text'.")
 
     try:
         with SessionLocal() as db:

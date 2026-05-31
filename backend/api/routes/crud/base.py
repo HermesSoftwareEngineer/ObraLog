@@ -20,7 +20,10 @@ from backend.db.models import (
 
 api_blueprint = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 
-UPLOAD_DIR = Path(os.environ.get("REGISTRO_IMAGENS_DIR", str(Path("backend") / "uploads" / "registros")))
+# Resolve absolute path so it's CWD-independent.
+# base.py → crud/ → routes/ → api/ → backend/
+_BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
+UPLOAD_DIR = Path(os.environ.get("REGISTRO_IMAGENS_DIR", str(_BASE_DIR / "uploads" / "registros")))
 MAX_IMAGENS_POR_REGISTRO = 30
 ALLOWED_IMAGE_MIME_TYPES = {
     "image/jpeg",

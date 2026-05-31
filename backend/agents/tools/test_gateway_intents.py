@@ -331,19 +331,17 @@ class GatewayIntentNormalizationTests(unittest.TestCase):
                 actor_level="encarregado",
                 tenant_id=44,
                 obra_id_ativa=901,
-                location_profile="km",
             )
 
         self.assertEqual(captured.get("actor_user_id"), 7)
         self.assertEqual(captured.get("tenant_id"), 44)
-        self.assertEqual(captured.get("location_profile"), "km")
 
     def test_registrar_producao_diaria_km_profile_maps_values(self):
         fake_create = _CaptureInternalTool("criar_registro", lambda args: {"ok": True, "registro": args})
         fake_listar = _FakeInternalTool("listar_frentes_servico", [{"id": 9, "nome": "Frente Oeste"}])
 
         with patch("backend.agents.tools.gateway_tools.get_database_tools", return_value=[fake_create, fake_listar]):
-            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado", tenant_id=3, location_profile="km")
+            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado", tenant_id=3)
 
         registrar = next(tool for tool in tools if tool.name == "registrar_producao_diaria")
         result = registrar.invoke(
@@ -362,14 +360,13 @@ class GatewayIntentNormalizationTests(unittest.TestCase):
         self.assertEqual(sent.get("estaca_final"), 13.0)
         self.assertEqual((sent.get("localizacao") or {}).get("tipo"), "km")
         self.assertTrue(result.get("ok"))
-        self.assertEqual(result.get("perfil_localizacao"), "km")
 
     def test_registrar_producao_diaria_text_profile_uses_descriptive_location(self):
         fake_create = _CaptureInternalTool("criar_registro", lambda args: {"ok": True, "registro": args})
         fake_listar = _FakeInternalTool("listar_frentes_servico", [{"id": 2, "nome": "Predial Centro"}])
 
         with patch("backend.agents.tools.gateway_tools.get_database_tools", return_value=[fake_create, fake_listar]):
-            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado", tenant_id=8, location_profile="texto")
+            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado", tenant_id=8)
 
         registrar = next(tool for tool in tools if tool.name == "registrar_producao_diaria")
         registrar.invoke(
@@ -391,7 +388,7 @@ class GatewayIntentNormalizationTests(unittest.TestCase):
         fake_listar = _FakeInternalTool("listar_frentes_servico", [{"id": 3, "nome": "Drenagem"}])
 
         with patch("backend.agents.tools.gateway_tools.get_database_tools", return_value=[fake_create, fake_listar]):
-            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado", location_profile="estaca")
+            tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado")
 
         registrar = next(tool for tool in tools if tool.name == "registrar_producao_diaria")
         result = registrar.invoke(

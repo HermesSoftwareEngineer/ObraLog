@@ -357,15 +357,20 @@ def get_dados_para_exportar(diario_id: str, versao: int, tenant_id: int) -> tupl
             "gerado_por_nome": gerado_por_nome,
         }
 
-        registros_ids = versao_obj.registros_ids or []
-        if registros_ids:
-            regs = (
-                db.query(Registro)
-                .options(selectinload(Registro.frente_servico), selectinload(Registro.imagens))
-                .filter(Registro.id.in_(registros_ids), Registro.tenant_id == tenant_id)
-                .order_by(Registro.data.asc(), Registro.id.asc())
-                .all()
-            )
+        registros_ids = versao_obj.registros_ids
+        # Use None-check instead of truthiness: an empty list means the version was
+        # generated with zero records (valid), while None means the field was never set.
+        if registros_ids is not None:
+            if registros_ids:
+                regs = (
+                    db.query(Registro)
+                    .options(selectinload(Registro.frente_servico), selectinload(Registro.imagens))
+                    .filter(Registro.id.in_(registros_ids), Registro.tenant_id == tenant_id)
+                    .order_by(Registro.data.asc(), Registro.id.asc())
+                    .all()
+                )
+            else:
+                regs = []
         else:
             regs = _get_registros_para_diario(
                 db, diario.obra_id, tenant_id,

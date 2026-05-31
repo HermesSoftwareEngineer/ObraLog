@@ -24,7 +24,6 @@ def build_registros_tools(
     actor_user_id: int,
     actor_level: str,
     tenant_id: int | None = None,
-    location_profile: str | None = None,
 ) -> list:
     def _parse_registro_status(value: str | None) -> RegistroStatus | None:
         if value in (None, ""):
@@ -72,8 +71,7 @@ def build_registros_tools(
         parsed_tempo_tarde = parse_clima(tempo_tarde, "tempo_tarde") if tempo_tarde else None
 
         localizacao = localizacao or {}
-        normalized_mode = (location_profile or "estaca").strip().lower()
-        location_type = str(localizacao.get("tipo") or normalized_mode or "estaca").strip().lower()
+        location_type = str(localizacao.get("tipo") or "estaca").strip().lower()
         start_value = localizacao.get("valor_inicial", estaca_inicial if estaca_inicial is not None else km_inicial)
         end_value = localizacao.get("valor_final", estaca_final if estaca_final is not None else km_final)
         detail_value = localizacao.get("detalhe_texto", local_descritivo)
@@ -155,7 +153,56 @@ def build_registros_tools(
         imagem_url: str,
     ) -> dict:
         """Anexa imagem a um registro por URL externa. Limite: 30 imagens por registro."""
+        import logging as _logging
+        import urllib.request as _urllib_req
+        import uuid as _uuid
+
+        _log = _logging.getLogger("obralog.agent.imagens")
+
         assert_permission(actor_level, "update", "registros")
+
+        imagem_url = (imagem_url or "").strip()
+        if not imagem_url:
+            return {"ok": False, "message": "imagem_url é obrigatória."}
+
+        if not (imagem_url.startswith("http://") or imagem_url.startswith("https://")):
+            return {"ok": False, "message": "imagem_url deve ser uma URL HTTP/HTTPS válida."}
+
+        # Download from the temporary Telegram URL and persist to permanent storage
+        # (Supabase or local fallback) so the image remains accessible after the
+        # original URL expires.
+        try:
+            req = _urllib_req.Request(imagem_url, headers={"User-Agent": "ObraLog/1.0"})
+            with _urllib_req.urlopen(req, timeout=15) as resp:
+                img_bytes = resp.read()
+                content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+                mime_type = content_type
+                file_size = len(img_bytes)
+
+            # Detect real mime type from magic bytes — Telegram serves images
+            # as application/octet-stream regardless of actual format.
+            if img_bytes[:3] == b'\xff\xd8\xff':
+                mime_type, suffix = "image/jpeg", ".jpg"
+            elif img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                mime_type, suffix = "image/png", ".png"
+            elif img_bytes[:4] == b'RIFF' and img_bytes[8:12] == b'WEBP':
+                mime_type, suffix = "image/webp", ".webp"
+            else:
+                ext_map = {"image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/jpeg": "jpg"}
+                suffix = f".{ext_map.get(content_type, 'jpg')}"
+
+            from backend.utils.storage import upload_imagem_registro as _upload_storage
+            storage_path = _upload_storage(
+                tenant_id=tenant_id,
+                registro_id=registro_id,
+                img_bytes=img_bytes,
+                mime_type=mime_type,
+                suffix=suffix,
+            )
+        except Exception as exc:
+            _log.warning("Nao foi possivel armazenar imagem do agente (registro %s): %s", registro_id, exc)
+            return {"ok": False, "message": f"Nao foi possivel baixar ou armazenar a imagem: {exc}"}
+
         with SessionLocal() as db:
             registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
             if not registro:
@@ -164,18 +211,14 @@ def build_registros_tools(
             if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
                 raise PermissionError("Encarregado só pode anexar imagem em seus próprios registros.")
 
-            imagem_url = (imagem_url or "").strip()
-            if not imagem_url:
-                return {"ok": False, "message": "imagem_url é obrigatória."}
-
-            if not (imagem_url.startswith("http://") or imagem_url.startswith("https://")):
-                return {"ok": False, "message": "imagem_url deve ser uma URL HTTP/HTTPS válida."}
-
             try:
                 imagem = Repository.registro_imagens.criar(
                     db,
                     registro_id=registro_id,
                     external_url=imagem_url,
+                    storage_path=storage_path,
+                    mime_type=mime_type,
+                    file_size=file_size,
                     origem="agent",
                     tenant_id=tenant_id,
                 )
@@ -188,6 +231,7 @@ def build_registros_tools(
                     "id": imagem.id,
                     "registro_id": imagem.registro_id,
                     "external_url": imagem.external_url,
+                    "storage_path": imagem.storage_path,
                     "origem": imagem.origem,
                 },
             }
@@ -277,8 +321,7 @@ def build_registros_tools(
         }
 
         localizacao = localizacao or {}
-        normalized_mode = (location_profile or "estaca").strip().lower()
-        location_type = str(localizacao.get("tipo") or normalized_mode or "estaca").strip().lower()
+        location_type = str(localizacao.get("tipo") or "estaca").strip().lower()
         start_value = localizacao.get("valor_inicial", estaca_inicial if estaca_inicial is not None else km_inicial)
         end_value = localizacao.get("valor_final", estaca_final if estaca_final is not None else km_final)
         detail_value = localizacao.get("detalhe_texto", local_descritivo)

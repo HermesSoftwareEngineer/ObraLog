@@ -5,7 +5,6 @@ import re
 import unicodedata
 
 from backend.agents.instructions_store import read_agent_instructions
-from backend.agents.gateway.location_profile import build_location_profile
 from backend.db.models import FrenteServico, RegistroSchema
 from backend.db.repository import Repository, RegistroRepository, RegistroSchemaRepository
 from backend.db.session import SessionLocal
@@ -33,7 +32,6 @@ class BusinessRAGService:
                 "frente_servico": frente_servico,
                 "schema_configurado": False,
                 "campos_obrigatorios": [],
-                "campos_localizacao": [],
                 "campos_extras": [],
                 "message": "Frente nao possui schema configurado. Use os campos padrao de producao_diaria.",
             }
@@ -41,10 +39,8 @@ class BusinessRAGService:
         # Filtra False por compatibilidade com registros antigos gravados antes da sanitização na API.
         campos_ativos = {c: v for c, v in (getattr(schema, "campos_ativos", None) or {}).items() if v}
         recognized = RegistroRepository._SCHEMA_CAMPO_TO_ATTR
-        _location_campos = {"localizacao", "estaca_inicial", "estaca_final"}
 
-        obrigatorios = [c for c in campos_ativos if c in recognized and c not in _location_campos]
-        campos_localizacao = [c for c in campos_ativos if c in _location_campos]
+        obrigatorios = [c for c in campos_ativos if c in recognized]
         extras = self._schema_campos_extras(schema)
 
         return {
@@ -53,7 +49,6 @@ class BusinessRAGService:
             "schema_configurado": True,
             "schema_nome": getattr(schema, "nome", None),
             "campos_obrigatorios": obrigatorios,
-            "campos_localizacao": campos_localizacao,
             "campos_extras": extras,
         }
 
@@ -93,9 +88,8 @@ class BusinessRAGService:
         dados_parciais: dict,
         tenant_id: int | None = None,
         obra_id_ativa: int | None = None,
-        location_profile: str | None = None,
     ) -> dict:
-        effective_location_mode = self._resolve_location_mode(dados_parciais, location_profile=location_profile)
+        effective_location_mode = self._resolve_location_mode(dados_parciais)
 
         schema = None
         if (tipo_registro or "").strip().lower() == "producao_diaria":
@@ -104,7 +98,6 @@ class BusinessRAGService:
         checklist = self._checklist_by_type(
             tipo_registro,
             dados_parciais,
-            location_profile=effective_location_mode,
             schema=schema,
         )
         if not checklist:
@@ -115,7 +108,6 @@ class BusinessRAGService:
 
         missing = [field for field in checklist if self._is_missing(self._value_for_field(field, dados_parciais))]
         validation_issues = self._validate_references(tipo_registro, dados_parciais, tenant_id=tenant_id)
-        profile = build_location_profile(effective_location_mode)
 
         campos_extras_info = self._schema_campos_extras(schema) if schema else []
 
@@ -124,8 +116,6 @@ class BusinessRAGService:
             "tipo_registro": tipo_registro,
             "tenant_id": tenant_id,
             "obra_id_ativa": obra_id_ativa,
-            "perfil_localizacao": profile.mode,
-            "labels_localizacao": profile.labels,
             "obrigatorios": checklist,
             "faltantes": missing,
             "campos_extras": campos_extras_info,
@@ -134,11 +124,11 @@ class BusinessRAGService:
             "pronto_para_consolidar": len(missing) == 0 and not validation_issues,
         }
 
-    def _resolve_location_mode(self, dados_parciais: dict, location_profile: str | None = None) -> str:
+    def _resolve_location_mode(self, dados_parciais: dict) -> str:
         inferred_type = self._value_for_field("tipo_localizacao", dados_parciais)
         if isinstance(inferred_type, str) and inferred_type.strip():
             return inferred_type.strip().lower()
-        return build_location_profile(location_profile).mode
+        return "estaca"
 
     def _load_blocks(self) -> list[str]:
         blocks: list[str] = []
@@ -172,7 +162,6 @@ class BusinessRAGService:
         self,
         tipo_registro: str,
         dados_parciais: dict,
-        location_profile: str | None = None,
         schema: "RegistroSchema | None" = None,
     ) -> list[str]:
         normalized_type = (tipo_registro or "").strip().lower()
@@ -182,9 +171,6 @@ class BusinessRAGService:
         if normalized_type == "alerta_operacional":
             return ["tipo_alerta", "descricao", "severidade", "local"]
 
-        # producao_diaria: localização vem do schema quando existe, do perfil do tenant quando não existe.
-        # Se o schema não tem nenhum campo de localização configurado, localização não é cobrada —
-        # independentemente do perfil padrão do tenant.
         _location_campos = {"localizacao", "estaca_inicial", "estaca_final"}
 
         if schema is not None:
@@ -192,10 +178,7 @@ class BusinessRAGService:
             schema_location = [c for c in campos_ativos if c in _location_campos]
             location_required = schema_location
         else:
-            profile = build_location_profile(location_profile)
-            location_type_value = self._value_for_field("tipo_localizacao", dados_parciais)
-            has_location_type = not self._is_missing(location_type_value)
-            location_required = profile.required_fields if has_location_type else []
+            location_required = []
 
         universal = ["data", "frente_servico"] + location_required
 
