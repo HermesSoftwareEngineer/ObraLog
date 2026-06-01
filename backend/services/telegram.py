@@ -14,7 +14,6 @@ import os
 import threading
 
 from backend.services.telegram_client import bot_client
-from backend.services.telegram_processor import MessageProcessor
 from backend.services.telegram_poll import PollAnswerHandler
 from backend.services.telegram_poller import Poller
 from backend.workers.agent_worker import enqueue as _enqueue_job
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 # Component wiring
 # ---------------------------------------------------------------------------
 
-_processor = MessageProcessor(bot_client)
 _poll_handler = PollAnswerHandler(bot_client)
 
 
@@ -45,8 +43,7 @@ def _image_batch_wait_seconds() -> float:
 
 
 class _ImageBatchDebouncer:
-    def __init__(self, processor: MessageProcessor, wait_seconds: float) -> None:
-        self._processor = processor
+    def __init__(self, wait_seconds: float) -> None:
         self._wait_seconds = wait_seconds
         self._lock = threading.Lock()
         self._batches: dict[tuple[int, int | None], dict] = {}
@@ -105,7 +102,7 @@ class _ImageBatchDebouncer:
             logger.error("Erro ao enfileirar lote de imagens do Telegram: %s", exc, exc_info=True)
 
 
-_image_batcher = _ImageBatchDebouncer(_processor, wait_seconds=_image_batch_wait_seconds())
+_image_batcher = _ImageBatchDebouncer(wait_seconds=_image_batch_wait_seconds())
 
 
 # ---------------------------------------------------------------------------

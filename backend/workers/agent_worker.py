@@ -26,12 +26,62 @@ _POLL_INTERVAL_SECONDS = float(os.environ.get("AGENT_WORKER_POLL_INTERVAL", "1.0
 _MAX_ATTEMPTS = int(os.environ.get("AGENT_WORKER_MAX_ATTEMPTS", "3"))
 
 _running = True
+_current_job_id: int | None = None  # rastreia o job em andamento para reset no SIGTERM
+
+
+def _reset_job_to_pending(job_id: int) -> None:
+    """Devolve um job ao estado pending sem contabilizar como falha."""
+    try:
+        with SessionLocal() as db:
+            db.execute(
+                text("""
+                    UPDATE agent_jobs
+                    SET status = 'pending',
+                        started_at = NULL,
+                        attempts = GREATEST(attempts - 1, 0)
+                    WHERE id = :id AND status = 'processing'
+                """),
+                {"id": job_id},
+            )
+            db.commit()
+        logger.info("Job %s devolvido ao estado pending (shutdown/timeout).", job_id)
+    except Exception as exc:
+        logger.error("Falha ao resetar job %s: %s", job_id, exc)
 
 
 def _handle_signal(signum, frame):  # noqa: ANN001
     global _running
-    logger.info("Worker recebeu sinal %s, encerrando após job atual...", signum)
+    logger.info("Worker recebeu sinal %s, encerrando...", signum)
     _running = False
+    # Devolve job atual ao pending para o próximo container processar
+    if _current_job_id is not None:
+        _reset_job_to_pending(_current_job_id)
+
+
+def _reclaim_stale_processing_jobs() -> None:
+    """Reseta jobs presos em 'processing' de instâncias anteriores mortas."""
+    stale_minutes = int(os.environ.get("AGENT_WORKER_STALE_JOB_MINUTES", "15"))
+    try:
+        with SessionLocal() as db:
+            result = db.execute(
+                text("""
+                    UPDATE agent_jobs
+                    SET status = 'pending',
+                        started_at = NULL,
+                        attempts = GREATEST(attempts - 1, 0)
+                    WHERE status = 'processing'
+                      AND env = :env
+                      AND started_at < now() - INTERVAL ':minutes minutes'
+                    RETURNING id
+                """.replace(":minutes", str(stale_minutes))),
+                {"env": _ENV},
+            )
+            reset_ids = [row[0] for row in result]
+            db.commit()
+        if reset_ids:
+            logger.warning("Resetados %d job(s) presos de instâncias anteriores: %s", len(reset_ids), reset_ids)
+    except Exception as exc:
+        logger.error("Falha ao limpar jobs presos: %s", exc)
 
 
 def _claim_job(db) -> dict | None:
@@ -132,6 +182,7 @@ def enqueue(canal: str, chat_id: str, payload: list[dict]) -> None:
 
 
 def run_worker() -> None:
+    global _current_job_id
     import threading
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, _handle_signal)
@@ -139,6 +190,9 @@ def run_worker() -> None:
 
     logger.info("Agent worker iniciado. poll_interval=%.1fs max_attempts=%d env=%s",
                 _POLL_INTERVAL_SECONDS, _MAX_ATTEMPTS, _ENV)
+
+    # Limpa jobs que ficaram presos de instâncias anteriores mortas durante deploy
+    _reclaim_stale_processing_jobs()
 
     while _running:
         try:
@@ -149,6 +203,7 @@ def run_worker() -> None:
                 time.sleep(_POLL_INTERVAL_SECONDS)
                 continue
 
+            _current_job_id = job["id"]
             t0 = time.monotonic()
             try:
                 _process_job(job)
@@ -161,6 +216,8 @@ def run_worker() -> None:
                 elapsed = time.monotonic() - t0
                 logger.error("Erro ao processar job %s após %.1fs: %s", job["id"], elapsed, exc, exc_info=True)
                 _mark_error(job["id"], str(exc))
+            finally:
+                _current_job_id = None
 
         except Exception as exc:
             logger.error("Erro inesperado no loop do worker: %s", exc, exc_info=True)
