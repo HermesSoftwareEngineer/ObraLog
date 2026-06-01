@@ -83,8 +83,13 @@ def _mark_error(job_id: int, error: str) -> None:
 
 
 def _process_telegram_job(payload: list[dict]) -> None:
+    import time as _time
+    _t0 = _time.monotonic()
     from backend.services.telegram_client import bot_client
     from backend.services.telegram_processor import MessageProcessor
+    _import_elapsed = _time.monotonic() - _t0
+    if _import_elapsed > 1.0:
+        logger.warning("[TIMING] import telegram_processor=%.2fs (lazy init)", _import_elapsed)
 
     processor = MessageProcessor(bot_client)
     processor.process(payload)
