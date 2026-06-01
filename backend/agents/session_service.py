@@ -63,8 +63,12 @@ def atualizar_ultima_mensagem(
     db: Session,
     conversa_id: int,
     texto: Optional[str] = None,
+    embedding: Optional[list[float]] = None,
 ) -> None:
-    """Stamp ultima_msg_em and optionally update the embedding/resumo."""
+    """Stamp ultima_msg_em and optionally update the embedding/resumo.
+
+    Accepts a pre-computed embedding to avoid duplicate gerar_embedding() calls.
+    """
     conversa = db.query(Conversa).filter(Conversa.id == conversa_id).first()
     if not conversa:
         return
@@ -75,12 +79,13 @@ def atualizar_ultima_mensagem(
         if not conversa.resumo:
             conversa.resumo = texto[:500]
 
-        embedding = gerar_embedding(texto)
-        if embedding is not None:
+        # Use provided embedding or generate one if not supplied
+        emb = embedding if embedding is not None else gerar_embedding(texto)
+        if emb is not None:
             # ORM não sabe fazer cast list → vector no psycopg3, gerando ::VARCHAR.
             # Flush os campos simples primeiro, depois atualiza embedding via raw SQL.
             db.flush()
-            emb_literal = "[" + ",".join(str(v) for v in embedding) + "]"
+            emb_literal = "[" + ",".join(str(v) for v in emb) + "]"
             db.execute(
                 text("UPDATE conversas SET embedding = CAST(:emb AS vector) WHERE id = :id"),
                 {"emb": emb_literal, "id": conversa_id},
@@ -108,7 +113,19 @@ def buscar_memorias_relevantes(
     embedding = gerar_embedding(texto)
     if embedding is None:
         return []
+    return buscar_memorias_com_embedding(db, tenant_id, embedding, top_k)
 
+
+def buscar_memorias_com_embedding(
+    db: Session,
+    tenant_id: int,
+    embedding: list[float],
+    top_k: int = 3,
+) -> list[str]:
+    """Same as buscar_memorias_relevantes but accepts a pre-computed embedding.
+
+    Use this when the embedding was already generated to avoid a duplicate API call.
+    """
     # pgvector <=> is cosine distance (smaller = more similar)
     emb_literal = "[" + ",".join(str(v) for v in embedding) + "]"
     try:
@@ -129,5 +146,5 @@ def buscar_memorias_relevantes(
         )
         return [row[0] for row in result if row[0]]
     except Exception as exc:
-        logger.warning("buscar_memorias_relevantes falhou: %s", exc)
+        logger.warning("buscar_memorias_com_embedding falhou: %s", exc)
         return []

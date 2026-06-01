@@ -7,6 +7,8 @@ extract text, resolve the user, run the agent, and send the reply.
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -30,9 +32,18 @@ from backend.services.telegram_extractor import (
 )
 from backend.services import telegram_persistence as persistence
 from backend.services.telegram_linker import UserLinker
-from backend.agents.session_service import get_or_create_conversa, atualizar_ultima_mensagem
+from backend.agents.session_service import (
+    get_or_create_conversa,
+    atualizar_ultima_mensagem,
+    buscar_memorias_com_embedding,
+)
+from backend.utils.embeddings import gerar_embedding
 
 logger = logging.getLogger(__name__)
+
+# Timeout máximo para graph.invoke(). Se o LLM travar além desse limite, o job
+# falha com erro claro em vez de bloquear a thread do worker indefinidamente.
+_AGENT_INVOKE_TIMEOUT = float(os.environ.get("AGENT_INVOKE_TIMEOUT_SECONDS", "120.0"))
 
 _RESET_COMMANDS = {
     "/nova_thread", "/novathread", "/reset_contexto",
@@ -253,11 +264,18 @@ class MessageProcessor:
         # Pré-constrói contexto caro UMA vez antes do graph.invoke().
         # _build_system_message é chamado em cada node do router loop —
         # sem esse cache, build_tenant_snapshot + embeddings rodam N vezes.
+        # O embedding de batched_text é gerado uma única vez aqui e reaproveitado em
+        # buscar_memorias_com_embedding e atualizar_ultima_mensagem (via background thread).
         _t_ctx = time.monotonic()
+        prebuilt_emb: list[float] | None = None
         try:
             from backend.agents.context.vector_context import get_context_for_query
             from backend.agents.context.tenant_snapshot import build_tenant_snapshot
-            from backend.agents.session_service import buscar_memorias_relevantes
+
+            # Gera o embedding do texto uma única vez para reutilizar abaixo
+            _t_emb = time.monotonic()
+            prebuilt_emb = gerar_embedding(batched_text) if batched_text else None
+            logger.info("[TIMING] gerar_embedding=%.2fs - chat_id=%s", time.monotonic() - _t_emb, chat_id)
 
             prebuilt_vector_ctx = get_context_for_query(batched_text)
 
@@ -269,7 +287,12 @@ class MessageProcessor:
                         ctx_db, tenant_id, obra_id_ativa, actor_level_str
                     )
                     if batched_text:
-                        mems = buscar_memorias_relevantes(ctx_db, tenant_id, batched_text)
+                        if prebuilt_emb is not None:
+                            # Reutiliza embedding já gerado — sem chamada HTTP extra
+                            mems = buscar_memorias_com_embedding(ctx_db, tenant_id, prebuilt_emb)
+                        else:
+                            from backend.agents.session_service import buscar_memorias_relevantes
+                            mems = buscar_memorias_relevantes(ctx_db, tenant_id, batched_text)
                         if mems:
                             prebuilt_memories = (
                                 "\n\nMemórias de conversas anteriores relevantes:\n"
@@ -291,15 +314,25 @@ class MessageProcessor:
             typing_stop()
         logger.info("[TIMING] _invoke_agent total=%.1fs - chat_id=%s", time.monotonic() - _t_agent, chat_id)
 
-        # Stamp the session with the last message text (for future memory recall)
+        # Atualiza o registro de conversa em background — não bloqueia a resposta ao usuário.
+        # Reutiliza o embedding já gerado para evitar uma terceira chamada HTTP ao serviço de embeddings.
         if conversa_id is not None:
-            try:
-                _t_mem = time.monotonic()
-                with SessionLocal() as db:
-                    atualizar_ultima_mensagem(db, conversa_id, batched_text)
-                logger.info("[TIMING] atualizar_ultima_mensagem=%.2fs - chat_id=%s", time.monotonic() - _t_mem, chat_id)
-            except Exception as exc:
-                logger.warning("Falha ao atualizar ultima_msg_em: %s", exc)
+            _captured_emb = prebuilt_emb
+            _captured_text = batched_text
+            _captured_id = conversa_id
+
+            def _update_conversa_bg() -> None:
+                try:
+                    with SessionLocal() as _db:
+                        atualizar_ultima_mensagem(_db, _captured_id, _captured_text, embedding=_captured_emb)
+                except Exception as exc:
+                    logger.warning("Falha ao atualizar conversa %s em background: %s", _captured_id, exc)
+
+            threading.Thread(
+                target=_update_conversa_bg,
+                daemon=True,
+                name=f"update-conversa-{conversa_id}",
+            ).start()
 
         return result
 
@@ -326,15 +359,51 @@ class MessageProcessor:
         return {"ok": True, "chat_id": chat_id, "reason": "contexto_reiniciado", "thread_id": new_tid}
 
     def _invoke_with_retry(self, text: str, invoke_config: dict, chat_id) -> dict:
-        """Retry once on stale-connection errors; the pool replaces the bad connection automatically."""
+        """Invoke the graph with timeout + retry on stale-connection errors.
+
+        Timeout evita que um LLM travado bloqueie a thread do worker por 10+ minutos.
+        A thread interna continua em background até o LLM responder ou falhar por conta própria.
+        """
         import psycopg
         t0 = time.monotonic()
         for attempt in range(2):
             try:
-                result = graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
+                result_holder: list = [None]
+                exc_holder: list = [None]
+
+                def _run_graph() -> None:
+                    try:
+                        result_holder[0] = graph.invoke(
+                            {"messages": [HumanMessage(content=text)]}, invoke_config
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        exc_holder[0] = exc
+
+                t = threading.Thread(target=_run_graph, daemon=True, name=f"graph-invoke-{chat_id}")
+                t.start()
+                t.join(timeout=_AGENT_INVOKE_TIMEOUT)
+
+                if t.is_alive():
+                    elapsed = time.monotonic() - t0
+                    logger.error(
+                        "[TIMING] graph.invoke() TIMEOUT após %.0fs - chat_id=%s "
+                        "(thread continua em background até o LLM responder)",
+                        elapsed, chat_id,
+                    )
+                    raise TimeoutError(
+                        f"graph.invoke() excedeu {_AGENT_INVOKE_TIMEOUT:.0f}s — "
+                        "LLM provavelmente travado ou com latência anormal"
+                    )
+
+                if exc_holder[0] is not None:
+                    raise exc_holder[0]
+
                 elapsed = time.monotonic() - t0
                 logger.info("[TIMING] graph.invoke() concluído em %.1fs - chat_id=%s", elapsed, chat_id)
-                return result
+                return result_holder[0]
+
+            except TimeoutError:
+                raise  # Não tenta novamente em timeout — o LLM já está ocupado
             except psycopg.OperationalError as exc:
                 if attempt == 0:
                     logger.warning(
