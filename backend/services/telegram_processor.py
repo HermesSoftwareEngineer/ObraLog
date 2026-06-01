@@ -212,6 +212,7 @@ class MessageProcessor:
         obra_id_ativa = None
         try:
             from backend.core.config import get_ambiente
+            _t_conversa = time.monotonic()
             with SessionLocal() as db:
                 tenant_id = _resolver_tenant_ativo(db, usuario)
                 conversa = get_or_create_conversa(
@@ -221,6 +222,7 @@ class MessageProcessor:
                 conversa_id = conversa.id
                 if tenant_id is not None:
                     obra_id_ativa = _resolver_obra_ativa(db, usuario.id, tenant_id)
+            logger.info("[TIMING] get_or_create_conversa=%.2fs - chat_id=%s", time.monotonic() - _t_conversa, chat_id)
         except Exception as exc:
             logger.warning("Falha ao obter/criar conversa: %s", exc)
 
@@ -247,16 +249,20 @@ class MessageProcessor:
 
         batched_text = _build_batched_text(extracted)
         typing_stop = self._typing.start(chat_id=chat_id, message_thread_id=thread_hint)
+        _t_agent = time.monotonic()
         try:
             result = self._invoke_agent(batched_text, config, chat_id, raw_messages)
         finally:
             typing_stop()
+        logger.info("[TIMING] _invoke_agent total=%.1fs - chat_id=%s", time.monotonic() - _t_agent, chat_id)
 
         # Stamp the session with the last message text (for future memory recall)
         if conversa_id is not None:
             try:
+                _t_mem = time.monotonic()
                 with SessionLocal() as db:
                     atualizar_ultima_mensagem(db, conversa_id, batched_text)
+                logger.info("[TIMING] atualizar_ultima_mensagem=%.2fs - chat_id=%s", time.monotonic() - _t_mem, chat_id)
             except Exception as exc:
                 logger.warning("Falha ao atualizar ultima_msg_em: %s", exc)
 
@@ -287,13 +293,18 @@ class MessageProcessor:
     def _invoke_with_retry(self, text: str, invoke_config: dict, chat_id) -> dict:
         """Retry once on stale-connection errors; the pool replaces the bad connection automatically."""
         import psycopg
+        t0 = time.monotonic()
         for attempt in range(2):
             try:
-                return graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
+                result = graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
+                elapsed = time.monotonic() - t0
+                logger.info("[TIMING] graph.invoke() concluído em %.1fs - chat_id=%s", elapsed, chat_id)
+                return result
             except psycopg.OperationalError as exc:
                 if attempt == 0:
                     logger.warning(
-                        "Conexão stale com checkpointer, retentando - chat_id=%s: %s", chat_id, exc
+                        "[TIMING] graph.invoke() falhou com OperationalError após %.1fs, retentando - chat_id=%s: %s",
+                        time.monotonic() - t0, chat_id, exc,
                     )
                     time.sleep(0.5)
                     continue

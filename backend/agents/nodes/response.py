@@ -32,6 +32,7 @@ except ImportError:
 
 from datetime import datetime
 import logging
+import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -44,6 +45,7 @@ logger = logging.getLogger("obralog.agent.response")
 # ---------------------------------------------------------------------------
 
 def _build_system_message(state_messages: list, config: RunnableConfig | None = None) -> SystemMessage:
+    _t_total = time.monotonic()
     configurable = (config or {}).get("configurable", {})
     actor_user_id = configurable.get("actor_user_id")
     actor_level = configurable.get("actor_level")
@@ -61,7 +63,13 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
         conversation_date_br = f"{dd}/{mm}/{yyyy}"
 
     user_query = last_human_text(state_messages)
+
+    _t = time.monotonic()
     retrieved_context = get_context_for_query(user_query)
+    _dt = time.monotonic() - _t
+    if _dt > 1.0:
+        logger.warning("[TIMING] get_context_for_query=%.2fs", _dt)
+
     context_block = (
         f"\n\nContexto operacional relevante:\n{retrieved_context}" if retrieved_context else ""
     )
@@ -74,13 +82,21 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             from backend.agents.context.tenant_snapshot import build_tenant_snapshot
             from backend.agents.session_service import buscar_memorias_relevantes
             with SessionLocal() as _snap_db:
+                _t = time.monotonic()
                 snapshot = build_tenant_snapshot(
                     _snap_db, tenant_id, obra_id_ativa, actor_level
                 )
+                _dt = time.monotonic() - _t
+                if _dt > 0.5:
+                    logger.warning("[TIMING] build_tenant_snapshot=%.2fs", _dt)
                 if snapshot:
                     tenant_snapshot_block = f"\n\n{snapshot}"
                 if user_query:
+                    _t = time.monotonic()
                     memorias = buscar_memorias_relevantes(_snap_db, tenant_id, user_query)
+                    _dt = time.monotonic() - _t
+                    if _dt > 1.0:
+                        logger.warning("[TIMING] buscar_memorias_relevantes=%.2fs", _dt)
                     if memorias:
                         memory_block = (
                             "\n\nMemórias de conversas anteriores relevantes:\n"
@@ -88,6 +104,10 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
                         )
         except Exception:
             pass
+
+    _total = time.monotonic() - _t_total
+    if _total > 2.0:
+        logger.warning("[TIMING] _build_system_message total=%.2fs", _total)
 
     role_block = ""
     if actor_user_id is not None and actor_level is not None:

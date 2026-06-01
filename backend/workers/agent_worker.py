@@ -20,6 +20,8 @@ from backend.db.session import SessionLocal
 
 logger = logging.getLogger("obralog.worker.agent")
 
+_ENV = os.environ.get("OBRALOG_ENV", "prod")
+
 _POLL_INTERVAL_SECONDS = float(os.environ.get("AGENT_WORKER_POLL_INTERVAL", "1.0"))
 _MAX_ATTEMPTS = int(os.environ.get("AGENT_WORKER_MAX_ATTEMPTS", "3"))
 
@@ -43,13 +45,14 @@ def _claim_job(db) -> dict | None:
                 SELECT id FROM agent_jobs
                 WHERE status = 'pending'
                   AND attempts < :max_attempts
+                  AND env = :env
                 ORDER BY created_at
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
             RETURNING id, canal, chat_id, payload
         """),
-        {"max_attempts": _MAX_ATTEMPTS},
+        {"max_attempts": _MAX_ATTEMPTS, "env": _ENV},
     ).fetchone()
     db.commit()
     return dict(row._mapping) if row else None
@@ -115,10 +118,10 @@ def enqueue(canal: str, chat_id: str, payload: list[dict]) -> None:
     with SessionLocal() as db:
         db.execute(
             text(
-                "INSERT INTO agent_jobs (canal, chat_id, payload) "
-                "VALUES (:canal, :chat_id, CAST(:payload AS jsonb))"
+                "INSERT INTO agent_jobs (canal, chat_id, payload, env) "
+                "VALUES (:canal, :chat_id, CAST(:payload AS jsonb), :env)"
             ),
-            {"canal": canal, "chat_id": chat_id, "payload": json.dumps(payload)},
+            {"canal": canal, "chat_id": chat_id, "payload": json.dumps(payload), "env": _ENV},
         )
         db.commit()
 
@@ -129,8 +132,8 @@ def run_worker() -> None:
         signal.signal(signal.SIGTERM, _handle_signal)
         signal.signal(signal.SIGINT, _handle_signal)
 
-    logger.info("Agent worker iniciado. poll_interval=%.1fs max_attempts=%d",
-                _POLL_INTERVAL_SECONDS, _MAX_ATTEMPTS)
+    logger.info("Agent worker iniciado. poll_interval=%.1fs max_attempts=%d env=%s",
+                _POLL_INTERVAL_SECONDS, _MAX_ATTEMPTS, _ENV)
 
     while _running:
         try:
@@ -141,12 +144,17 @@ def run_worker() -> None:
                 time.sleep(_POLL_INTERVAL_SECONDS)
                 continue
 
+            t0 = time.monotonic()
             try:
                 _process_job(job)
+                elapsed = time.monotonic() - t0
                 _mark_done(job["id"])
-                logger.info("Job %s concluído com sucesso.", job["id"])
+                logger.info("Job %s concluído com sucesso em %.1fs.", job["id"], elapsed)
+                if elapsed > 30:
+                    logger.warning("[TIMING] Job %s demorou %.1fs — acima do esperado.", job["id"], elapsed)
             except Exception as exc:
-                logger.error("Erro ao processar job %s: %s", job["id"], exc, exc_info=True)
+                elapsed = time.monotonic() - t0
+                logger.error("Erro ao processar job %s após %.1fs: %s", job["id"], elapsed, exc, exc_info=True)
                 _mark_error(job["id"], str(exc))
 
         except Exception as exc:
