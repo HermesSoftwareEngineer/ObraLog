@@ -226,6 +226,11 @@ class MessageProcessor:
         except Exception as exc:
             logger.warning("Falha ao obter/criar conversa: %s", exc)
 
+        actor_level_str = (
+            usuario.nivel_acesso.value
+            if hasattr(usuario.nivel_acesso, "value")
+            else str(usuario.nivel_acesso)
+        )
         config = {
             "configurable": {
                 "thread_id": thread_id,
@@ -236,11 +241,7 @@ class MessageProcessor:
                 "actor_user_id": usuario.id,
                 "tenant_id": tenant_id,
                 "conversa_id": conversa_id,
-                "actor_level": (
-                    usuario.nivel_acesso.value
-                    if hasattr(usuario.nivel_acesso, "value")
-                    else str(usuario.nivel_acesso)
-                ),
+                "actor_level": actor_level_str,
                 "actor_name": usuario.nome,
                 "actor_chat_display_name": display_name,
                 "obra_id_ativa": obra_id_ativa,
@@ -248,6 +249,40 @@ class MessageProcessor:
         }
 
         batched_text = _build_batched_text(extracted)
+
+        # Pré-constrói contexto caro UMA vez antes do graph.invoke().
+        # _build_system_message é chamado em cada node do router loop —
+        # sem esse cache, build_tenant_snapshot + embeddings rodam N vezes.
+        _t_ctx = time.monotonic()
+        try:
+            from backend.agents.context.vector_context import get_context_for_query
+            from backend.agents.context.tenant_snapshot import build_tenant_snapshot
+            from backend.agents.session_service import buscar_memorias_relevantes
+
+            prebuilt_vector_ctx = get_context_for_query(batched_text)
+
+            prebuilt_snapshot = ""
+            prebuilt_memories = ""
+            if tenant_id is not None:
+                with SessionLocal() as ctx_db:
+                    prebuilt_snapshot = build_tenant_snapshot(
+                        ctx_db, tenant_id, obra_id_ativa, actor_level_str
+                    )
+                    if batched_text:
+                        mems = buscar_memorias_relevantes(ctx_db, tenant_id, batched_text)
+                        if mems:
+                            prebuilt_memories = (
+                                "\n\nMemórias de conversas anteriores relevantes:\n"
+                                + "\n---\n".join(mems)
+                            )
+
+            config["configurable"]["_prebuilt_vector_ctx"] = prebuilt_vector_ctx
+            config["configurable"]["_prebuilt_snapshot"] = prebuilt_snapshot
+            config["configurable"]["_prebuilt_memories"] = prebuilt_memories
+            logger.info("[TIMING] prebuilt context=%.2fs - chat_id=%s", time.monotonic() - _t_ctx, chat_id)
+        except Exception as exc:
+            logger.warning("Falha ao pré-construir contexto: %s — continuando sem cache.", exc)
+
         typing_stop = self._typing.start(chat_id=chat_id, message_thread_id=thread_hint)
         _t_agent = time.monotonic()
         try:

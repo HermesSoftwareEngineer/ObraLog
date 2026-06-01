@@ -64,11 +64,20 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
 
     user_query = last_human_text(state_messages)
 
-    _t = time.monotonic()
-    retrieved_context = get_context_for_query(user_query)
-    _dt = time.monotonic() - _t
-    if _dt > 1.0:
-        logger.warning("[TIMING] get_context_for_query=%.2fs", _dt)
+    # Usa contexto pré-construído pelo telegram_processor (evita recalcular em cada node).
+    # Fallback para cálculo inline se o cache não estiver disponível (ex: chat ou testes).
+    prebuilt_vector_ctx = configurable.get("_prebuilt_vector_ctx")
+    prebuilt_snapshot   = configurable.get("_prebuilt_snapshot")
+    prebuilt_memories   = configurable.get("_prebuilt_memories")
+
+    if prebuilt_vector_ctx is not None:
+        retrieved_context = prebuilt_vector_ctx
+    else:
+        _t = time.monotonic()
+        retrieved_context = get_context_for_query(user_query)
+        _dt = time.monotonic() - _t
+        if _dt > 1.0:
+            logger.warning("[TIMING] get_context_for_query=%.2fs (fallback, sem cache)", _dt)
 
     context_block = (
         f"\n\nContexto operacional relevante:\n{retrieved_context}" if retrieved_context else ""
@@ -76,7 +85,11 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
 
     memory_block = ""
     tenant_snapshot_block = ""
-    if tenant_id is not None:
+
+    if prebuilt_snapshot is not None:
+        tenant_snapshot_block = f"\n\n{prebuilt_snapshot}" if prebuilt_snapshot else ""
+        memory_block = prebuilt_memories or ""
+    elif tenant_id is not None:
         try:
             from backend.db.session import SessionLocal
             from backend.agents.context.tenant_snapshot import build_tenant_snapshot
@@ -88,7 +101,7 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
                 )
                 _dt = time.monotonic() - _t
                 if _dt > 0.5:
-                    logger.warning("[TIMING] build_tenant_snapshot=%.2fs", _dt)
+                    logger.warning("[TIMING] build_tenant_snapshot=%.2fs (fallback, sem cache)", _dt)
                 if snapshot:
                     tenant_snapshot_block = f"\n\n{snapshot}"
                 if user_query:
@@ -96,7 +109,7 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
                     memorias = buscar_memorias_relevantes(_snap_db, tenant_id, user_query)
                     _dt = time.monotonic() - _t
                     if _dt > 1.0:
-                        logger.warning("[TIMING] buscar_memorias_relevantes=%.2fs", _dt)
+                        logger.warning("[TIMING] buscar_memorias_relevantes=%.2fs (fallback, sem cache)", _dt)
                     if memorias:
                         memory_block = (
                             "\n\nMemórias de conversas anteriores relevantes:\n"
