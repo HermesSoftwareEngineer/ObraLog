@@ -202,6 +202,10 @@ class BotClient:
         except Exception as exc:
             logger.debug("Falha ao enviar typing para chat_id=%s: %s", chat_id, exc)
 
+    def delete_webhook(self) -> None:
+        self.submit(self.bot.delete_webhook(drop_pending_updates=False))
+        logger.info("Webhook removido do Telegram.")
+
     def set_webhook(self, base_url: str) -> None:
         if not base_url:
             raise RuntimeError("PUBLIC_BASE_URL não configurada.")

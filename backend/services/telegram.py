@@ -155,6 +155,10 @@ def start_polling() -> None:
     if os.environ.get("TELEGRAM_POLLING_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
         for name in ("httpcore", "httpx", "telegram", "telegram.request", "telegram.ext"):
             logging.getLogger(name).setLevel(logging.DEBUG)
+    try:
+        bot_client.delete_webhook()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Falha ao remover webhook antes do polling: %s", exc)
     _poller.start()
 
 
