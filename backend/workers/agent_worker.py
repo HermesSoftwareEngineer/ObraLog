@@ -15,6 +15,7 @@ import signal
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 
@@ -66,7 +67,11 @@ def _reclaim_stale_processing_jobs() -> None:
         logger.error("Falha ao limpar jobs presos: %s", exc)
 
 
-def _claim_job(db) -> dict | None:
+def _claim_job(db, min_created_at: datetime) -> dict | None:
+    # Exclui chat_ids que já têm um job em processing — garante processamento
+    # sequencial por usuário e evita corrupção do checkpointer do LangGraph.
+    # min_created_at filtra jobs anteriores ao startup do worker (mensagens
+    # enviadas enquanto o servidor estava fora são descartadas).
     row = db.execute(
         text("""
             UPDATE agent_jobs
@@ -75,16 +80,22 @@ def _claim_job(db) -> dict | None:
                 attempts   = attempts + 1
             WHERE id = (
                 SELECT id FROM agent_jobs
-                WHERE status   = 'pending'
-                  AND attempts < :max_attempts
-                  AND env      = :env
+                WHERE status     = 'pending'
+                  AND attempts   < :max_attempts
+                  AND env        = :env
+                  AND created_at >= :min_created_at
+                  AND chat_id NOT IN (
+                      SELECT chat_id FROM agent_jobs
+                      WHERE status = 'processing'
+                        AND env    = :env
+                  )
                 ORDER BY created_at
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
             RETURNING id, canal, chat_id, payload
         """),
-        {"max_attempts": _MAX_ATTEMPTS, "env": _ENV},
+        {"max_attempts": _MAX_ATTEMPTS, "env": _ENV, "min_created_at": min_created_at},
     ).fetchone()
     db.commit()
     return dict(row._mapping) if row else None
@@ -176,9 +187,11 @@ def run_worker() -> None:
         signal.signal(signal.SIGTERM, _handle_signal)
         signal.signal(signal.SIGINT, _handle_signal)
 
+    worker_start = datetime.now(timezone.utc)
     logger.info(
-        "Agent worker iniciado. poll_interval=%.1fs max_attempts=%d concurrency=%d env=%s",
+        "Agent worker iniciado. poll_interval=%.1fs max_attempts=%d concurrency=%d env=%s start=%s",
         _POLL_INTERVAL_SECONDS, _MAX_ATTEMPTS, _WORKER_CONCURRENCY, _ENV,
+        worker_start.isoformat(),
     )
     _reclaim_stale_processing_jobs()
 
@@ -203,7 +216,7 @@ def run_worker() -> None:
                     continue
 
                 with SessionLocal() as db:
-                    job = _claim_job(db)
+                    job = _claim_job(db, worker_start)
 
                 if job is None:
                     time.sleep(_POLL_INTERVAL_SECONDS)

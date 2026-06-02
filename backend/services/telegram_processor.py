@@ -435,9 +435,12 @@ class MessageProcessor:
                 pass
             logger.error("Erro ao invocar graph - chat_id=%s: %s", chat_id, exc, exc_info=True)
             persistence.mark_error(raw_messages, str(exc))
-            self._send_reply(
-                chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente."
-            )
+            try:
+                self._send_reply(
+                    chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente."
+                )
+            except Exception as send_exc:
+                logger.warning("Falha ao enviar mensagem de erro para chat_id=%s: %s", chat_id, send_exc)
             return {"ok": False, "chat_id": chat_id, "reason": "erro_graph", "error": str(exc)}
 
         msgs = response.get("messages", [])
