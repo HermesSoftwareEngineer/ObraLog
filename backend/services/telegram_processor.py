@@ -11,6 +11,7 @@ import os
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 
 from langchain_core.messages import HumanMessage
@@ -45,10 +46,31 @@ logger = logging.getLogger(__name__)
 # falha com erro claro em vez de bloquear a thread do worker indefinidamente.
 _AGENT_INVOKE_TIMEOUT = float(os.environ.get("AGENT_INVOKE_TIMEOUT_SECONDS", "120.0"))
 
-# Embedding de memória desativado por padrão — NÃO deve rodar a cada mensagem.
-# Só ativa quando o sistema de compressão de contexto por tokens estiver implementado
-# (trigger: histórico de conversa muito grande). Setar AGENT_MEMORY_ENABLED=true para habilitar.
+# Embedding de memória desativado por padrão — não deve rodar a cada mensagem.
 _MEMORY_ENABLED = os.environ.get("AGENT_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+
+# Cache do prebuilt context por thread_id.
+# Gerado UMA VEZ na primeira mensagem da thread; reutilizado em todas as seguintes.
+# /reset cria novo thread_id → cache invalidado automaticamente.
+_ctx_cache: OrderedDict[str, dict] = OrderedDict()
+_ctx_cache_lock = threading.Lock()
+_CTX_CACHE_MAX = 200
+
+
+def _cache_get(thread_id: str) -> dict | None:
+    with _ctx_cache_lock:
+        entry = _ctx_cache.get(thread_id)
+        if entry is not None:
+            _ctx_cache.move_to_end(thread_id)
+        return entry
+
+
+def _cache_set(thread_id: str, ctx: dict) -> None:
+    with _ctx_cache_lock:
+        _ctx_cache[thread_id] = ctx
+        _ctx_cache.move_to_end(thread_id)
+        while len(_ctx_cache) > _CTX_CACHE_MAX:
+            _ctx_cache.popitem(last=False)
 
 _RESET_COMMANDS = {
     "/nova_thread", "/novathread", "/reset_contexto",
@@ -266,49 +288,51 @@ class MessageProcessor:
 
         batched_text = _build_batched_text(extracted)
 
-        # Pré-constrói contexto caro UMA vez antes do graph.invoke().
-        # _build_system_message é chamado em cada node do router loop —
-        # sem esse cache, build_tenant_snapshot + embeddings rodam N vezes.
-        # O embedding de batched_text é gerado uma única vez aqui e reaproveitado em
-        # buscar_memorias_com_embedding e atualizar_ultima_mensagem (via background thread).
-        _t_ctx = time.monotonic()
-        prebuilt_emb: list[float] | None = None
-        try:
-            from backend.agents.context.vector_context import get_context_for_query
-            from backend.agents.context.tenant_snapshot import build_tenant_snapshot
+        # Prebuilt context: gerado UMA VEZ por thread e cacheado em memória.
+        # Nas mensagens seguintes da mesma thread o cache é usado diretamente — zero DB.
+        # /reset cria novo thread_id → cache invalidado automaticamente.
+        cached_ctx = _cache_get(thread_id)
+        if cached_ctx is not None:
+            config["configurable"].update(cached_ctx)
+            logger.info("Prebuilt context (cache hit) - chat_id=%s thread_id=%s", chat_id, thread_id)
+        else:
+            _t_ctx = time.monotonic()
+            try:
+                from backend.agents.context.vector_context import get_context_for_query
+                from backend.agents.context.tenant_snapshot import build_tenant_snapshot
 
-            # Embedding: só gera se AGENT_MEMORY_ENABLED=true.
-            # A API do Google leva 22-33s por chamada — desativar corta ~70% do overhead.
-            if _MEMORY_ENABLED and batched_text:
-                _t_emb = time.monotonic()
-                prebuilt_emb = gerar_embedding(batched_text)
-                logger.info("[TIMING] gerar_embedding=%.2fs - chat_id=%s", time.monotonic() - _t_emb, chat_id)
-            else:
-                prebuilt_emb = None
+                prebuilt_vector_ctx = get_context_for_query(batched_text)
+                prebuilt_snapshot   = ""
+                prebuilt_memories   = ""
 
-            prebuilt_vector_ctx = get_context_for_query(batched_text)
+                if tenant_id is not None:
+                    with SessionLocal() as ctx_db:
+                        prebuilt_snapshot = build_tenant_snapshot(
+                            ctx_db, tenant_id, obra_id_ativa, actor_level_str
+                        )
+                        if _MEMORY_ENABLED and batched_text:
+                            emb = gerar_embedding(batched_text)
+                            if emb is not None:
+                                mems = buscar_memorias_com_embedding(ctx_db, tenant_id, emb)
+                                if mems:
+                                    prebuilt_memories = (
+                                        "\n\nMemórias de conversas anteriores relevantes:\n"
+                                        + "\n---\n".join(mems)
+                                    )
 
-            prebuilt_snapshot = ""
-            prebuilt_memories = ""
-            if tenant_id is not None:
-                with SessionLocal() as ctx_db:
-                    prebuilt_snapshot = build_tenant_snapshot(
-                        ctx_db, tenant_id, obra_id_ativa, actor_level_str
-                    )
-                    if _MEMORY_ENABLED and batched_text and prebuilt_emb is not None:
-                        mems = buscar_memorias_com_embedding(ctx_db, tenant_id, prebuilt_emb)
-                        if mems:
-                            prebuilt_memories = (
-                                "\n\nMemórias de conversas anteriores relevantes:\n"
-                                + "\n---\n".join(mems)
-                            )
-
-            config["configurable"]["_prebuilt_vector_ctx"] = prebuilt_vector_ctx
-            config["configurable"]["_prebuilt_snapshot"] = prebuilt_snapshot
-            config["configurable"]["_prebuilt_memories"] = prebuilt_memories
-            logger.info("[TIMING] prebuilt context=%.2fs - chat_id=%s", time.monotonic() - _t_ctx, chat_id)
-        except Exception as exc:
-            logger.warning("Falha ao pré-construir contexto: %s — continuando sem cache.", exc)
+                built_ctx = {
+                    "_prebuilt_vector_ctx": prebuilt_vector_ctx,
+                    "_prebuilt_snapshot":   prebuilt_snapshot,
+                    "_prebuilt_memories":   prebuilt_memories,
+                }
+                config["configurable"].update(built_ctx)
+                _cache_set(thread_id, built_ctx)
+                logger.info(
+                    "[TIMING] prebuilt context (cache miss) =%.2fs - chat_id=%s",
+                    time.monotonic() - _t_ctx, chat_id,
+                )
+            except Exception as exc:
+                logger.warning("Falha ao pré-construir contexto: %s — continuando sem cache.", exc)
 
         typing_stop = self._typing.start(chat_id=chat_id, message_thread_id=thread_hint)
         _t_agent = time.monotonic()
@@ -318,17 +342,15 @@ class MessageProcessor:
             typing_stop()
         logger.info("[TIMING] _invoke_agent total=%.1fs - chat_id=%s", time.monotonic() - _t_agent, chat_id)
 
-        # Atualiza o registro de conversa em background — não bloqueia a resposta ao usuário.
-        # Só armazena embedding se AGENT_MEMORY_ENABLED=true (controla as 22-33s por chamada).
-        if conversa_id is not None and _MEMORY_ENABLED:
-            _captured_emb = prebuilt_emb
+        # Atualiza ultima_msg_em da conversa em background (sem embedding — MEMORY_ENABLED=false).
+        if conversa_id is not None:
             _captured_text = batched_text
-            _captured_id = conversa_id
+            _captured_id   = conversa_id
 
             def _update_conversa_bg() -> None:
                 try:
                     with SessionLocal() as _db:
-                        atualizar_ultima_mensagem(_db, _captured_id, _captured_text, embedding=_captured_emb)
+                        atualizar_ultima_mensagem(_db, _captured_id, _captured_text, embedding=None)
                 except Exception as exc:
                     logger.warning("Falha ao atualizar conversa %s em background: %s", _captured_id, exc)
 
