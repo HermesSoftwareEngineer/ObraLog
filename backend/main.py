@@ -76,58 +76,56 @@ app.register_blueprint(creditos_v1)
 app.register_blueprint(agent_events_router)
 
 
-def _should_start_polling_in_dev() -> bool:
-    polling_enabled = os.environ.get("TELEGRAM_POLLING_IN_DEV", "true").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not polling_enabled:
-        return False
-
-    # Werkzeug/Flask uses a parent watcher and a child worker process when debug/reload is on.
-    # We ONLY want to poll in the worker process to avoid Conflict: terminated by other getUpdates.
+def _is_werkzeug_reloader_parent() -> bool:
+    """Retorna True se este processo é o pai do Werkzeug (não deve iniciar threads únicas)."""
     import sys
-    is_flask_command = "flask" in sys.argv[0].lower() or os.environ.get("FLASK_RUN_FROM_CLI") == "true"
-    has_debug_or_reload = (
-        any(arg in sys.argv for arg in ["--debug", "--reload", "-d"]) or
-        os.environ.get("FLASK_DEBUG", "").lower() in {"1", "true", "yes", "on"} or
-        os.environ.get("FLASK_ENV", "").lower() == "development"
+    is_flask_cli = "flask" in sys.argv[0].lower() or os.environ.get("FLASK_RUN_FROM_CLI") == "true"
+    has_reloader = (
+        any(arg in sys.argv for arg in ["--debug", "--reload", "-d"])
+        or os.environ.get("FLASK_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+        or os.environ.get("FLASK_ENV", "").lower() == "development"
     )
-    
-    reloader_main = os.environ.get("WERKZEUG_RUN_MAIN")
-
-    if is_flask_command and has_debug_or_reload:
-        # In debug mode under flask, only start polling if we are in the reloader child process.
-        return reloader_main == "true"
-        
-    # Otherwise (e.g., standard python main.py or flask run without debug), start normally.
-    return reloader_main is None
+    if is_flask_cli and has_reloader:
+        # Werkzeug sobe um processo pai + processo filho. Só o filho tem WERKZEUG_RUN_MAIN=true.
+        return os.environ.get("WERKZEUG_RUN_MAIN") != "true"
+    return False
 
 
-_bot_channel = os.environ.get("BOT_CHANNEL", "telegram").strip().lower()
+# TELEGRAM_MODE=polling  → bot busca atualizações ativamente (não precisa de URL pública)
+# TELEGRAM_MODE=webhook  → Telegram envia updates para PUBLIC_BASE_URL/telegram/webhook
+# Padrão: polling (funciona em qualquer ambiente sem configuração extra)
+_telegram_mode = os.environ.get("TELEGRAM_MODE", "polling").strip().lower()
+_bot_channel   = os.environ.get("BOT_CHANNEL",    "telegram").strip().lower()
 
 if _bot_channel == "telegram":
-    if _should_start_polling_in_dev():
-        polling_thread = threading.Thread(target=start_polling, name="telegram-polling", daemon=True)
-        polling_thread.start()
-        app.logger.info("Telegram polling iniciado automaticamente em modo desenvolvimento.")
-    elif os.environ.get("TELEGRAM_POLLING_IN_DEV", "true").lower() not in {"1", "true", "yes", "on"}:
-        public_url = os.environ.get("PUBLIC_BASE_URL")
+    if _telegram_mode == "polling":
+        if _is_werkzeug_reloader_parent():
+            app.logger.info("Telegram polling aguardando processo filho do Werkzeug.")
+        else:
+            polling_thread = threading.Thread(target=start_polling, name="telegram-polling", daemon=True)
+            polling_thread.start()
+            app.logger.info("Telegram polling iniciado (TELEGRAM_MODE=polling).")
+
+    elif _telegram_mode == "webhook":
+        public_url = os.environ.get("PUBLIC_BASE_URL", "").strip()
         if public_url:
             try:
                 set_webhook(public_url)
-                app.logger.info(f"Telegram webhook configurado automaticamente para a URL: {public_url}")
-            except Exception as e:
-                app.logger.error(f"Erro ao configurar webhook automaticamente: {e}")
+                app.logger.info("Telegram webhook configurado: %s/telegram/webhook", public_url)
+            except Exception as exc:
+                app.logger.error("Erro ao configurar webhook: %s", exc)
         else:
-            app.logger.warning("TELEGRAM_POLLING_IN_DEV desativado, mas PUBLIC_BASE_URL não está configurada. Webhook automático ignorado.")
+            app.logger.warning(
+                "TELEGRAM_MODE=webhook mas PUBLIC_BASE_URL não está configurada — webhook ignorado."
+            )
+    else:
+        app.logger.error("TELEGRAM_MODE inválido: '%s'. Use 'polling' ou 'webhook'.", _telegram_mode)
 
     from backend.workers.agent_worker import run_worker as _run_worker
     _worker_thread = threading.Thread(target=_run_worker, name="agent-worker", daemon=True)
     _worker_thread.start()
     app.logger.info("Agent worker iniciado em thread de background.")
+
 elif _bot_channel == "whatsapp":
     app.logger.info(
         "Canal WhatsApp ativo. Webhook disponível em POST /whatsapp/webhook. "
