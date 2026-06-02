@@ -40,27 +40,31 @@ def _handle_signal(signum, frame):  # noqa: ANN001
 
 
 def _reclaim_stale_processing_jobs() -> None:
-    """Reseta jobs presos em 'processing' de instâncias anteriores mortas."""
+    """No startup, marca como failed TODOS os jobs em 'processing'.
+
+    A instância anterior morreu antes de concluí-los. Sem esse reset,
+    o filtro 'chat_id NOT IN (processing)' bloqueia novos jobs do mesmo
+    usuário indefinidamente — independente de quanto tempo o job estava preso.
+    """
     try:
         with SessionLocal() as db:
             result = db.execute(
                 text("""
                     UPDATE agent_jobs
-                    SET status     = 'pending',
-                        started_at = NULL,
-                        attempts   = GREATEST(attempts - 1, 0)
-                    WHERE status    = 'processing'
-                      AND env       = :env
-                      AND started_at < now() - (INTERVAL '1 minute' * :stale_minutes)
+                    SET status      = 'failed',
+                        error       = 'Instância anterior encerrada sem completar o job',
+                        finished_at = now()
+                    WHERE status = 'processing'
+                      AND env    = :env
                     RETURNING id
                 """),
-                {"env": _ENV, "stale_minutes": _STALE_JOB_MINUTES},
+                {"env": _ENV},
             )
             reset_ids = [row[0] for row in result]
             db.commit()
         if reset_ids:
             logger.warning(
-                "Resetados %d job(s) presos de instâncias anteriores: %s",
+                "Startup: %d job(s) da instância anterior marcados como failed: %s",
                 len(reset_ids), reset_ids,
             )
     except Exception as exc:

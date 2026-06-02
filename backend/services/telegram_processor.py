@@ -45,6 +45,11 @@ logger = logging.getLogger(__name__)
 # falha com erro claro em vez de bloquear a thread do worker indefinidamente.
 _AGENT_INVOKE_TIMEOUT = float(os.environ.get("AGENT_INVOKE_TIMEOUT_SECONDS", "120.0"))
 
+# Embedding de memória desativado por padrão — NÃO deve rodar a cada mensagem.
+# Só ativa quando o sistema de compressão de contexto por tokens estiver implementado
+# (trigger: histórico de conversa muito grande). Setar AGENT_MEMORY_ENABLED=true para habilitar.
+_MEMORY_ENABLED = os.environ.get("AGENT_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+
 _RESET_COMMANDS = {
     "/nova_thread", "/novathread", "/reset_contexto",
     "/reset", "/limpar_contexto", "/zerar_contexto",
@@ -272,10 +277,14 @@ class MessageProcessor:
             from backend.agents.context.vector_context import get_context_for_query
             from backend.agents.context.tenant_snapshot import build_tenant_snapshot
 
-            # Gera o embedding do texto uma única vez para reutilizar abaixo
-            _t_emb = time.monotonic()
-            prebuilt_emb = gerar_embedding(batched_text) if batched_text else None
-            logger.info("[TIMING] gerar_embedding=%.2fs - chat_id=%s", time.monotonic() - _t_emb, chat_id)
+            # Embedding: só gera se AGENT_MEMORY_ENABLED=true.
+            # A API do Google leva 22-33s por chamada — desativar corta ~70% do overhead.
+            if _MEMORY_ENABLED and batched_text:
+                _t_emb = time.monotonic()
+                prebuilt_emb = gerar_embedding(batched_text)
+                logger.info("[TIMING] gerar_embedding=%.2fs - chat_id=%s", time.monotonic() - _t_emb, chat_id)
+            else:
+                prebuilt_emb = None
 
             prebuilt_vector_ctx = get_context_for_query(batched_text)
 
@@ -286,13 +295,8 @@ class MessageProcessor:
                     prebuilt_snapshot = build_tenant_snapshot(
                         ctx_db, tenant_id, obra_id_ativa, actor_level_str
                     )
-                    if batched_text:
-                        if prebuilt_emb is not None:
-                            # Reutiliza embedding já gerado — sem chamada HTTP extra
-                            mems = buscar_memorias_com_embedding(ctx_db, tenant_id, prebuilt_emb)
-                        else:
-                            from backend.agents.session_service import buscar_memorias_relevantes
-                            mems = buscar_memorias_relevantes(ctx_db, tenant_id, batched_text)
+                    if _MEMORY_ENABLED and batched_text and prebuilt_emb is not None:
+                        mems = buscar_memorias_com_embedding(ctx_db, tenant_id, prebuilt_emb)
                         if mems:
                             prebuilt_memories = (
                                 "\n\nMemórias de conversas anteriores relevantes:\n"
@@ -315,8 +319,8 @@ class MessageProcessor:
         logger.info("[TIMING] _invoke_agent total=%.1fs - chat_id=%s", time.monotonic() - _t_agent, chat_id)
 
         # Atualiza o registro de conversa em background — não bloqueia a resposta ao usuário.
-        # Reutiliza o embedding já gerado para evitar uma terceira chamada HTTP ao serviço de embeddings.
-        if conversa_id is not None:
+        # Só armazena embedding se AGENT_MEMORY_ENABLED=true (controla as 22-33s por chamada).
+        if conversa_id is not None and _MEMORY_ENABLED:
             _captured_emb = prebuilt_emb
             _captured_text = batched_text
             _captured_id = conversa_id

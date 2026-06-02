@@ -1,35 +1,23 @@
 """Builds a concise tenant context block injected into the agent system message."""
 from __future__ import annotations
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 
-_LIMIT = 5
+_LIMIT = 10  # número máximo de itens exibidos por bloco
 
 
 def _obras_block(db: Session, Obra, tenant_id: int, obra_id_ativa: int | None) -> list[str]:
-    q = db.query(Obra).filter(Obra.tenant_id == tenant_id, Obra.ativo == True)
-    total = q.count()
+    # 1 query em vez de 3 (count + first + last) — sem N+1
+    obras = (
+        db.query(Obra)
+        .filter(Obra.tenant_id == tenant_id, Obra.ativo == True)
+        .order_by(Obra.created_at.asc())
+        .limit(_LIMIT)
+        .all()
+    )
 
-    primeiras = q.order_by(Obra.created_at.asc()).limit(_LIMIT).all()
-    ultimas   = q.order_by(Obra.created_at.desc()).limit(_LIMIT).all()
-
-    seen: set[int] = set()
-    bloco_ini: list[Obra] = []
-    for o in primeiras:
-        if o.id not in seen:
-            seen.add(o.id)
-            bloco_ini.append(o)
-
-    bloco_fim: list[Obra] = []
-    for o in ultimas:
-        if o.id not in seen:
-            seen.add(o.id)
-            bloco_fim.append(o)
-
-    omitidas = max(0, total - len(bloco_ini) - len(bloco_fim))
-
-    lines = [f"\nObras ativas ({total}):"]
-    if total == 0:
+    lines = [f"\nObras ativas:"]
+    if not obras:
         lines.append("  (nenhuma obra ativa cadastrada)")
         return lines
 
@@ -38,11 +26,7 @@ def _obras_block(db: Session, Obra, tenant_id: int, obra_id_ativa: int | None) -
         ativa = " ← ativa" if o.id == obra_id_ativa else ""
         return f"  - ID {o.id}: {o.nome}{cod}{ativa}"
 
-    for o in bloco_ini:
-        lines.append(_fmt(o))
-    if omitidas > 0:
-        lines.append(f"  ... ({omitidas} obras intermediárias não exibidas) ...")
-    for o in bloco_fim:
+    for o in obras:
         lines.append(_fmt(o))
 
     return lines
@@ -55,37 +39,28 @@ def _frentes_block(
     obra_id_ativa: int | None,
 ) -> list[str]:
     if obra_id_ativa is not None:
-        q = db.query(FrenteServico).filter(
-            FrenteServico.tenant_id == tenant_id,
-            FrenteServico.obra_id == obra_id_ativa,
+        q = (
+            db.query(FrenteServico)
+            .filter(
+                FrenteServico.tenant_id == tenant_id,
+                FrenteServico.obra_id == obra_id_ativa,
+            )
         )
         header = f"Frentes de serviço da obra ativa (ID {obra_id_ativa})"
     else:
         q = db.query(FrenteServico).filter(FrenteServico.tenant_id == tenant_id)
         header = "Frentes de serviço do tenant"
 
-    total = q.count()
+    # joinedload evita N+1: encarregado carregado em 1 query via JOIN
+    frentes = (
+        q.options(joinedload(FrenteServico.encarregado))
+        .order_by(FrenteServico.id.asc())
+        .limit(_LIMIT)
+        .all()
+    )
 
-    primeiras = q.order_by(FrenteServico.id.asc()).limit(_LIMIT).all()
-    ultimas   = q.order_by(FrenteServico.id.desc()).limit(_LIMIT).all()
-
-    seen: set[int] = set()
-    bloco_ini: list = []
-    for f in primeiras:
-        if f.id not in seen:
-            seen.add(f.id)
-            bloco_ini.append(f)
-
-    bloco_fim: list = []
-    for f in ultimas:
-        if f.id not in seen:
-            seen.add(f.id)
-            bloco_fim.append(f)
-
-    omitidas = max(0, total - len(bloco_ini) - len(bloco_fim))
-
-    lines = [f"\n{header} ({total}):"]
-    if total == 0:
+    lines = [f"\n{header}:"]
+    if not frentes:
         lines.append("  (nenhuma frente de serviço cadastrada)")
         return lines
 
@@ -94,11 +69,7 @@ def _frentes_block(
         obra_info = f" | obra ID {f.obra_id}" if obra_id_ativa is None and f.obra_id else ""
         return f"  - ID {f.id}: {f.nome} | {enc}{obra_info}"
 
-    for f in bloco_ini:
-        lines.append(_fmt(f))
-    if omitidas > 0:
-        lines.append(f"  ... ({omitidas} frentes intermediárias não exibidas) ...")
-    for f in bloco_fim:
+    for f in frentes:
         lines.append(_fmt(f))
 
     return lines

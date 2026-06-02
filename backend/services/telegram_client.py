@@ -144,13 +144,10 @@ class BotClient:
         for candidate_text, mode, strategy in _build_markdown_candidates(text):
             try:
                 msg = await self.bot.send_message(chat_id=chat_id, text=candidate_text, parse_mode=mode)
-                if strategy != "raw_markdown":
-                    logger.info(
-                        "Mensagem enviada com estratégia %s para chat_id=%s (message_id=%s).",
-                        strategy,
-                        chat_id,
-                        msg.message_id,
-                    )
+                logger.info(
+                    "Mensagem enviada para chat_id=%s (strategy=%s, message_id=%s).",
+                    chat_id, strategy, msg.message_id,
+                )
                 return {"message_id": msg.message_id, "text": msg.text}
             except TgBadRequest as exc:
                 msg = str(exc)
