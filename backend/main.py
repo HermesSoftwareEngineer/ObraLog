@@ -198,7 +198,11 @@ def _warmup_agent_tools() -> None:
         }}
         tool_map = resolve_tool_map(dummy_config)
         llm_main.bind_tools(list(tool_map.values()))
-        _startup_logger.info("Warmup de tools concluído em %.2fs (%d tools)", _time.monotonic() - _t, len(tool_map))
+        # Força inicialização do cliente HTTP do google-genai (httpx/asyncio) no
+        # thread principal, onde o event loop existe. Sem isso, a primeira thread
+        # worker (sem loop) trava por dezenas de segundos ao criar o cliente lazy.
+        llm_main.invoke("ok")
+        _startup_logger.info("Warmup de tools+LLM concluído em %.2fs (%d tools)", _time.monotonic() - _t, len(tool_map))
     except Exception as exc:
         _startup_logger.warning("Warmup de tools falhou (não crítico): %s", exc)
 
