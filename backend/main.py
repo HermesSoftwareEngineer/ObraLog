@@ -97,6 +97,11 @@ def _is_werkzeug_reloader_parent() -> bool:
 _telegram_mode = os.environ.get("TELEGRAM_MODE", "polling").strip().lower()
 _bot_channel   = os.environ.get("BOT_CHANNEL",    "telegram").strip().lower()
 
+app.logger.info(
+    "Canal de bot: BOT_CHANNEL=%s TELEGRAM_MODE=%s",
+    _bot_channel, _telegram_mode if _bot_channel == "telegram" else "n/a",
+)
+
 if _bot_channel == "telegram":
     if _telegram_mode == "polling":
         if _is_werkzeug_reloader_parent():
@@ -111,12 +116,13 @@ if _bot_channel == "telegram":
         if public_url:
             try:
                 set_webhook(public_url)
-                app.logger.info("Telegram webhook configurado: %s/telegram/webhook", public_url)
             except Exception as exc:
-                app.logger.error("Erro ao configurar webhook: %s", exc)
+                app.logger.error(
+                    "FALHA ao registrar webhook do Telegram — agente nao receberá mensagens: %s", exc
+                )
         else:
-            app.logger.warning(
-                "TELEGRAM_MODE=webhook mas PUBLIC_BASE_URL não está configurada — webhook ignorado."
+            app.logger.error(
+                "TELEGRAM_MODE=webhook mas PUBLIC_BASE_URL nao está configurada — agente nao receberá mensagens."
             )
     else:
         app.logger.error("TELEGRAM_MODE inválido: '%s'. Use 'polling' ou 'webhook'.", _telegram_mode)
@@ -139,8 +145,12 @@ if _bot_channel == "telegram":
 elif _bot_channel == "whatsapp":
     app.logger.info(
         "Canal WhatsApp ativo. Webhook disponível em POST /whatsapp/webhook. "
-        "Configure-o no Meta Developers apontando para: "
-        + (os.environ.get("PUBLIC_BASE_URL", "<PUBLIC_BASE_URL>") + "/whatsapp/webhook")
+        "Configure-o no Meta Developers apontando para: %s/whatsapp/webhook",
+        os.environ.get("PUBLIC_BASE_URL", "<PUBLIC_BASE_URL>"),
+    )
+else:
+    app.logger.error(
+        "BOT_CHANNEL inválido ou não reconhecido: '%s'. Use 'telegram' ou 'whatsapp'.", _bot_channel
     )
 
 

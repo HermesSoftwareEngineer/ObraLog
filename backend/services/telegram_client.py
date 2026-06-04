@@ -212,7 +212,26 @@ class BotClient:
         url = f"{base_url.rstrip('/')}/telegram/webhook"
         secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET_TOKEN")
         self.submit(self.bot.set_webhook(url=url, secret_token=secret))
-        logger.info("Webhook configurado: %s", url)
+        logger.info("Webhook registrado no Telegram: %s", url)
+        try:
+            info = self.submit(self.bot.get_webhook_info())
+            if info.url == url:
+                logger.info(
+                    "Webhook confirmado pelo Telegram. url=%s pending_updates=%d",
+                    info.url, info.pending_update_count,
+                )
+            else:
+                logger.error(
+                    "Webhook registrado mas Telegram reporta URL diferente — esperado=%s atual='%s'",
+                    url, info.url,
+                )
+            if info.last_error_message:
+                logger.error(
+                    "Telegram reporta erro no webhook: '%s' (em %s) — agente pode nao receber mensagens.",
+                    info.last_error_message, info.last_error_date,
+                )
+        except Exception as exc:
+            logger.warning("Nao foi possível verificar status do webhook com Telegram: %s", exc)
 
     def download_file(self, file_id: str) -> tuple[bytes, str]:
         return self.submit(self.download_file_async(file_id))
