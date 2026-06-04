@@ -73,7 +73,6 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
         try:
             from backend.db.session import SessionLocal
             from backend.agents.context.tenant_snapshot import build_tenant_snapshot
-            from backend.agents.session_service import buscar_memorias_relevantes
             with SessionLocal() as _snap_db:
                 _t = time.monotonic()
                 snapshot = build_tenant_snapshot(
@@ -84,17 +83,6 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
                     logger.warning("[TIMING] build_tenant_snapshot=%.2fs (fallback, sem cache)", _dt)
                 if snapshot:
                     tenant_snapshot_block = f"\n\n{snapshot}"
-                if user_query:
-                    _t = time.monotonic()
-                    memorias = buscar_memorias_relevantes(_snap_db, tenant_id, user_query)
-                    _dt = time.monotonic() - _t
-                    if _dt > 1.0:
-                        logger.warning("[TIMING] buscar_memorias_relevantes=%.2fs (fallback, sem cache)", _dt)
-                    if memorias:
-                        memory_block = (
-                            "\n\nMemórias de conversas anteriores relevantes:\n"
-                            + "\n---\n".join(memorias)
-                        )
         except Exception:
             pass
 

@@ -85,21 +85,3 @@ def encerrar_conversa(db: Session, conversa_id: int) -> None:
     db.commit()
 
 
-def buscar_memorias_relevantes(
-    db: Session,
-    tenant_id: int,
-    texto: str,
-    top_k: int = 3,
-) -> list[str]:
-    """Busca vetorial removida — retorna sempre lista vazia."""
-    return []
-
-
-def buscar_memorias_com_embedding(
-    db: Session,
-    tenant_id: int,
-    embedding: list[float],
-    top_k: int = 3,
-) -> list[str]:
-    """Busca vetorial removida — retorna sempre lista vazia."""
-    return []

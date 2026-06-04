@@ -4,7 +4,6 @@ Objetivos:
 1. Verificar que o timeout de graph.invoke() funciona — isola travamentos de LLM.
 2. Verificar que o worker processa jobs concorrentemente (não serial).
 3. Verificar que o SQL de reclaim usa parâmetro em vez de interpolação.
-4. Verificar que o embedding é gerado apenas uma vez por job (sem duplicatas).
 
 Execute com:
     pytest ObraLog/backend/workers/test_worker_diagnostics.py -v
@@ -212,86 +211,7 @@ class TestReclaimSQL(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 4. Embedding gerado apenas uma vez por job
-# ---------------------------------------------------------------------------
-
-class TestEmbeddingDeduplication(unittest.TestCase):
-    """Verifica que gerar_embedding é chamado no máximo uma vez por mensagem no processor."""
-
-    def test_embedding_called_once_per_message(self):
-        """gerar_embedding deve ser chamado no máximo 1x por invocação de process().
-
-        O embedding é gerado no início do prebuilt context e reutilizado em
-        buscar_memorias_com_embedding e atualizar_ultima_mensagem (background thread).
-        """
-        # gerar_embedding está no namespace do módulo telegram_processor
-        # (importado no topo com `from backend.utils.embeddings import gerar_embedding`)
-        with patch("backend.services.telegram_processor.gerar_embedding") as mock_embed, \
-             patch("backend.services.telegram_processor.graph") as mock_graph, \
-             patch("backend.services.telegram_processor.get_or_create_conversa") as mock_conversa, \
-             patch("backend.agents.context.tenant_snapshot.build_tenant_snapshot", return_value="snap"), \
-             patch("backend.services.telegram_processor.buscar_memorias_com_embedding", return_value=[]), \
-             patch("backend.agents.context.vector_context.get_context_for_query", return_value="ctx"), \
-             patch("backend.core.config.get_ambiente", return_value="test"), \
-             patch("backend.services.telegram_processor._resolver_tenant_ativo", return_value=10), \
-             patch("backend.services.telegram_processor._resolver_obra_ativa", return_value=None), \
-             patch("backend.services.telegram_processor.response_used_telegram_ui", return_value=False), \
-             patch("backend.services.telegram_processor.persistence.persist") as mock_persist, \
-             patch("backend.services.telegram_processor.persistence.set_user"), \
-             patch("backend.services.telegram_processor.persistence.mark_processed"), \
-             patch("backend.services.telegram_processor.Repository.usuarios.atualizar"), \
-             patch("backend.services.telegram_processor.SessionLocal") as mock_sl:
-
-            mock_embed.return_value = [0.1, 0.2, 0.3]
-            mock_graph.invoke.return_value = {"messages": [MagicMock(content="resposta")]}
-
-            mock_conversa_obj = MagicMock()
-            mock_conversa_obj.id = 42
-            mock_conversa.return_value = mock_conversa_obj
-
-            mock_persist.return_value = MagicMock(id=uuid_mock())
-
-            mock_sl.return_value.__enter__ = lambda s: MagicMock()
-            mock_sl.return_value.__exit__ = MagicMock(return_value=False)
-
-            usuario = MagicMock()
-            usuario.id = 1
-            usuario.nome = "Test User"
-            usuario.tenant_id = 10
-            usuario.nivel_acesso.value = "campo"
-            usuario.telegram_thread_id = "123"
-
-            update = {
-                "message": {
-                    "chat": {"id": 123, "first_name": "Test"},
-                    "text": "Olá, registre 10m de concreto",
-                    "message_id": 1,
-                }
-            }
-
-            from backend.services.telegram_processor import MessageProcessor
-
-            client = MagicMock()
-            client.send_message.return_value = {"message_id": 99}
-            processor = MessageProcessor(client)
-
-            with patch.object(processor._linker, "get_user", return_value=usuario), \
-                 patch.object(processor._extractor, "extract", return_value="Olá, registre 10m de concreto"):
-                processor.process([update])
-
-        self.assertEqual(
-            mock_embed.call_count, 1,
-            f"gerar_embedding foi chamado {mock_embed.call_count}x — esperado 1x por job",
-        )
-
-
-def uuid_mock():
-    import uuid
-    return uuid.uuid4()
-
-
-# ---------------------------------------------------------------------------
-# 5. Timing de referência — mede overhead real fora do LLM
+# 4. Timing de referência — mede overhead real fora do LLM
 # ---------------------------------------------------------------------------
 
 class TestOverheadTiming(unittest.TestCase):
@@ -300,26 +220,6 @@ class TestOverheadTiming(unittest.TestCase):
     Estas não são asserções de correctude — servem como baseline de diagnóstico.
     Os valores ficam visíveis no output do pytest -v -s.
     """
-
-    def test_embedding_latency_baseline(self):
-        """Mede quanto tempo gerar_embedding leva com o cliente real (se disponível)."""
-        try:
-            from backend.utils.embeddings import gerar_embedding
-        except Exception as exc:
-            self.skipTest(f"Não foi possível importar embeddings: {exc}")
-
-        t0 = time.monotonic()
-        result = gerar_embedding("Registrar 10 metros de concreto na frente norte")
-        elapsed = time.monotonic() - t0
-
-        print(f"\n[TIMING] gerar_embedding: {elapsed:.3f}s | resultado={'ok' if result else 'None (sem cliente)'}")
-
-        # Não falha se embedding retornar None (sem credenciais no CI)
-        if elapsed > 5.0:
-            self.fail(
-                f"gerar_embedding levou {elapsed:.1f}s — esperado <5s. "
-                "Isso causa ~2x esse delay por job (busca_memorias + atualizar_conversa)."
-            )
 
     def test_build_system_message_timing_without_prebuilt(self):
         """Mede _build_system_message sem cache — representa o custo do fallback no router."""
