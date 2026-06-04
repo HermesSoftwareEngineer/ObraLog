@@ -3,6 +3,14 @@ import os
 import threading
 from pathlib import Path
 
+# Permite event loops aninhados — necessário porque google-genai usa httpx/asyncio
+# internamente e gunicorn gthread não tem event loop por padrão em cada thread.
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 
@@ -167,6 +175,35 @@ def _start_encerrar_conversas_scheduler() -> None:
 
 
 _start_encerrar_conversas_scheduler()
+
+
+def _warmup_agent_tools() -> None:
+    """Pré-inicializa modelos Pydantic das tools e cliente LLM no processo principal.
+
+    Sem isso, a primeira chamada em qualquer thread gunicorn demora ~100s porque:
+    1. @tool decorator recria modelos Pydantic para 40+ ferramentas (cold-start Pydantic)
+    2. google-genai SDK inicializa httpx.AsyncClient lazy na primeira chamada
+    Ao rodar no processo principal (thread main), o event loop asyncio existe e o
+    nest_asyncio já foi aplicado — inicialização é limpa e rápida.
+    """
+    try:
+        import time as _time
+        _t = _time.monotonic()
+        from backend.agents.nodes._tool_utils import resolve_tool_map
+        from backend.agents.llms import llm_main
+        dummy_config = {"configurable": {
+            "actor_user_id": 0, "actor_level": "campo",
+            "tenant_id": None, "obra_id_ativa": None,
+            "telegram_chat_id": "warmup",
+        }}
+        tool_map = resolve_tool_map(dummy_config)
+        llm_main.bind_tools(list(tool_map.values()))
+        _startup_logger.info("Warmup de tools concluído em %.2fs (%d tools)", _time.monotonic() - _t, len(tool_map))
+    except Exception as exc:
+        _startup_logger.warning("Warmup de tools falhou (não crítico): %s", exc)
+
+
+_warmup_agent_tools()
 
 
 @app.get("/health")
