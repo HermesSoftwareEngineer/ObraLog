@@ -35,6 +35,8 @@ engine = create_engine(
         "keepalives_idle": 25,
         "keepalives_interval": 10,
         "keepalives_count": 5,
+        # Aborta tentativa de conexão TCP se o servidor não responder em 10s.
+        "connect_timeout": 10,
     },
 )
 

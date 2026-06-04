@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from pathlib import Path
@@ -6,6 +7,8 @@ from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 
 from backend.core.logger import logger as core_logger
+
+_startup_logger = logging.getLogger("obralog.startup")
 
 try:
     from .api.routes.webhook import telegram_blueprint

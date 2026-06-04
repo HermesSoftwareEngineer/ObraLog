@@ -23,6 +23,9 @@ try:
 		min_size=pool_min_size,
 		max_size=pool_max_size,
 		reconnect_timeout=30,
+		# Falha rápido se não conseguir conexão em 10s — evita travar o checkpoint
+		# silenciosamente por minutos no cold start do Cloud Run.
+		open_timeout=10,
 		kwargs={
 			"autocommit": True,
 			"prepare_threshold": None,
@@ -31,6 +34,9 @@ try:
 			"keepalives_idle": 25,
 			"keepalives_interval": 10,
 			"keepalives_count": 5,
+			# connect_timeout: aborta tentativa de conexão TCP se o servidor não
+			# responder em 10s — sem isso, o pool pode esperar indefinidamente.
+			"connect_timeout": 10,
 		},
 	)
 	checkpointer = PostgresSaver(pool)

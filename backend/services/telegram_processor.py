@@ -49,6 +49,17 @@ _AGENT_INVOKE_TIMEOUT = float(os.environ.get("AGENT_INVOKE_TIMEOUT_SECONDS", "12
 # Embedding de memória desativado por padrão — não deve rodar a cada mensagem.
 _MEMORY_ENABLED = os.environ.get("AGENT_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
+# Prefixo de ambiente para isolar checkpoints LangGraph entre dev e prod.
+# Dev e prod apontam pro mesmo Supabase — sem esse prefixo disputam o mesmo
+# lock de checkpoint para o mesmo thread_id, causando hang de centenas de segundos.
+_OBRALOG_ENV = os.environ.get("OBRALOG_ENV", "prod")
+
+
+def _scoped_thread_id(thread_id: str) -> str:
+    """Prefixa thread_id com o ambiente para evitar conflito de lock no checkpointer."""
+    prefix = f"{_OBRALOG_ENV}:"
+    return thread_id if thread_id.startswith(prefix) else f"{prefix}{thread_id}"
+
 # Cache do prebuilt context por thread_id.
 # Gerado UMA VEZ na primeira mensagem da thread; reutilizado em todas as seguintes.
 # /reset cria novo thread_id → cache invalidado automaticamente.
@@ -238,10 +249,11 @@ class MessageProcessor:
             usuario.telegram_thread_id = str(chat_id)
 
         thread_id = _resolve_thread_id(usuario, chat_id)
+        scoped_tid = _scoped_thread_id(thread_id)
         raw_source_id = str(raw_messages[-1].id) if raw_messages else None
         logger.info(
             "Iniciando processamento - user_id=%d, chat_id=%s, thread_id=%s, batch=%d",
-            usuario.id, chat_id, thread_id, len(extracted),
+            usuario.id, chat_id, scoped_tid, len(extracted),
         )
 
         # Resolve ou cria a sessão de conversa e determina a obra ativa do usuário
@@ -271,7 +283,7 @@ class MessageProcessor:
         )
         config = {
             "configurable": {
-                "thread_id": thread_id,
+                "thread_id": scoped_tid,
                 "telegram_chat_id": str(chat_id),
                 "telegram_message_thread_id": int(thread_hint) if thread_hint is not None else None,
                 "source_message_id": raw_source_id,
@@ -291,10 +303,10 @@ class MessageProcessor:
         # Prebuilt context: gerado UMA VEZ por thread e cacheado em memória.
         # Nas mensagens seguintes da mesma thread o cache é usado diretamente — zero DB.
         # /reset cria novo thread_id → cache invalidado automaticamente.
-        cached_ctx = _cache_get(thread_id)
+        cached_ctx = _cache_get(scoped_tid)
         if cached_ctx is not None:
             config["configurable"].update(cached_ctx)
-            logger.info("Prebuilt context (cache hit) - chat_id=%s thread_id=%s", chat_id, thread_id)
+            logger.info("Prebuilt context (cache hit) - chat_id=%s thread_id=%s", chat_id, scoped_tid)
         else:
             _t_ctx = time.monotonic()
             try:
@@ -326,7 +338,7 @@ class MessageProcessor:
                     "_prebuilt_memories":   prebuilt_memories,
                 }
                 config["configurable"].update(built_ctx)
-                _cache_set(thread_id, built_ctx)
+                _cache_set(scoped_tid, built_ctx)
                 logger.info(
                     "[TIMING] prebuilt context (cache miss) =%.2fs - chat_id=%s",
                     time.monotonic() - _t_ctx, chat_id,
@@ -406,13 +418,14 @@ class MessageProcessor:
                         exc_holder[0] = exc
 
                 t = threading.Thread(target=_run_graph, daemon=True, name=f"graph-invoke-{chat_id}")
+                logger.info("[PASSO] graph.invoke() iniciado - chat_id=%s attempt=%d", chat_id, attempt + 1)
                 t.start()
                 t.join(timeout=_AGENT_INVOKE_TIMEOUT)
 
                 if t.is_alive():
                     elapsed = time.monotonic() - t0
                     logger.error(
-                        "[TIMING] graph.invoke() TIMEOUT após %.0fs - chat_id=%s "
+                        "[PASSO] graph.invoke() TIMEOUT após %.0fs - chat_id=%s "
                         "(thread continua em background até o LLM responder)",
                         elapsed, chat_id,
                     )
@@ -422,10 +435,14 @@ class MessageProcessor:
                     )
 
                 if exc_holder[0] is not None:
+                    logger.error(
+                        "[PASSO] graph.invoke() falhou com exceção em %.1fs - chat_id=%s: %s",
+                        time.monotonic() - t0, chat_id, exc_holder[0],
+                    )
                     raise exc_holder[0]
 
                 elapsed = time.monotonic() - t0
-                logger.info("[TIMING] graph.invoke() concluído em %.1fs - chat_id=%s", elapsed, chat_id)
+                logger.info("[PASSO] graph.invoke() concluído em %.1fs - chat_id=%s", elapsed, chat_id)
                 return result_holder[0]
 
             except TimeoutError:
@@ -433,7 +450,7 @@ class MessageProcessor:
             except psycopg.OperationalError as exc:
                 if attempt == 0:
                     logger.warning(
-                        "[TIMING] graph.invoke() falhou com OperationalError após %.1fs, retentando - chat_id=%s: %s",
+                        "[PASSO] graph.invoke() OperationalError em %.1fs, retentando - chat_id=%s: %s",
                         time.monotonic() - t0, chat_id, exc,
                     )
                     time.sleep(0.5)
@@ -450,7 +467,7 @@ class MessageProcessor:
             try:
                 from langgraph.errors import GraphRecursionError
                 if isinstance(exc, GraphRecursionError):
-                    logger.warning("Graph atingiu recursion_limit - chat_id=%s", chat_id)
+                    logger.warning("[PASSO] Graph atingiu recursion_limit - chat_id=%s", chat_id)
                     persistence.mark_error(raw_messages, "recursion_limit")
                     self._send_reply(
                         chat_id,
@@ -459,18 +476,20 @@ class MessageProcessor:
                     return {"ok": False, "chat_id": chat_id, "reason": "recursion_limit"}
             except ImportError:
                 pass
-            logger.error("Erro ao invocar graph - chat_id=%s: %s", chat_id, exc, exc_info=True)
+            logger.error("[PASSO] Erro ao invocar graph - chat_id=%s: %s", chat_id, exc, exc_info=True)
             persistence.mark_error(raw_messages, str(exc))
             try:
                 self._send_reply(
                     chat_id, "Desculpa, ocorreu um erro ao processar sua mensagem. Tente novamente."
                 )
             except Exception as send_exc:
-                logger.warning("Falha ao enviar mensagem de erro para chat_id=%s: %s", chat_id, send_exc)
+                logger.warning("[PASSO] Falha ao enviar mensagem de erro para chat_id=%s: %s", chat_id, send_exc)
             return {"ok": False, "chat_id": chat_id, "reason": "erro_graph", "error": str(exc)}
 
+        logger.info("[PASSO] Extraindo resposta das mensagens do grafo - chat_id=%s", chat_id)
         msgs = response.get("messages", [])
         if not msgs:
+            logger.warning("[PASSO] Grafo retornou sem mensagens - chat_id=%s", chat_id)
             self._send_reply(
                 chat_id, "Recebi suas mensagens, mas não consegui gerar uma resposta."
             )
@@ -481,16 +500,33 @@ class MessageProcessor:
             extract_text_content(msgs[-1].content)
             or "Recebi suas mensagens, mas não consegui gerar uma resposta em texto."
         )
+        logger.info(
+            "[PASSO] Resposta extraída (%d chars) - chat_id=%s usou_telegram_ui=%s",
+            len(reply), chat_id, response_used_telegram_ui(msgs),
+        )
 
         if not response_used_telegram_ui(msgs):
+            _t_send = time.monotonic()
+            logger.info("[PASSO] Enviando resposta ao Telegram - chat_id=%s", chat_id)
             try:
                 self._send_reply(chat_id, reply)
+                logger.info(
+                    "[PASSO] Resposta enviada em %.1fs - chat_id=%s",
+                    time.monotonic() - _t_send, chat_id,
+                )
             except Exception as exc:
                 logger.error(
-                    "Erro ao enviar mensagem - chat_id=%s: %s", chat_id, exc, exc_info=True
+                    "[PASSO] Erro ao enviar mensagem em %.1fs - chat_id=%s: %s",
+                    time.monotonic() - _t_send, chat_id, exc, exc_info=True,
                 )
                 persistence.mark_error(raw_messages, f"erro_envio: {exc}")
                 return {"ok": False, "chat_id": chat_id, "reason": "erro_envio", "error": str(exc)}
 
+        logger.info("[PASSO] Marcando mensagens como processadas - chat_id=%s", chat_id)
+        _t_persist = time.monotonic()
         persistence.mark_processed(raw_messages)
+        logger.info(
+            "[PASSO] Persistência concluída em %.2fs - chat_id=%s",
+            time.monotonic() - _t_persist, chat_id,
+        )
         return {"ok": True, "chat_id": chat_id}
