@@ -11,8 +11,12 @@ Padrão:
 from __future__ import annotations
 
 import difflib
+import logging
+import time
 
 from langchain_core.tools import tool
+
+logger = logging.getLogger("obralog.agent.gateway_tools")
 
 from backend.db.models import AlertTypeAlias
 from backend.db.session import SessionLocal
@@ -143,7 +147,12 @@ def get_gateway_tools(
     obra_id_ativa: int | None = None,
 ):
     """Retorna as tools do agente com contexto de ator/tenant capturado em closure."""
+    _t0 = time.monotonic()
+    logger.info("[GATEWAY_TOOLS] get_gateway_tools: iniciando actor_user_id=%s actor_level=%s", actor_user_id, actor_level)
+
+    _t = time.monotonic()
     business_rag = BusinessRAGService()
+    logger.info("[GATEWAY_TOOLS] BusinessRAGService()=%.3fs", time.monotonic() - _t)
 
     def _consulta(operation: str, handler) -> dict:
         return run_consulta(actor_level, actor_user_id, operation, handler)
@@ -228,6 +237,8 @@ def get_gateway_tools(
     # =========================================================================
     # TOOLS DE CONSULTA
     # =========================================================================
+    _t_consulta = time.monotonic()
+    logger.info("[GATEWAY_TOOLS] iniciando definição das tools de consulta")
 
     @tool
     def consultar_diario_obra(data: str, frente_servico: str | None = None) -> dict:
@@ -463,9 +474,13 @@ def get_gateway_tools(
 
         return _consulta("sugerir_campos_faltantes", handler)
 
+    logger.info("[GATEWAY_TOOLS] tools de consulta definidas=%.3fs", time.monotonic() - _t_consulta)
+
     # =========================================================================
     # TOOLS DE EXECUÇÃO
     # =========================================================================
+    _t_execucao = time.monotonic()
+    logger.info("[GATEWAY_TOOLS] iniciando definição das tools de execução")
 
     @tool
     def registrar_producao_diaria(
@@ -1031,6 +1046,8 @@ def get_gateway_tools(
 
         return _execucao("deletar_registro_operacional", intent, handler)
 
+    logger.info("[GATEWAY_TOOLS] tools de execução definidas=%.3fs", time.monotonic() - _t_execucao)
+    logger.info("[GATEWAY_TOOLS] get_gateway_tools: total=%.3fs", time.monotonic() - _t0)
     return [
         consultar_diario_obra,
         listar_frentes_servico_operacional,

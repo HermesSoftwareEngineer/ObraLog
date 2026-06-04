@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import threading
+import time
 
 from telegram import Bot
 from telegram.constants import ParseMode
@@ -101,31 +102,40 @@ class BotClient:
     # ------------------------------------------------------------------
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
+        _t0 = time.monotonic()
         with self._lock:
             if self._loop is not None and not self._loop.is_closed():
+                logger.debug("[BOT_CLIENT] get_loop: cache hit em %.3fs", time.monotonic() - _t0)
                 return self._loop
+        logger.info("[BOT_CLIENT] get_loop: loop ausente, inicializando")
 
-        # Constrói fora do lock — HTTPXRequest(connect_timeout=10) pode bloquear
-        # e não deve travar outras threads que já têm loop inicializado.
+        _t = time.monotonic()
         loop = asyncio.new_event_loop()
         threading.Thread(
             target=loop.run_forever, daemon=True, name="telegram-loop"
         ).start()
+        logger.info("[BOT_CLIENT] get_loop: event loop criado em %.3fs", time.monotonic() - _t)
+
         token = os.environ.get("TELEGRAM_TOKEN")
         if not token:
             raise RuntimeError("TELEGRAM_TOKEN não configurado.")
+
+        _t = time.monotonic()
         bot = Bot(
             token=token,
             request=HTTPXRequest(connect_timeout=10, read_timeout=35),
         )
+        logger.info("[BOT_CLIENT] get_loop: Bot+HTTPXRequest criados em %.3fs", time.monotonic() - _t)
 
         with self._lock:
             # Double-check: outra thread pode ter inicializado enquanto construíamos
             if self._loop is None or self._loop.is_closed():
                 self._bot = bot
                 self._loop = loop
+                logger.info("[BOT_CLIENT] get_loop: loop atribuído, total=%.3fs", time.monotonic() - _t0)
             else:
                 loop.call_soon_threadsafe(loop.stop)
+                logger.info("[BOT_CLIENT] get_loop: loop descartado (corrida), total=%.3fs", time.monotonic() - _t0)
         return self._loop
 
     @property

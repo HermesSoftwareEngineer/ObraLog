@@ -188,23 +188,36 @@ def _warmup_agent_tools() -> None:
     """
     try:
         import time as _time
+        _t0 = _time.monotonic()
+        _startup_logger.info("[WARMUP] iniciando")
+
         _t = _time.monotonic()
         from backend.agents.nodes._tool_utils import resolve_tool_map
         from backend.agents.llms import llm_main
+        _startup_logger.info("[WARMUP] imports=%.2fs", _time.monotonic() - _t)
+
         dummy_config = {"configurable": {
             "actor_user_id": 0, "actor_level": "campo",
             "tenant_id": None, "obra_id_ativa": None,
             "telegram_chat_id": "warmup",
         }}
+
+        _t = _time.monotonic()
         tool_map = resolve_tool_map(dummy_config)
+        _startup_logger.info("[WARMUP] resolve_tool_map=%.2fs tools=%d", _time.monotonic() - _t, len(tool_map))
+
+        _t = _time.monotonic()
         llm_main.bind_tools(list(tool_map.values()))
-        # Força inicialização do cliente HTTP do google-genai (httpx/asyncio) no
-        # thread principal, onde o event loop existe. Sem isso, a primeira thread
-        # worker (sem loop) trava por dezenas de segundos ao criar o cliente lazy.
+        _startup_logger.info("[WARMUP] bind_tools=%.2fs", _time.monotonic() - _t)
+
+        _t = _time.monotonic()
         llm_main.invoke("ok")
-        _startup_logger.info("Warmup de tools+LLM concluído em %.2fs (%d tools)", _time.monotonic() - _t, len(tool_map))
+        _startup_logger.info("[WARMUP] llm_invoke=%.2fs", _time.monotonic() - _t)
+
+        _startup_logger.info("[WARMUP] concluído total=%.2fs tools=%d", _time.monotonic() - _t0, len(tool_map))
     except Exception as exc:
-        _startup_logger.warning("Warmup de tools falhou (não crítico): %s", exc)
+        import traceback
+        _startup_logger.warning("[WARMUP] FALHOU: %s\n%s", exc, traceback.format_exc())
 
 
 _warmup_agent_tools()
