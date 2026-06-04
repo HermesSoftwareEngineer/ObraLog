@@ -3,6 +3,8 @@ import os
 import threading
 from pathlib import Path
 
+print("[OBRALOG] backend/main.py importando...", flush=True)
+
 # Permite event loops aninhados — necessário porque google-genai usa httpx/asyncio
 # internamente e gunicorn gthread não tem event loop por padrão em cada thread.
 try:
