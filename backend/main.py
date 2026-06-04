@@ -130,20 +130,6 @@ if _bot_channel == "telegram":
     else:
         app.logger.error("TELEGRAM_MODE inválido: '%s'. Use 'polling' ou 'webhook'.", _telegram_mode)
 
-    from backend.workers.agent_worker import run_worker as _run_worker
-
-    def _run_worker_guarded() -> None:
-        try:
-            _run_worker()
-        except Exception as exc:
-            app.logger.critical(
-                "WORKER THREAD MORREU INESPERADAMENTE — agente offline: %s",
-                exc, exc_info=True,
-            )
-
-    _worker_thread = threading.Thread(target=_run_worker_guarded, name="agent-worker", daemon=True)
-    _worker_thread.start()
-    app.logger.info("Agent worker iniciado em thread de background.")
 
 elif _bot_channel == "whatsapp":
     app.logger.info(
@@ -216,9 +202,13 @@ def diag_connectivity():
         try:
             t = time.monotonic()
             ctx = ssl.create_default_context()
-            req = urllib.request.urlopen(url, context=ctx, timeout=10)
-            req.read(128)
-            results[label] = {"ok": True, "ms": round((time.monotonic() - t) * 1000), "status": req.status}
+            try:
+                req = urllib.request.urlopen(url, context=ctx, timeout=10)
+                req.read(128)
+                status = req.status
+            except urllib.error.HTTPError as http_exc:
+                status = http_exc.code  # 404 etc = SSL ok, só URL errada
+            results[label] = {"ok": True, "ms": round((time.monotonic() - t) * 1000), "status": status}
         except Exception as exc:
             results[label] = {"ok": False, "ms": round((time.monotonic() - t) * 1000), "error": str(exc)[:200]}
 

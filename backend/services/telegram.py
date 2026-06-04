@@ -16,7 +16,6 @@ import threading
 from backend.services.telegram_client import bot_client
 from backend.services.telegram_poll import PollAnswerHandler
 from backend.services.telegram_poller import Poller
-from backend.workers.agent_worker import enqueue as _enqueue_job
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +24,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _poll_handler = PollAnswerHandler(bot_client)
+
+
+def _dispatch_direct(updates: list[dict]) -> None:
+    """Processa updates diretamente em thread de background, sem passar pela fila de jobs."""
+    try:
+        from backend.services.telegram_processor import MessageProcessor
+        MessageProcessor(bot_client).process(updates)
+    except Exception as exc:
+        logger.error("Erro no processamento direto Telegram: %s", exc, exc_info=True)
 
 
 def _is_image_message(message: dict) -> bool:
@@ -97,9 +105,14 @@ class _ImageBatchDebouncer:
 
         try:
             chat_id = str(key[0])
-            _enqueue_job("telegram", chat_id, updates)
+            threading.Thread(
+                target=_dispatch_direct,
+                args=(updates,),
+                daemon=True,
+                name=f"agent-telegram-batch-{chat_id}",
+            ).start()
         except Exception as exc:
-            logger.error("Erro ao enfileirar lote de imagens do Telegram: %s", exc, exc_info=True)
+            logger.error("Erro ao despachar lote de imagens do Telegram: %s", exc, exc_info=True)
 
 
 _image_batcher = _ImageBatchDebouncer(wait_seconds=_image_batch_wait_seconds())
@@ -138,13 +151,13 @@ def handle_telegram_update(update: dict, *, typing_already_sent: bool = False) -
                 pass
 
     chat_id = str(chat.get("id", ""))
-    try:
-        _enqueue_job("telegram", chat_id, [update])
-    except Exception as exc:
-        logger.error("Falha ao enfileirar job Telegram chat_id=%s: %s", chat_id, exc, exc_info=True)
-        return {"ok": False, "error": "Falha ao enfileirar mensagem."}
-
-    return {"ok": True, "queued": True}
+    threading.Thread(
+        target=_dispatch_direct,
+        args=([update],),
+        daemon=True,
+        name=f"agent-telegram-{chat_id}",
+    ).start()
+    return {"ok": True, "dispatched": True}
 
 
 def set_webhook(base_url: str) -> None:
