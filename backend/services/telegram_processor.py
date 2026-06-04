@@ -36,18 +36,15 @@ from backend.services.telegram_linker import UserLinker
 from backend.agents.session_service import (
     get_or_create_conversa,
     atualizar_ultima_mensagem,
-    buscar_memorias_com_embedding,
 )
-from backend.utils.embeddings import gerar_embedding
+from backend.agents.context.tenant_snapshot import build_tenant_snapshot
+from backend.agents.instructions_store import read_agent_instructions
 
 logger = logging.getLogger(__name__)
 
 # Timeout máximo para graph.invoke(). Se o LLM travar além desse limite, o job
 # falha com erro claro em vez de bloquear a thread do worker indefinidamente.
 _AGENT_INVOKE_TIMEOUT = float(os.environ.get("AGENT_INVOKE_TIMEOUT_SECONDS", "120.0"))
-
-# Embedding de memória desativado por padrão — não deve rodar a cada mensagem.
-_MEMORY_ENABLED = os.environ.get("AGENT_MEMORY_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
 # Prefixo de ambiente para isolar checkpoints LangGraph entre dev e prod.
 # Dev e prod apontam pro mesmo Supabase — sem esse prefixo disputam o mesmo
@@ -310,32 +307,17 @@ class MessageProcessor:
         else:
             _t_ctx = time.monotonic()
             try:
-                from backend.agents.context.vector_context import get_context_for_query
-                from backend.agents.context.tenant_snapshot import build_tenant_snapshot
-
-                prebuilt_vector_ctx = get_context_for_query(batched_text)
-                prebuilt_snapshot   = ""
-                prebuilt_memories   = ""
-
+                prebuilt_snapshot = ""
                 if tenant_id is not None:
                     with SessionLocal() as ctx_db:
                         prebuilt_snapshot = build_tenant_snapshot(
                             ctx_db, tenant_id, obra_id_ativa, actor_level_str
                         )
-                        if _MEMORY_ENABLED and batched_text:
-                            emb = gerar_embedding(batched_text)
-                            if emb is not None:
-                                mems = buscar_memorias_com_embedding(ctx_db, tenant_id, emb)
-                                if mems:
-                                    prebuilt_memories = (
-                                        "\n\nMemórias de conversas anteriores relevantes:\n"
-                                        + "\n---\n".join(mems)
-                                    )
 
                 built_ctx = {
-                    "_prebuilt_vector_ctx": prebuilt_vector_ctx,
+                    "_prebuilt_vector_ctx": read_agent_instructions(),
                     "_prebuilt_snapshot":   prebuilt_snapshot,
-                    "_prebuilt_memories":   prebuilt_memories,
+                    "_prebuilt_memories":   "",
                 }
                 config["configurable"].update(built_ctx)
                 _cache_set(scoped_tid, built_ctx)
