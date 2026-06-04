@@ -27,6 +27,10 @@ try:
 			"autocommit": True,
 			"prepare_threshold": None,
 			"row_factory": dict_row,
+			"keepalives": 1,
+			"keepalives_idle": 25,
+			"keepalives_interval": 10,
+			"keepalives_count": 5,
 		},
 	)
 	checkpointer = PostgresSaver(pool)
