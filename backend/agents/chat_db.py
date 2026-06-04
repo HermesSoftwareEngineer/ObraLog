@@ -38,4 +38,8 @@ try:
 except ImportError as exc:
 	raise RuntimeError("Dependências do checkpointer não disponíveis. Instale psycopg/libpq corretamente.") from exc
 except Exception as exc:
+	import logging as _logging
+	_logging.getLogger("obralog.chat_db").critical(
+		"Falha ao inicializar checkpointer Postgres: %s", exc, exc_info=True
+	)
 	raise RuntimeError("Falha ao inicializar o schema do checkpointer no Postgres.") from exc

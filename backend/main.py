@@ -122,7 +122,17 @@ if _bot_channel == "telegram":
         app.logger.error("TELEGRAM_MODE inválido: '%s'. Use 'polling' ou 'webhook'.", _telegram_mode)
 
     from backend.workers.agent_worker import run_worker as _run_worker
-    _worker_thread = threading.Thread(target=_run_worker, name="agent-worker", daemon=True)
+
+    def _run_worker_guarded() -> None:
+        try:
+            _run_worker()
+        except Exception as exc:
+            app.logger.critical(
+                "WORKER THREAD MORREU INESPERADAMENTE — agente offline: %s",
+                exc, exc_info=True,
+            )
+
+    _worker_thread = threading.Thread(target=_run_worker_guarded, name="agent-worker", daemon=True)
     _worker_thread.start()
     app.logger.info("Agent worker iniciado em thread de background.")
 
