@@ -572,7 +572,8 @@ def ensure_runtime_migrations() -> None:
         )
 
 
-ensure_runtime_migrations()
+if os.environ.get("RUN_RUNTIME_MIGRATIONS", "false").lower() == "true":
+    ensure_runtime_migrations()
 
 
 def get_db_session():
