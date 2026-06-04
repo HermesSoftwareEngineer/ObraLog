@@ -41,6 +41,7 @@ def agent_node(state: State, config: RunnableConfig | None = None) -> dict:
     logger.info("[GRAPH] agent_node: system_message=%.2fs cache=%s chat_id=%s",
                 time.monotonic() - _t, cache_hit, chat_id)
 
+    logger.info("[GRAPH] agent_node: iniciando resolve_tool_map - chat_id=%s", chat_id)
     _t = time.monotonic()
     tool_map = resolve_tool_map(config)
     logger.info("[GRAPH] agent_node: resolve_tool_map=%.2fs tools=%d chat_id=%s",

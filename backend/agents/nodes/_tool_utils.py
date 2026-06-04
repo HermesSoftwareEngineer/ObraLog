@@ -81,12 +81,14 @@ def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
     telegram_message_thread_id = configurable.get("telegram_message_thread_id")
     conversa_id = configurable.get("conversa_id")
 
+    logger.info("[TOOL_UTILS] resolve_tool_map: chamando get_business_tools")
     tools = get_business_tools(
         actor_user_id=int(actor_user_id),
         actor_level=str(actor_level),
         tenant_id=int(tenant_id) if tenant_id is not None else None,
         obra_id_ativa=int(obra_id_ativa) if obra_id_ativa is not None else None,
     )
+    logger.info("[TOOL_UTILS] resolve_tool_map: get_business_tools ok (%d tools), chamando get_telegram_tools", len(tools))
     tools.extend(
         get_telegram_tools(
             chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
@@ -97,6 +99,7 @@ def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
             conversa_id=int(conversa_id) if conversa_id is not None else None,
         )
     )
+    logger.info("[TOOL_UTILS] resolve_tool_map: get_telegram_tools ok, total=%d tools", len(tools))
     return {tool.name: tool for tool in tools}
 
 

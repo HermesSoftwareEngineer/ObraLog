@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 
 from langchain_core.tools import tool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
@@ -29,6 +30,9 @@ def _sanitize_options(options: list[str], *, minimum: int = 2, maximum: int = 10
     return cleaned
 
 
+logger = logging.getLogger("obralog.agent.telegram_tools")
+
+
 def get_telegram_tools(
     *,
     chat_id: str | None,
@@ -38,7 +42,9 @@ def get_telegram_tools(
     actor_level: str | None,
     conversa_id: int | None = None,
 ) -> list:
+    logger.info("[TELEGRAM_TOOLS] get_telegram_tools: iniciando chat_id=%s", chat_id)
     if not chat_id:
+        logger.info("[TELEGRAM_TOOLS] get_telegram_tools: sem chat_id, retornando vazio")
         return []
 
     @tool
@@ -356,4 +362,5 @@ def get_telegram_tools(
         except Exception as exc:
             return {"ok": False, "message": f"Erro ao enviar pelo Telegram: {exc}"}
 
+    logger.info("[TELEGRAM_TOOLS] get_telegram_tools: ok, retornando 4 tools chat_id=%s", chat_id)
     return [enviar_botoes_resposta_rapida, enviar_enquete_checklist, encerrar_conversa_operacional, enviar_diario_telegram]
