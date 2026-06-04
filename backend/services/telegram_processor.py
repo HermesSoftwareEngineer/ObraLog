@@ -397,8 +397,10 @@ class MessageProcessor:
 
                 def _run_graph() -> None:
                     import asyncio
+                    import nest_asyncio
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
+                    nest_asyncio.apply(loop)
                     try:
                         result_holder[0] = graph.invoke(
                             {"messages": [HumanMessage(content=text)]}, invoke_config
