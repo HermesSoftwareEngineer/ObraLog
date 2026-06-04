@@ -1046,7 +1046,6 @@ def get_gateway_tools(
         consultar_padroes_operacionais,
         consultar_schema_frente_servico,
         sugerir_campos_faltantes,
-        buscar_contexto_operacional,
         registrar_producao_diaria,
         registrar_alerta_operacional,
         atualizar_alerta_operacional,
