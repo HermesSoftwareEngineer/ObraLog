@@ -23,9 +23,6 @@ try:
 		min_size=pool_min_size,
 		max_size=pool_max_size,
 		reconnect_timeout=30,
-		# Falha rápido se não conseguir conexão em 10s — evita travar o checkpoint
-		# silenciosamente por minutos no cold start do Cloud Run.
-		open_timeout=10,
 		kwargs={
 			"autocommit": True,
 			"prepare_threshold": None,
