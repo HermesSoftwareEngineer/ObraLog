@@ -9,7 +9,6 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.db.models import Conversa
-from backend.utils.embeddings import gerar_embedding
 
 logger = logging.getLogger("obralog.session_service")
 
@@ -63,33 +62,16 @@ def atualizar_ultima_mensagem(
     db: Session,
     conversa_id: int,
     texto: Optional[str] = None,
-    embedding: Optional[list[float]] = None,
 ) -> None:
-    """Stamp ultima_msg_em and optionally update the embedding/resumo.
-
-    Accepts a pre-computed embedding to avoid duplicate gerar_embedding() calls.
-    """
+    """Stamp ultima_msg_em and update resumo if not yet set."""
     conversa = db.query(Conversa).filter(Conversa.id == conversa_id).first()
     if not conversa:
         return
 
     conversa.ultima_msg_em = datetime.now(timezone.utc)
 
-    if texto:
-        if not conversa.resumo:
-            conversa.resumo = texto[:500]
-
-        # Use provided embedding or generate one if not supplied
-        emb = embedding if embedding is not None else gerar_embedding(texto)
-        if emb is not None:
-            # ORM não sabe fazer cast list → vector no psycopg3, gerando ::VARCHAR.
-            # Flush os campos simples primeiro, depois atualiza embedding via raw SQL.
-            db.flush()
-            emb_literal = "[" + ",".join(str(v) for v in emb) + "]"
-            db.execute(
-                text("UPDATE conversas SET embedding = CAST(:emb AS vector) WHERE id = :id"),
-                {"emb": emb_literal, "id": conversa_id},
-            )
+    if texto and not conversa.resumo:
+        conversa.resumo = texto[:500]
 
     db.commit()
 
@@ -109,11 +91,8 @@ def buscar_memorias_relevantes(
     texto: str,
     top_k: int = 3,
 ) -> list[str]:
-    """Return summaries of closed conversations most similar to `texto`."""
-    embedding = gerar_embedding(texto)
-    if embedding is None:
-        return []
-    return buscar_memorias_com_embedding(db, tenant_id, embedding, top_k)
+    """Busca vetorial removida — retorna sempre lista vazia."""
+    return []
 
 
 def buscar_memorias_com_embedding(
@@ -122,29 +101,5 @@ def buscar_memorias_com_embedding(
     embedding: list[float],
     top_k: int = 3,
 ) -> list[str]:
-    """Same as buscar_memorias_relevantes but accepts a pre-computed embedding.
-
-    Use this when the embedding was already generated to avoid a duplicate API call.
-    """
-    # pgvector <=> is cosine distance (smaller = more similar)
-    emb_literal = "[" + ",".join(str(v) for v in embedding) + "]"
-    try:
-        result = db.execute(
-            text(
-                """
-                SELECT resumo
-                FROM conversas
-                WHERE tenant_id  = :tenant_id
-                  AND encerrada_em IS NOT NULL
-                  AND resumo      IS NOT NULL
-                  AND embedding   IS NOT NULL
-                ORDER BY embedding <=> CAST(:emb AS vector)
-                LIMIT :top_k
-                """
-            ),
-            {"tenant_id": tenant_id, "emb": emb_literal, "top_k": top_k},
-        )
-        return [row[0] for row in result if row[0]]
-    except Exception as exc:
-        logger.warning("buscar_memorias_com_embedding falhou: %s", exc)
-        return []
+    """Busca vetorial removida — retorna sempre lista vazia."""
+    return []

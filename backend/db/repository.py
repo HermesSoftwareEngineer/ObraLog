@@ -987,7 +987,14 @@ class MensagemCampoRepository:
         """Persist an agent response message."""
         from backend.db.models import DirecaoMensagem
         tenant_id = _resolve_tenant_id(db, tenant_id)
-        
+        hash_idem = f"agent:telegram:{telegram_chat_id}:{telegram_message_id}"
+
+        existente = db.query(MensagemCampo).filter(
+            MensagemCampo.hash_idempotencia == hash_idem
+        ).first()
+        if existente:
+            return existente
+
         item = MensagemCampo(
             tenant_id=tenant_id,
             canal=CanalOrigemMensagem.TELEGRAM,
@@ -999,7 +1006,7 @@ class MensagemCampoRepository:
             direcao=DirecaoMensagem.AGENT,
             status_processamento=ProcessamentoMensagemStatus.PROCESSADA,
             processada_em=datetime.utcnow(),
-            hash_idempotencia=f"agent:telegram:{telegram_chat_id}:{telegram_message_id}",
+            hash_idempotencia=hash_idem,
         )
         db.add(item)
         try:

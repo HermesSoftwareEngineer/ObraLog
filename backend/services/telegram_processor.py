@@ -344,7 +344,7 @@ class MessageProcessor:
             def _update_conversa_bg() -> None:
                 try:
                     with SessionLocal() as _db:
-                        atualizar_ultima_mensagem(_db, _captured_id, _captured_text, embedding=None)
+                        atualizar_ultima_mensagem(_db, _captured_id, _captured_text)
                 except Exception as exc:
                     logger.warning("Falha ao atualizar conversa %s em background: %s", _captured_id, exc)
 
