@@ -11,11 +11,6 @@ from datetime import datetime
 
 from langchain_core.messages import HumanMessage
 
-try:
-    from backend.agents.graph import graph
-except ImportError:
-    from agents.graph import graph  # type: ignore[no-redef]
-
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal
 from backend.services.telegram_client import BotClient
@@ -105,6 +100,11 @@ class PollAnswerHandler:
                 "actor_chat_display_name": display_name,
             }
         }
+
+        try:
+            from backend.agents.graph import graph
+        except ImportError:
+            from agents.graph import graph  # type: ignore[no-redef]
 
         response = graph.invoke({"messages": [HumanMessage(content=text)]}, config)
         msgs = response["messages"]
