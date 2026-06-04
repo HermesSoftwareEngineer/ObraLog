@@ -1,47 +1,27 @@
 """Simple agent node (router loop) and shared _build_system_message."""
 try:
-    from ..llms import llm_main
     from ..state import State
     from ..prompts import build_system_prompt
     from ..context.vector_context import get_context_for_query
-    from ..nodes._tool_utils import (
-        resolve_actor_context,
-        resolve_tool_map,
-        get_business_tools,
-        ensure_required_fields,
-        normalize_tool_output,
-        normalize_text,
-        last_human_text,
-        debit_credits,
-    )
+    from ..nodes._tool_utils import resolve_tool_map, last_human_text, _execute_tool
 except ImportError:
-    from llms import llm_main  # type: ignore
     from state import State  # type: ignore
     from prompts import build_system_prompt  # type: ignore
     from context.vector_context import get_context_for_query  # type: ignore
-    from nodes._tool_utils import (  # type: ignore
-        resolve_actor_context,
-        resolve_tool_map,
-        get_business_tools,
-        ensure_required_fields,
-        normalize_tool_output,
-        normalize_text,
-        last_human_text,
-        debit_credits,
-    )
+    from nodes._tool_utils import resolve_tool_map, last_human_text, _execute_tool  # type: ignore
 
 from datetime import datetime
 import logging
 import time
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger("obralog.agent.response")
 
 
 # ---------------------------------------------------------------------------
-# System message builder — shared by router, responder, and simple agent
+# System message builder — shared by agent_node
 # ---------------------------------------------------------------------------
 
 def _build_system_message(state_messages: list, config: RunnableConfig | None = None) -> SystemMessage:
@@ -136,27 +116,11 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
             f"- Obra ativa: {obra_id_ativa if obra_id_ativa is not None else 'não informada'}"
         )
 
-    user_hint_block = ""
-    normalized_query = normalize_text(user_query)
-    incident_signals = ["nao chegou", "atras", "quebrou", "nao veio", "faltou", "incidente", "problema"]
-    if any(signal in normalized_query for signal in incident_signals):
-        user_hint_block += (
-            "\n\nSinal operacional detectado na última mensagem:\n"
-            "- O usuário pode ter relatado incidente de campo (material/equipamento/equipe). "
-            "Reconheça e trate esse tópico junto com o registro principal."
-        )
-    if "meu perfil e engenheiro" in normalized_query or "perfil de engenheiro" in normalized_query:
-        user_hint_block += (
-            "\n\nSinal de papel declarado pelo usuário:\n"
-            "- O usuário declarou perfil de engenheiro; se houver restrição de permissão, "
-            "oriente fluxo de solicitação/encaminhamento de criação de frente sem encerrar em bloqueio passivo."
-        )
-
-    return SystemMessage(content=build_system_prompt() + role_block + tenant_snapshot_block + context_block + memory_block + user_hint_block)
+    return SystemMessage(content=build_system_prompt() + role_block + tenant_snapshot_block + context_block + memory_block)
 
 
 # ---------------------------------------------------------------------------
-# Simple tools step — shared between router loop and legacy usage
+# Tools step — executes tool calls from the last AIMessage
 # ---------------------------------------------------------------------------
 
 def tools_step(state: State, config: RunnableConfig | None = None):
@@ -168,68 +132,12 @@ def tools_step(state: State, config: RunnableConfig | None = None):
     if not isinstance(last_message, AIMessage) or not getattr(last_message, "tool_calls", None):
         return {"messages": []}
 
-    # Filter out escalate_to_planner calls — they should not be executed
-    real_tool_calls = [
-        tc for tc in last_message.tool_calls
-        if tc.get("name") != "escalate_to_planner"
-    ]
-    if not real_tool_calls:
-        return {"messages": []}
-
     tool_map = resolve_tool_map(config)
-    tool_messages = []
-
-    for tool_call in real_tool_calls:
-        tool_name = tool_call.get("name")
-        tool_args = tool_call.get("args", {})
-        tool_instance = tool_map.get(tool_name)
-
-        if not tool_instance:
-            tool_output = {"ok": False, "message": f"Tool inexistente: {tool_name}"}
-        else:
-            required_error = ensure_required_fields(tool_name, tool_args, config)
-            if required_error:
-                tool_output = {"ok": False, "message": required_error}
-                tool_messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_call["id"]))
-                continue
-
-            try:
-                tool_output = tool_instance.invoke(tool_args)
-                tool_output = normalize_tool_output(tool_name, tool_output, config)
-            except PermissionError:
-                last_human = normalize_text(last_human_text(messages))
-                if "engenheiro" in last_human and tool_name in {
-                    "criar_frente_servico", "atualizar_frente_servico", "deletar_frente_servico",
-                }:
-                    tool_output = {
-                        "ok": False,
-                        "message": (
-                            "Permissão insuficiente no perfil atual para alterar frentes. "
-                            "Ofereça abrir solicitação/encaminhamento para administrador ou gerente."
-                        ),
-                    }
-                else:
-                    tool_output = {"ok": False, "message": "Acesso negado para esta operação no perfil atual."}
-            except Exception as exc:
-                tool_output = {"ok": False, "message": str(exc)}
-
-        tool_messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_call["id"]))
-
+    tool_messages = [
+        ToolMessage(
+            content=str(_execute_tool(tc.get("name"), tc.get("args", {}), messages, tool_map, config)),
+            tool_call_id=tc["id"],
+        )
+        for tc in last_message.tool_calls
+    ]
     return {"messages": tool_messages}
-
-
-def should_continue_to_tools(state: State) -> str:
-    """Legacy routing function — kept for compatibility."""
-    messages = list(state["messages"])
-    if not messages:
-        return "end"
-    last_message = messages[-1]
-    if isinstance(last_message, AIMessage) and getattr(last_message, "tool_calls", None):
-        return "tools"
-    return "end"
-
-
-def responder(state: State, config: RunnableConfig | None = None):
-    """Legacy entry point kept for compatibility."""
-    from ..nodes.responder import responder_node
-    return responder_node(state, config)

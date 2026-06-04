@@ -28,6 +28,13 @@ def criar_usuario():
     except ValueError:
         return _json_error("nivel_acesso invalido.")
 
+    obra_id = None
+    if data.get("obra_id") not in (None, ""):
+        try:
+            obra_id = int(data["obra_id"])
+        except (ValueError, TypeError):
+            return _json_error("obra_id deve ser um numero inteiro.")
+
     with SessionLocal() as db:
         if telegram_chat_id:
             usuario = Repository.usuarios.criar_com_telegram(
@@ -50,6 +57,12 @@ def criar_usuario():
                 telefone=data.get("telefone"),
                 telegram_thread_id=data.get("telegram_thread_id"),
             )
+
+        if obra_id:
+            obra = db.query(Obra).filter(Obra.id == obra_id).first()
+            if obra:
+                Repository.usuario_obras.associar(db, usuario.id, obra_id, obra.tenant_id, eh_padrao=True)
+
         return _to_dict(usuario), 201
 
 

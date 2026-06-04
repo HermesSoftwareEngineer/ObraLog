@@ -20,10 +20,22 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_size=3,
     max_overflow=2,
-    # prepare_threshold=None: desabilita auto-prepare do psycopg3.
-    # Necessário com connection poolers (PgBouncer/Supabase) em transaction mode,
-    # onde prepared statements não sobrevivem ao retorno da conexão ao pool.
-    connect_args={"prepare_threshold": None},
+    # Recicla conexões após 45s para não ultrapassar o timeout de TCP ocioso do
+    # Cloud Run (~60s). Sem isso, conexões ficam mortas silenciosamente enquanto
+    # graph.invoke() roda por >60s, causando SSL errors no próximo commit.
+    pool_recycle=45,
+    connect_args={
+        # prepare_threshold=None: desabilita auto-prepare do psycopg3.
+        # Necessário com PgBouncer/Supabase em transaction mode.
+        "prepare_threshold": None,
+        # TCP keepalives: mantém conexões vivas durante graph.invoke() longo.
+        # Cloud Run derruba conexões TCP ociosas após ~60s sem tráfego.
+        # keepalives_idle=25 → envia keepalive após 25s de ociosidade.
+        "keepalives": 1,
+        "keepalives_idle": 25,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    },
 )
 
 try:

@@ -25,22 +25,6 @@ llm_main = ChatGoogleGenerativeAI(
     temperature=0.2,
 )
 
-# Roteador e caminho simples — sem thinking, temperatura zero, respostas rápidas e diretas
-llm_fast = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    google_api_key=google_api_key,
-    thinking_level="minimal",       # era thinking_budget=0
-    temperature=0,
-)
-
-# Planejador — thinking mais alto para estruturar planos de execução
-llm_planner = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    google_api_key=google_api_key,
-    thinking_level="high",          # era thinking_budget=1024
-    temperature=0.1,
-)
-
 
 def _build_embeddings_client() -> Optional[GoogleGenerativeAIEmbeddings]:
     preferred_model = os.environ.get(

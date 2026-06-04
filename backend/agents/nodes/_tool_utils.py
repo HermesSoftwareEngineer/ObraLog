@@ -57,37 +57,17 @@ def get_business_tools(
     obra_id_ativa: int | None,
 ):
     if _is_gateway_enabled():
-        try:
-            return get_gateway_tools(
-                actor_user_id=actor_user_id,
-                actor_level=actor_level,
-                tenant_id=tenant_id,
-                obra_id_ativa=obra_id_ativa,
-            )
-        except TypeError:
-            return get_gateway_tools(actor_user_id=actor_user_id, actor_level=actor_level)
-        except NameError:
-            from ..tools import get_gateway_tools as _lazy
-            try:
-                return _lazy(actor_user_id=actor_user_id, actor_level=actor_level,
-                             tenant_id=tenant_id, obra_id_ativa=obra_id_ativa)
-            except TypeError:
-                return _lazy(actor_user_id=actor_user_id, actor_level=actor_level)
-
-    try:
-        return get_database_tools(
-            actor_user_id=actor_user_id, actor_level=actor_level,
+        return get_gateway_tools(
+            actor_user_id=actor_user_id,
+            actor_level=actor_level,
             tenant_id=tenant_id,
+            obra_id_ativa=obra_id_ativa,
         )
-    except TypeError:
-        return get_database_tools(actor_user_id=actor_user_id, actor_level=actor_level)
-    except NameError:
-        from ..tools import get_database_tools as _lazy  # type: ignore
-        try:
-            return _lazy(actor_user_id=actor_user_id, actor_level=actor_level,
-                         tenant_id=tenant_id)
-        except TypeError:
-            return _lazy(actor_user_id=actor_user_id, actor_level=actor_level)
+    return get_database_tools(
+        actor_user_id=actor_user_id,
+        actor_level=actor_level,
+        tenant_id=tenant_id,
+    )
 
 
 def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
@@ -206,6 +186,41 @@ def normalize_tool_output(tool_name: str, tool_output, config: RunnableConfig | 
                 return payload
 
     return tool_output
+
+
+def _execute_tool(
+    name: str,
+    args: dict,
+    messages: list,
+    tool_map: dict,
+    config: RunnableConfig | None = None,
+):
+    tool_instance = tool_map.get(name)
+    if not tool_instance:
+        return {"ok": False, "message": f"Tool inexistente: {name}"}
+
+    required_error = ensure_required_fields(name, args, config)
+    if required_error:
+        return {"ok": False, "message": required_error}
+
+    try:
+        result = tool_instance.invoke(args)
+        return normalize_tool_output(name, result, config)
+    except PermissionError:
+        last_human = normalize_text(last_human_text(messages))
+        if "engenheiro" in last_human and name in {
+            "criar_frente_servico", "atualizar_frente_servico", "deletar_frente_servico",
+        }:
+            return {
+                "ok": False,
+                "message": (
+                    "Permissão insuficiente no perfil atual para alterar frentes. "
+                    "Ofereça abrir solicitação/encaminhamento para administrador ou gerente."
+                ),
+            }
+        return {"ok": False, "message": "Acesso negado para esta operação no perfil atual."}
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
 
 
 def debit_credits(config: RunnableConfig | None = None) -> None:
