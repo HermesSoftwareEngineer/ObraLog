@@ -3,39 +3,56 @@ import os
 import threading
 from pathlib import Path
 
-print("[OBRALOG] backend/main.py importando...", flush=True)
+print("[OBRALOG] 1: iniciando imports", flush=True)
 
-# Permite event loops aninhados — necessário porque google-genai usa httpx/asyncio
-# internamente e gunicorn gthread não tem event loop por padrão em cada thread.
 try:
     import nest_asyncio
     nest_asyncio.apply()
+    print("[OBRALOG] 2: nest_asyncio ok", flush=True)
 except ImportError:
-    pass
+    print("[OBRALOG] 2: nest_asyncio ausente (ignorado)", flush=True)
 
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
+print("[OBRALOG] 3: flask ok", flush=True)
 
 from backend.core.logger import logger as core_logger
+print("[OBRALOG] 4: logger ok", flush=True)
 
 _startup_logger = logging.getLogger("obralog.startup")
 
 try:
+    print("[OBRALOG] 5: importando blueprints...", flush=True)
     from .api.routes.webhook import telegram_blueprint
+    print("[OBRALOG] 5a: webhook blueprint ok", flush=True)
     from .api.routes.whatsapp_webhook import whatsapp_blueprint
+    print("[OBRALOG] 5b: whatsapp blueprint ok", flush=True)
     from .api.routes.crud import api_blueprint
+    print("[OBRALOG] 5c: crud ok", flush=True)
     from .api.routes.diario import router as diario_router, diarios_router, diarios_files_router
+    print("[OBRALOG] 5d: diario ok", flush=True)
     from .api.routes.alerts import router as alerts_router
+    print("[OBRALOG] 5e: alerts ok", flush=True)
     from .api.routes.reports import router as reports_blueprint
+    print("[OBRALOG] 5f: reports ok", flush=True)
     from .api.routes.auth import auth_blueprint
+    print("[OBRALOG] 5g: auth ok", flush=True)
     from .api.routes.chat import router as chat_router
+    print("[OBRALOG] 5h: chat ok", flush=True)
     from .api.routes.tenant import tenant_blueprint
+    print("[OBRALOG] 5i: tenant ok", flush=True)
     from .api.routes.dashboard import dashboard_blueprint
+    print("[OBRALOG] 5j: dashboard ok", flush=True)
     from .api.routes.admin import admin_blueprint
+    print("[OBRALOG] 5k: admin ok", flush=True)
     from .api.routes.creditos import creditos_v1
+    print("[OBRALOG] 5l: creditos ok", flush=True)
     from .api.routes.agent_events import router as agent_events_router
+    print("[OBRALOG] 5m: agent_events ok", flush=True)
     from .services.telegram import start_polling, set_webhook
+    print("[OBRALOG] 5n: telegram service ok", flush=True)
 except ImportError:
+    print("[OBRALOG] 5: fallback import (sem pacote relativo)", flush=True)
     from api.routes.webhook import telegram_blueprint
     from api.routes.whatsapp_webhook import whatsapp_blueprint
     from api.routes.crud import api_blueprint
@@ -50,6 +67,7 @@ except ImportError:
     from api.routes.creditos import creditos_v1
     from api.routes.agent_events import router as agent_events_router
     from services.telegram import start_polling, set_webhook
+    print("[OBRALOG] 5: fallback imports ok", flush=True)
 
 
 app = Flask(__name__)

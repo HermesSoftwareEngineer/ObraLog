@@ -414,19 +414,23 @@ class MessageProcessor:
                 exc_holder: list = [None]
 
                 def _run_graph() -> None:
-                    import asyncio
-                    import nest_asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    nest_asyncio.apply(loop)
                     try:
-                        result_holder[0] = graph.invoke(
-                            {"messages": [HumanMessage(content=text)]}, invoke_config
-                        )
+                        import asyncio
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            import nest_asyncio
+                            nest_asyncio.apply(loop)
+                        except ImportError:
+                            pass
+                        try:
+                            result_holder[0] = graph.invoke(
+                                {"messages": [HumanMessage(content=text)]}, invoke_config
+                            )
+                        finally:
+                            loop.close()
                     except Exception as exc:  # noqa: BLE001
                         exc_holder[0] = exc
-                    finally:
-                        loop.close()
 
                 t = threading.Thread(target=_run_graph, daemon=True, name=f"graph-invoke-{chat_id}")
                 logger.info("[PASSO] graph.invoke() iniciado - chat_id=%s attempt=%d", chat_id, attempt + 1)
