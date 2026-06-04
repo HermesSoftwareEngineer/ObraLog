@@ -111,12 +111,25 @@ def tools_step(state: State, config: RunnableConfig | None = None):
     if not isinstance(last_message, AIMessage) or not getattr(last_message, "tool_calls", None):
         return {"messages": []}
 
+    _t0 = time.monotonic()
+    chat_id = (config or {}).get("configurable", {}).get("telegram_chat_id", "?")
+    logger.info("[GRAPH] tools_step iniciado - chat_id=%s tools_a_executar=%d",
+                chat_id, len(last_message.tool_calls))
+
+    _t = time.monotonic()
     tool_map = resolve_tool_map(config)
-    tool_messages = [
-        ToolMessage(
-            content=str(_execute_tool(tc.get("name"), tc.get("args", {}), messages, tool_map, config)),
-            tool_call_id=tc["id"],
-        )
-        for tc in last_message.tool_calls
-    ]
+    logger.info("[GRAPH] tools_step: resolve_tool_map=%.2fs tools=%d chat_id=%s",
+                time.monotonic() - _t, len(tool_map), chat_id)
+
+    tool_messages = []
+    for tc in last_message.tool_calls:
+        tool_name = tc.get("name", "?")
+        _t = time.monotonic()
+        result = _execute_tool(tc.get("name"), tc.get("args", {}), messages, tool_map, config)
+        logger.info("[GRAPH] tools_step: tool=%s time=%.2fs chat_id=%s",
+                    tool_name, time.monotonic() - _t, chat_id)
+        tool_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+
+    logger.info("[GRAPH] tools_step total=%.2fs executadas=%d chat_id=%s",
+                time.monotonic() - _t0, len(tool_messages), chat_id)
     return {"messages": tool_messages}
