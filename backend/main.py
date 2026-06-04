@@ -188,6 +188,54 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.get("/diag/connectivity")
+def diag_connectivity():
+    """Testa conectividade outbound de dentro do container. Remover após investigação."""
+    import time
+    import urllib.request
+    import ssl
+
+    results = {}
+
+    # 1. Supabase — conexão TCP+SSL direta
+    db_url = os.environ.get("DATABASE_URL", "")
+    try:
+        import psycopg
+        t = time.monotonic()
+        with psycopg.connect(db_url, connect_timeout=10) as conn:
+            conn.execute("SELECT 1")
+        results["supabase_direct"] = {"ok": True, "ms": round((time.monotonic() - t) * 1000)}
+    except Exception as exc:
+        results["supabase_direct"] = {"ok": False, "error": str(exc)[:200]}
+
+    # 2. Google APIs SSL
+    for label, url in [
+        ("google_apis", "https://generativelanguage.googleapis.com"),
+        ("langsmith",   "https://api.smith.langchain.com/info"),
+    ]:
+        try:
+            t = time.monotonic()
+            ctx = ssl.create_default_context()
+            req = urllib.request.urlopen(url, context=ctx, timeout=10)
+            req.read(128)
+            results[label] = {"ok": True, "ms": round((time.monotonic() - t) * 1000), "status": req.status}
+        except Exception as exc:
+            results[label] = {"ok": False, "ms": round((time.monotonic() - t) * 1000), "error": str(exc)[:200]}
+
+    # 3. SQLAlchemy pool (conexão já estabelecida pelo pool)
+    try:
+        from backend.db.session import SessionLocal
+        t = time.monotonic()
+        with SessionLocal() as db:
+            db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        results["sqlalchemy_pool"] = {"ok": True, "ms": round((time.monotonic() - t) * 1000)}
+    except Exception as exc:
+        results["sqlalchemy_pool"] = {"ok": False, "error": str(exc)[:200]}
+
+    all_ok = all(v.get("ok") for v in results.values())
+    return jsonify({"ok": all_ok, "checks": results})
+
+
 @app.get("/")
 def index():
     return jsonify({"message": "Agente de Diário de Obra backend ativo"})
