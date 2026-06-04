@@ -389,6 +389,24 @@ class MessageProcessor:
         A thread interna continua em background até o LLM responder ou falhar por conta própria.
         """
         import psycopg
+        from backend.agents.nodes._tool_utils import resolve_tool_map
+
+        # Pré-computa o tool_map AQUI, no thread do request handler (fora de qualquer
+        # run_until_complete). Dentro do graph.invoke() o @tool/Pydantic interage com
+        # o event loop de forma que trava por 70-200s. Pré-computar e injetar no config
+        # evita que agent_node precise reconstruir os schemas.
+        _t_pre = time.monotonic()
+        pre_tool_map = resolve_tool_map(invoke_config)
+        logger.info("[PASSO] pre_tool_map=%.2fs tools=%d - chat_id=%s",
+                    time.monotonic() - _t_pre, len(pre_tool_map), chat_id)
+        invoke_config = {
+            **invoke_config,
+            "configurable": {
+                **invoke_config.get("configurable", {}),
+                "_pre_tool_map": pre_tool_map,
+            },
+        }
+
         t0 = time.monotonic()
         for attempt in range(2):
             try:

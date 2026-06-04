@@ -41,11 +41,16 @@ def agent_node(state: State, config: RunnableConfig | None = None) -> dict:
     logger.info("[GRAPH] agent_node: system_message=%.2fs cache=%s chat_id=%s",
                 time.monotonic() - _t, cache_hit, chat_id)
 
-    logger.info("[GRAPH] agent_node: iniciando resolve_tool_map - chat_id=%s", chat_id)
-    _t = time.monotonic()
-    tool_map = resolve_tool_map(config)
-    logger.info("[GRAPH] agent_node: resolve_tool_map=%.2fs tools=%d chat_id=%s",
-                time.monotonic() - _t, len(tool_map), chat_id)
+    pre_tool_map = (config or {}).get("configurable", {}).get("_pre_tool_map")
+    if pre_tool_map is not None:
+        tool_map = pre_tool_map
+        logger.info("[GRAPH] agent_node: tool_map pre-built tools=%d chat_id=%s", len(tool_map), chat_id)
+    else:
+        logger.info("[GRAPH] agent_node: iniciando resolve_tool_map - chat_id=%s", chat_id)
+        _t = time.monotonic()
+        tool_map = resolve_tool_map(config)
+        logger.info("[GRAPH] agent_node: resolve_tool_map=%.2fs tools=%d chat_id=%s",
+                    time.monotonic() - _t, len(tool_map), chat_id)
 
     _t = time.monotonic()
     model = llm_main.bind_tools(list(tool_map.values()))
