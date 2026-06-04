@@ -102,19 +102,30 @@ class BotClient:
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
         with self._lock:
+            if self._loop is not None and not self._loop.is_closed():
+                return self._loop
+
+        # Constrói fora do lock — HTTPXRequest(connect_timeout=10) pode bloquear
+        # e não deve travar outras threads que já têm loop inicializado.
+        loop = asyncio.new_event_loop()
+        threading.Thread(
+            target=loop.run_forever, daemon=True, name="telegram-loop"
+        ).start()
+        token = os.environ.get("TELEGRAM_TOKEN")
+        if not token:
+            raise RuntimeError("TELEGRAM_TOKEN não configurado.")
+        bot = Bot(
+            token=token,
+            request=HTTPXRequest(connect_timeout=10, read_timeout=35),
+        )
+
+        with self._lock:
+            # Double-check: outra thread pode ter inicializado enquanto construíamos
             if self._loop is None or self._loop.is_closed():
-                loop = asyncio.new_event_loop()
-                threading.Thread(
-                    target=loop.run_forever, daemon=True, name="telegram-loop"
-                ).start()
-                token = os.environ.get("TELEGRAM_TOKEN")
-                if not token:
-                    raise RuntimeError("TELEGRAM_TOKEN não configurado.")
-                self._bot = Bot(
-                    token=token,
-                    request=HTTPXRequest(connect_timeout=10, read_timeout=35),
-                )
+                self._bot = bot
                 self._loop = loop
+            else:
+                loop.call_soon_threadsafe(loop.stop)
         return self._loop
 
     @property
@@ -212,26 +223,7 @@ class BotClient:
         url = f"{base_url.rstrip('/')}/telegram/webhook"
         secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET_TOKEN")
         self.submit(self.bot.set_webhook(url=url, secret_token=secret))
-        logger.info("Webhook registrado no Telegram: %s", url)
-        try:
-            info = self.submit(self.bot.get_webhook_info())
-            if info.url == url:
-                logger.info(
-                    "Webhook confirmado pelo Telegram. url=%s pending_updates=%d",
-                    info.url, info.pending_update_count,
-                )
-            else:
-                logger.error(
-                    "Webhook registrado mas Telegram reporta URL diferente — esperado=%s atual='%s'",
-                    url, info.url,
-                )
-            if info.last_error_message:
-                logger.error(
-                    "Telegram reporta erro no webhook: '%s' (em %s) — agente pode nao receber mensagens.",
-                    info.last_error_message, info.last_error_date,
-                )
-        except Exception as exc:
-            logger.warning("Nao foi possível verificar status do webhook com Telegram: %s", exc)
+        logger.info("Webhook configurado: %s", url)
 
     def download_file(self, file_id: str) -> tuple[bytes, str]:
         return self.submit(self.download_file_async(file_id))
