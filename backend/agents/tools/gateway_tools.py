@@ -1,23 +1,16 @@
 """
-32 tools LangChain que o agente pode invocar.
+Tools LangChain do agente — cada tool captura contexto via closure e delega
+para o service correspondente em backend/services/.
 
-Cada tool captura o contexto do ator/tenant via closure (actor_user_id, actor_level,
-tenant_id, obra_id_ativa, location_profile) e passa um handler para o gateway.
-
-O handler é uma função sem parâmetros que opera sobre as variáveis capturadas
-no closure — não precisa receber contexto como argumento.
-
-Padrão de cada tool:
+Padrão:
     def handler() -> dict:
-        # resolve entidades, invoca tool de DB, mapeia resposta para negócio
-        ...
-    return _consulta("nome_da_operacao", handler)   # leitura
-    return _execucao("nome_da_operacao", intent, handler)  # escrita
+        return algum_service.funcao(tenant_id, actor_user_id, actor_level, ...)
+    return _consulta("nome", handler)   # leitura
+    return _execucao("nome", intent, handler)  # escrita
 """
 from __future__ import annotations
 
 import difflib
-from typing import Any
 
 from langchain_core.tools import tool
 
@@ -44,30 +37,14 @@ from backend.agents.gateway.mappers import (
 from backend.agents.gateway.policies import GatewayPolicyService
 from backend.agents.gateway.rag_service import BusinessRAGService
 
-from .database_tools import get_database_tools
-
-
-def _resolve_alert_identifier(codigo_alerta: str | None = None, alert_id: str | None = None) -> dict:
-    """Resolve identificador de alerta: prioriza alert_id (UUID), aceita codigo de negócio."""
-    if alert_id:
-        return {"ok": True, "alert_id": str(alert_id), "alert_code": codigo_alerta}
-    if not codigo_alerta:
-        return {
-            "ok": False,
-            "message": "Informe codigo_alerta ou alert_id para identificar o alerta.",
-            "next_steps": [
-                "pedir ao usuario o codigo do alerta, por exemplo ALT-2026-0001",
-                "consultar alertas operacionais para localizar o codigo correto",
-            ],
-        }
-    return {"ok": True, "alert_code": str(codigo_alerta).strip(), "alert_id": alert_id}
+import backend.services.alerta_service as _alerta_svc
+import backend.services.alert_type_service as _alert_type_svc
+import backend.services.frente_servico_service as _frente_svc
+import backend.services.obra_service as _obra_svc
+import backend.services.registro_service as _registro_svc
 
 
 def _normalize_alert_type_for_gateway(value: str | None) -> str:
-    """Converte texto livre de tipo de alerta para um dos tipos canônicos do sistema.
-
-    Tenta em ordem: alias hardcoded → banco (AlertTypeAlias) → fuzzy match com sugestões.
-    """
     normalized = normalize_text(value or "")
     canonical_values = ["maquina_quebrada", "acidente", "falta_material", "risco_seguranca", "outro"]
 
@@ -126,7 +103,6 @@ def _normalize_alert_type_for_gateway(value: str | None) -> str:
     if parsed:
         return parsed
 
-    # Consulta aliases cadastrados pelo tenant no banco antes de rejeitar
     try:
         with SessionLocal() as db:
             alias_entry = (
@@ -142,7 +118,6 @@ def _normalize_alert_type_for_gateway(value: str | None) -> str:
     except Exception:
         pass
 
-    # Fuzzy match para sugerir opções ao usuário
     suggestions = difflib.get_close_matches(normalized, list(aliases.keys()), n=3, cutoff=0.45)
     suggested_types: list[str] = []
     for suggestion in suggestions:
@@ -157,7 +132,6 @@ def _normalize_alert_type_for_gateway(value: str | None) -> str:
             "pedir ao usuario para escolher um dos tipos aceitos",
             "se o tipo desejado ainda nao existir, usar 'outro' e registrar a descricao do novo tipo desejado",
             "se o usuario quiser manter esse tipo para proximos usos, cadastrar alias com criar_tipo_alerta_operacional",
-            "se fizer sentido, reapresentar as opcoes: maquina_quebrada, acidente, falta_material, risco_seguranca, outro",
         ],
     )
 
@@ -169,54 +143,28 @@ def get_gateway_tools(
     tenant_id: int | None = None,
     obra_id_ativa: int | None = None,
 ):
-    """Retorna as 32 tools com contexto de ator/tenant capturado em closure.
-
-    actor_user_id, actor_level, tenant_id e obra_id_ativa
-    são passados uma vez aqui e acessados via closure em cada invocação de tool.
-    """
+    """Retorna as tools do agente com contexto de ator/tenant capturado em closure."""
     business_rag = BusinessRAGService()
 
-    # Fallback de compatibilidade: get_database_tools pode ou não aceitar kwargs extras
-    try:
-        database_tools = get_database_tools(
-            actor_user_id,
-            actor_level,
-            tenant_id=tenant_id,
-        )
-    except TypeError:
-        database_tools = get_database_tools(actor_user_id, actor_level)
-
-    internal_tools = {t.name: t for t in database_tools}
-
-    # --- helpers de invocação ---
-
-    def _invoke_internal(tool_name: str, tool_args: dict) -> Any:
-        """Invoca uma tool técnica de DB pelo nome."""
-        tool_instance = internal_tools.get(tool_name)
-        if not tool_instance:
-            raise ValueError(f"Tool interna não disponível: {tool_name}")
-        return tool_instance.invoke(tool_args)
-
-    # Atalhos que capturam actor_level e actor_user_id do closure externo
     def _consulta(operation: str, handler) -> dict:
         return run_consulta(actor_level, actor_user_id, operation, handler)
 
     def _execucao(operation: str, intent: str, handler) -> dict:
         return run_execucao(actor_level, actor_user_id, operation, intent, handler)
 
-    # --- resolvedores de entidades ---
+    # --- resolvedores de entidade (apresentação) ---
 
     def _list_frentes_servico() -> list[dict]:
-        items = _invoke_internal("listar_frentes_servico", {})
-        if not isinstance(items, list):
+        try:
+            return _frente_svc.listar_frentes(tenant_id)
+        except Exception:
             return []
-        return [item for item in items if isinstance(item, dict)]
 
     def _list_obras() -> list[dict]:
-        items = _invoke_internal("listar_obras", {})
-        if not isinstance(items, list):
+        try:
+            return _obra_svc.listar_obras(tenant_id)
+        except Exception:
             return []
-        return [item for item in items if isinstance(item, dict)]
 
     def _build_frentes_by_id() -> dict[int, str]:
         mapping: dict[int, str] = {}
@@ -227,132 +175,59 @@ def get_gateway_tools(
                 mapping[item_id] = item_nome.strip()
         return mapping
 
-    def _resolve_location_mode(
-        *,
-        localizacao: dict | None,
-        estaca_inicial: float | None,
-        estaca_final: float | None,
-        km_inicial: float | None,
-        km_final: float | None,
-        local_descritivo: str | None,
-    ) -> str:
-        """Detecta o modo de localização a partir dos campos fornecidos, com fallback para o perfil do tenant."""
-        localizacao_input = localizacao or {}
-        explicit_type = str(localizacao_input.get("tipo") or "").strip().lower()
-        if explicit_type in {"estaca", "km", "texto", "text"}:
-            return "texto" if explicit_type == "text" else explicit_type
-
-        has_km = km_inicial is not None or km_final is not None
-        has_estaca = estaca_inicial is not None or estaca_final is not None
-        detail = localizacao_input.get("detalhe_texto", local_descritivo)
-        has_detail = isinstance(detail, str) and bool(detail.strip())
-
-        if has_km:
-            return "km"
-        if has_estaca:
-            return "estaca"
-        if has_detail:
-            return "texto"
-        return "estaca"
-
     def _resolve_obra_selection(obra_id: int | None = None, obra: str | None = None) -> dict:
-        """Resolve obra por ID direto ou por nome (exato, parcial, ambíguo), com orientação ao usuário."""
         if obra_id is not None:
             return {"ok": True, "obra_id": int(obra_id)}
         if not obra:
             return {"ok": True, "obra_id": None}
-
         items = _list_obras()
         if not items:
-            return {
-                "ok": False,
-                "message": "Nao foi possivel resolver obra no momento.",
-                "next_steps": ["tentar novamente em alguns segundos", "informar o nome exato da obra"],
-            }
-
+            return {"ok": False, "message": "Nao foi possivel resolver obra no momento.", "next_steps": ["tentar novamente"]}
         target = normalize_text(obra)
         exact = [i for i in items if normalize_text(str(i.get("nome") or "")) == target]
         exact_code = [i for i in items if normalize_text(str(i.get("codigo") or "")) == target]
         candidates = exact or exact_code
         if len(candidates) == 1:
             return {"ok": True, "obra_id": int(candidates[0]["id"])}
-
         partial = [i for i in items if target in normalize_text(str(i.get("nome") or ""))]
         if len(partial) == 1:
             return {"ok": True, "obra_id": int(partial[0]["id"])}
-
         source = candidates if len(candidates) > 1 else partial
         if source:
             options = [str(i.get("nome") or "").strip() for i in source[:8] if str(i.get("nome") or "").strip()]
-            return {
-                "ok": False,
-                "message": f"Nome de obra ambiguo. Opcoes: {', '.join(options)}",
-                "opcoes": options,
-                "next_steps": ["pedir ao usuario para escolher uma das opcoes", "usar nome ou codigo exato da obra"],
-            }
-
+            return {"ok": False, "message": f"Nome de obra ambiguo. Opcoes: {', '.join(options)}", "opcoes": options, "next_steps": ["pedir ao usuario para escolher"]}
         options = [str(i.get("nome") or "").strip() for i in items[:8] if str(i.get("nome") or "").strip()]
-        return {
-            "ok": False,
-            "message": f"Obra nao encontrada para '{obra}'. Opcoes cadastradas: {', '.join(options)}.",
-            "opcoes": options,
-            "next_steps": ["pedir ao usuario para informar nome/codigo exato da obra", "cadastrar a obra, se permitido"],
-        }
+        return {"ok": False, "message": f"Obra nao encontrada para '{obra}'. Opcoes: {', '.join(options)}.", "opcoes": options, "next_steps": ["pedir nome exato"]}
 
     def _resolve_frente_servico_selection(frente_servico_nome: str | None) -> dict:
-        """Resolve frente de serviço por nome (exato, parcial, ambíguo), com orientação ao usuário."""
         if not frente_servico_nome:
             return {"ok": True, "frente_servico_id": None}
-
         items = _list_frentes_servico()
         if not items:
-            return {
-                "ok": False,
-                "message": "Nao foi possivel resolver frente de servico no momento.",
-                "next_steps": ["tentar novamente em alguns segundos", "informar o nome exato da frente"],
-            }
-
+            return {"ok": False, "message": "Nao foi possivel resolver frente de servico no momento.", "next_steps": ["tentar novamente"]}
         target = normalize_text(frente_servico_nome)
         exact = [i for i in items if normalize_text(str(i.get("nome") or "")) == target]
         if len(exact) == 1:
             return {"ok": True, "frente_servico_id": exact[0]["id"]}
-
         partial = [i for i in items if target in normalize_text(str(i.get("nome") or ""))]
         candidates = exact or partial
         if len(candidates) == 1:
             return {"ok": True, "frente_servico_id": candidates[0]["id"]}
-
         if len(candidates) > 1:
             options = [str(i.get("nome") or "").strip() for i in candidates[:8] if str(i.get("nome") or "").strip()]
-            return {
-                "ok": False,
-                "message": f"Nome de frente ambiguo. Opcoes: {', '.join(options)}",
-                "opcoes": options,
-                "next_steps": ["pedir ao usuario para escolher uma das opcoes"],
-            }
-
+            return {"ok": False, "message": f"Nome de frente ambiguo. Opcoes: {', '.join(options)}", "opcoes": options, "next_steps": ["pedir escolha"]}
         options = [str(i.get("nome") or "").strip() for i in items[:8] if str(i.get("nome") or "").strip()]
-        return {
-            "ok": False,
-            "message": (
-                f"Frente nao encontrada para '{frente_servico_nome}'. "
-                "Use o nome da frente de servico (nao o local/trecho). "
-                f"Opcoes cadastradas: {', '.join(options)}. "
-                "Se essa frente ainda nao existe, voce pode cadastrar a frente de servico, caso o usuario deseje (se seu perfil tiver permissao)."
-            ),
-            "opcoes": options,
-            "next_steps": ["pedir ao usuario para informar o nome exato da frente", "cadastrar a frente de servico, se permitido"],
-        }
+        return {"ok": False, "message": f"Frente nao encontrada para '{frente_servico_nome}'. Opcoes: {', '.join(options)}.", "opcoes": options, "next_steps": ["pedir nome exato"]}
 
-    def _resolve_frente_servico_id(frente_servico_nome: str | None) -> int | None:
-        """Resolve o ID da frente ou lança ValueError se não encontrada (para uso dentro de handlers)."""
-        resolved = _resolve_frente_servico_selection(frente_servico_nome)
-        if not resolved.get("ok"):
-            raise ValueError(str(resolved.get("message") or "Nao foi possivel resolver frente de servico no momento."))
-        return resolved.get("frente_servico_id")
+    def _resolve_alert_identifier(codigo_alerta: str | None = None, alert_id: str | None = None) -> dict:
+        if alert_id:
+            return {"ok": True, "alert_id": str(alert_id), "alert_code": codigo_alerta}
+        if not codigo_alerta:
+            return {"ok": False, "message": "Informe codigo_alerta ou alert_id.", "next_steps": ["pedir o codigo do alerta"]}
+        return {"ok": True, "alert_code": str(codigo_alerta).strip(), "alert_id": alert_id}
 
     # =========================================================================
-    # TOOLS DE CONSULTA (leitura)
+    # TOOLS DE CONSULTA
     # =========================================================================
 
     @tool
@@ -364,16 +239,16 @@ def get_gateway_tools(
             resolved = _resolve_frente_servico_selection(frente_servico)
             if not resolved.get("ok"):
                 return resolved
-
-            result = _invoke_internal("consultar_diario_dia", {
-                "data": data_normalizada,
-                "frente_servico_id": resolved.get("frente_servico_id"),
-            })
+            result = _registro_svc.consultar_diario_dia(
+                tenant_id, actor_user_id, actor_level,
+                data=data_normalizada,
+                frente_servico_id=resolved.get("frente_servico_id"),
+            )
             raw = result if isinstance(result, dict) else {"resultado": result}
             mapped = map_consultar_diario_obra_output(
                 raw,
                 frentes_by_id=_build_frentes_by_id(),
-                requested_frente_nome=(frente_servico or None),
+                requested_frente_nome=frente_servico or None,
             )
             payload = strip_technical_keys(mapped)
             payload["tenant_id"] = tenant_id
@@ -386,36 +261,28 @@ def get_gateway_tools(
         """Lista frentes de servico em linguagem de negocio para apoiar cadastro e filtros."""
 
         def handler() -> dict:
-            items = _invoke_internal("listar_frentes_servico", {})
-            if not isinstance(items, list):
-                return {"ok": True, "total": 0, "frentes_servico": []}
-            normalized = [i for i in items if isinstance(i, dict)]
-            return {"ok": True, "total": len(normalized), "frentes_servico": strip_technical_keys(normalized)}
+            items = _frente_svc.listar_frentes(tenant_id)
+            return {"ok": True, "total": len(items), "frentes_servico": strip_technical_keys(items)}
 
         return _consulta("listar_frentes_servico_operacional", handler)
 
     @tool
     def consultar_frente_servico_operacional(frente_id: int | None = None, nome: str | None = None) -> dict:
-        """Consulta uma frente de serviço específica pelo ID numérico ou pelo nome."""
+        """Consulta uma frente de servico especifica pelo ID numerico ou pelo nome."""
 
         def handler() -> dict:
-            result = _invoke_internal("obter_frente_servico", {"frente_id": frente_id, "nome": nome})
-            if isinstance(result, dict):
-                return strip_technical_keys(result)
-            return {"ok": False, "message": "Frente de serviço não encontrada."}
+            result = _frente_svc.obter_frente(tenant_id, frente_id=frente_id, nome=nome)
+            return strip_technical_keys(result) if isinstance(result, dict) else result
 
         return _consulta("consultar_frente_servico_operacional", handler)
 
     @tool
     def listar_obras_operacional() -> dict:
-        """Lista obras em linguagem de negócio para vinculação de registros e alertas."""
+        """Lista obras em linguagem de negocio para vinculacao de registros e alertas."""
 
         def handler() -> dict:
-            items = _invoke_internal("listar_obras", {})
-            if not isinstance(items, list):
-                return {"ok": True, "total": 0, "obras": []}
-            normalized = [i for i in items if isinstance(i, dict)]
-            return {"ok": True, "total": len(normalized), "obras": strip_technical_keys(normalized)}
+            items = _obra_svc.listar_obras(tenant_id)
+            return {"ok": True, "total": len(items), "obras": strip_technical_keys(items)}
 
         return _consulta("listar_obras_operacional", handler)
 
@@ -437,20 +304,15 @@ def get_gateway_tools(
                 if not resolved.get("ok"):
                     return resolved
                 frente_id = resolved.get("frente_servico_id")
-
-            result = _invoke_internal("listar_registros", {
-                "data": data,
-                "frente_servico_id": frente_id,
-                "obra_id": obra_id,
-                "usuario_id": usuario_id,
-                "status": status,
-                "limit": max(1, min(int(limite), 200)),
-            })
-            if isinstance(result, list):
-                return {"ok": True, "total": len(result), "registros": strip_technical_keys(result)}
-            if isinstance(result, dict):
-                return strip_technical_keys(result)
-            return {"ok": True, "registros": []}
+            result = _registro_svc.listar_registros(
+                tenant_id, actor_user_id, actor_level,
+                data=data,
+                frente_servico_id=frente_id,
+                obra_id=obra_id,
+                usuario_id=usuario_id,
+                limit=max(1, min(int(limite), 200)),
+            )
+            return {"ok": True, "total": len(result), "registros": strip_technical_keys(result)}
 
         return _consulta("listar_registros_operacional", handler)
 
@@ -470,14 +332,14 @@ def get_gateway_tools(
             resolved = _resolve_frente_servico_selection(frente_servico)
             if not resolved.get("ok"):
                 return resolved
-
-            result = _invoke_internal("consultar_diario_periodo", {
-                "data_inicio": data_inicio_norm,
-                "data_fim": data_fim_norm,
-                "frente_servico_id": resolved.get("frente_servico_id"),
-                "apenas_impraticaveis": bool(apenas_impraticaveis),
-                "usuario_id": usuario_id,
-            })
+            result = _registro_svc.consultar_diario_periodo(
+                tenant_id, actor_user_id, actor_level,
+                data_inicio=data_inicio_norm,
+                data_fim=data_fim_norm,
+                frente_servico_id=resolved.get("frente_servico_id"),
+                usuario_id=usuario_id,
+                apenas_impraticaveis=bool(apenas_impraticaveis),
+            )
             raw = result if isinstance(result, dict) else {"resultado": result}
             mapped = map_consultar_producao_periodo_output(raw, frentes_by_id=_build_frentes_by_id())
             payload = strip_technical_keys(mapped)
@@ -501,16 +363,15 @@ def get_gateway_tools(
             resolved_obra = _resolve_obra_selection(obra_id=obra_id, obra=obra)
             if not resolved_obra.get("ok"):
                 return resolved_obra
-
-            result = _invoke_internal("listar_alertas", {
-                "status": status,
-                "severity": severidade,
-                "obra_id": resolved_obra.get("obra_id"),
-                "apenas_nao_lidos": bool(apenas_nao_lidos),
-                "limit": max(1, min(int(limite), 200)),
-            })
-            raw = result if isinstance(result, dict) else {"resultado": result}
-            return strip_technical_keys(map_consultar_alertas_operacionais_output(raw))
+            result = _alerta_svc.listar_alertas(
+                tenant_id, actor_user_id, actor_level,
+                status=status,
+                severity=severidade,
+                obra_id=resolved_obra.get("obra_id"),
+                apenas_nao_lidos=bool(apenas_nao_lidos),
+                limit=max(1, min(int(limite), 200)),
+            )
+            return strip_technical_keys(map_consultar_alertas_operacionais_output(result))
 
         return _consulta("consultar_alertas_operacionais", handler)
 
@@ -522,11 +383,11 @@ def get_gateway_tools(
             resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
             if not resolved.get("ok"):
                 return resolved
-
-            result = _invoke_internal("obter_alerta", {
-                "alert_id": resolved.get("alert_id"),
-                "alert_code": resolved.get("alert_code"),
-            })
+            result = _alerta_svc.obter_alerta(
+                tenant_id, actor_user_id, actor_level,
+                alert_id=resolved.get("alert_id"),
+                alert_code=resolved.get("alert_code"),
+            )
             if isinstance(result, dict):
                 alerta_raw = result.get("alerta", result)
                 return {"ok": True, "alerta": map_alerta_to_business(alerta_raw) if isinstance(alerta_raw, dict) else alerta_raw}
@@ -536,13 +397,11 @@ def get_gateway_tools(
 
     @tool
     def consultar_registro_operacional(registro_id: int) -> dict:
-        """Consulta um registro de produção diária pelo ID numérico."""
+        """Consulta um registro de producao diaria pelo ID numerico."""
 
         def handler() -> dict:
-            result = _invoke_internal("obter_registro", {"registro_id": int(registro_id)})
-            if not isinstance(result, dict):
-                return {"ok": False, "message": "Registro não encontrado."}
-            if not result.get("ok"):
+            result = _registro_svc.obter_registro(tenant_id, actor_user_id, actor_level, int(registro_id))
+            if not isinstance(result, dict) or not result.get("ok"):
                 return result
             registro_raw = result.get("registro", result)
             frente_nome = None
@@ -555,25 +414,21 @@ def get_gateway_tools(
 
     @tool
     def listar_tipos_alerta_operacional(ativos_apenas: bool = False) -> dict:
-        """Lista aliases de tipos de alerta e os tipos canônicos disponíveis."""
+        """Lista aliases de tipos de alerta e os tipos canonicos disponiveis."""
 
         def handler() -> dict:
-            result = _invoke_internal("listar_tipos_alerta", {"ativos_apenas": bool(ativos_apenas)})
-            if isinstance(result, dict):
-                return strip_technical_keys(result)
-            return {"ok": True, "resultado": result}
+            result = _alert_type_svc.listar_tipos_alerta(tenant_id, actor_level, ativos_apenas=bool(ativos_apenas))
+            return strip_technical_keys(result) if isinstance(result, dict) else result
 
         return _consulta("listar_tipos_alerta_operacional", handler)
 
     @tool
     def consultar_tipo_alerta_operacional(tipo_id: str | None = None, alias: str | None = None) -> dict:
-        """Consulta um tipo de alerta cadastrado por UUID técnico ou alias de negócio."""
+        """Consulta um tipo de alerta cadastrado por UUID tecnico ou alias de negocio."""
 
         def handler() -> dict:
-            result = _invoke_internal("obter_tipo_alerta", {"tipo_id": tipo_id, "alias": alias})
-            if isinstance(result, dict):
-                return strip_technical_keys(result)
-            return {"ok": True, "resultado": result}
+            result = _alert_type_svc.obter_tipo_alerta(tenant_id, actor_level, tipo_id=tipo_id, alias=alias)
+            return strip_technical_keys(result) if isinstance(result, dict) else result
 
         return _consulta("consultar_tipo_alerta_operacional", handler)
 
@@ -588,8 +443,7 @@ def get_gateway_tools(
 
     @tool
     def consultar_schema_frente_servico(frente_servico: str) -> dict:
-        """Retorna os campos obrigatorios, opcionais e extras do schema de registro vinculado a frente de servico.
-        Use esta tool logo apos identificar a frente, antes de coletar os demais dados do registro."""
+        """Retorna os campos obrigatorios, opcionais e extras do schema de registro vinculado a frente de servico."""
 
         def handler() -> dict:
             return business_rag.consultar_schema_frente(frente_servico=frente_servico, tenant_id=tenant_id)
@@ -621,7 +475,7 @@ def get_gateway_tools(
         return _consulta("buscar_contexto_operacional", handler)
 
     # =========================================================================
-    # TOOLS DE EXECUÇÃO (escrita)
+    # TOOLS DE EXECUÇÃO
     # =========================================================================
 
     @tool
@@ -653,42 +507,28 @@ def get_gateway_tools(
             resolved_obra = _resolve_obra_selection(obra_id=obra_id, obra=obra)
             if not resolved_obra.get("ok"):
                 return resolved_obra
-
             resolved_frente = _resolve_frente_servico_selection(frente_servico)
             if not resolved_frente.get("ok"):
                 return resolved_frente
 
-            localizacao_input = localizacao or {}
-            mode = _resolve_location_mode(
-                localizacao=localizacao,
+            result = _registro_svc.criar_registro(
+                tenant_id, actor_user_id, actor_level,
+                data=data_normalizada,
+                obra_id=resolved_obra.get("obra_id"),
+                frente_servico_id=resolved_frente.get("frente_servico_id"),
                 estaca_inicial=estaca_inicial,
                 estaca_final=estaca_final,
                 km_inicial=km_inicial,
                 km_final=km_final,
                 local_descritivo=local_descritivo,
+                localizacao=localizacao,
+                resultado=resultado,
+                tempo_manha=tempo_manha,
+                tempo_tarde=tempo_tarde,
+                observacao=observacao,
+                campos_extras_valores=campos_extras_valores,
+                lado_pista=lado_pista,
             )
-            start_value = localizacao_input.get("valor_inicial", estaca_inicial if estaca_inicial is not None else km_inicial)
-            end_value = localizacao_input.get("valor_final", estaca_final if estaca_final is not None else km_final)
-            detail_value = localizacao_input.get("detalhe_texto", local_descritivo)
-
-            result = _invoke_internal("criar_registro", {
-                "data": data_normalizada,
-                "obra_id": resolved_obra.get("obra_id"),
-                "frente_servico_id": resolved_frente.get("frente_servico_id"),
-                # Compatibilidade legado: estaca_* continua como alias de armazenamento.
-                "estaca_inicial": start_value,
-                "estaca_final": end_value,
-                "km_inicial": km_inicial,
-                "km_final": km_final,
-                "local_descritivo": detail_value,
-                "localizacao": {"tipo": mode, "valor_inicial": start_value, "valor_final": end_value, "detalhe_texto": detail_value},
-                "resultado": resultado,
-                "tempo_manha": tempo_manha,
-                "tempo_tarde": tempo_tarde,
-                "observacao": observacao,
-                "campos_extras_valores": campos_extras_valores,
-                "lado_pista": lado_pista,
-            })
 
             schema_ctx = business_rag.sugerir_campos_faltantes(
                 tipo_registro="producao_diaria",
@@ -700,10 +540,6 @@ def get_gateway_tools(
                     "tempo_manha": tempo_manha,
                     "tempo_tarde": tempo_tarde,
                     "lado_pista": lado_pista,
-                    "tipo_localizacao": mode,
-                    "estaca_inicial": start_value,
-                    "estaca_final": end_value,
-                    "local_descritivo": detail_value,
                     "observacao": observacao,
                 },
                 tenant_id=tenant_id,
@@ -738,16 +574,16 @@ def get_gateway_tools(
             resolved_obra = _resolve_obra_selection(obra_id=obra_id, obra=obra)
             if not resolved_obra.get("ok"):
                 return resolved_obra
-
-            result = _invoke_internal("criar_alerta", {
-                "type": alert_type,
-                "obra_id": resolved_obra.get("obra_id"),
-                "title": titulo,
-                "description": descricao,
-                "severity": severidade,
-                "location_detail": local,
-                "equipment_name": equipamento,
-            })
+            result = _alerta_svc.criar_alerta(
+                tenant_id, actor_user_id, actor_level,
+                type=alert_type,
+                title=titulo,
+                description=descricao,
+                severity=severidade,
+                obra_id=resolved_obra.get("obra_id"),
+                location_detail=local,
+                equipment_name=equipamento,
+            )
             if isinstance(result, dict):
                 alerta_raw = result.get("alerta", result)
                 return {"ok": True, "alerta": map_alerta_to_business(alerta_raw) if isinstance(alerta_raw, dict) else alerta_raw}
@@ -782,27 +618,26 @@ def get_gateway_tools(
             resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
             if not resolved.get("ok"):
                 return resolved
-
             resolved_obra = _resolve_obra_selection(obra_id=obra_id, obra=obra)
             if not resolved_obra.get("ok"):
                 return resolved_obra
-
-            result = _invoke_internal("atualizar_status_alerta", {
-                "alert_id": resolved.get("alert_id"),
-                "alert_code": resolved.get("alert_code"),
-                "status": status,
-                "obra_id": resolved_obra.get("obra_id"),
-                "resolution_notes": observacoes_resolucao,
-                "type": _normalize_alert_type_for_gateway(tipo_alerta) if tipo_alerta else None,
-                "severity": severidade,
-                "title": titulo,
-                "description": descricao,
-                "location_detail": local,
-                "equipment_name": equipamento,
-                "photo_urls": fotos,
-                "priority_score": prioridade,
-                "notified_channels": canais_notificados,
-            })
+            result = _alerta_svc.atualizar_alerta(
+                tenant_id, actor_user_id, actor_level,
+                alert_id=resolved.get("alert_id"),
+                alert_code=resolved.get("alert_code"),
+                status=status,
+                resolution_notes=observacoes_resolucao,
+                type=_normalize_alert_type_for_gateway(tipo_alerta) if tipo_alerta else None,
+                severity=severidade,
+                obra_id=resolved_obra.get("obra_id"),
+                title=titulo,
+                description=descricao,
+                location_detail=local,
+                equipment_name=equipamento,
+                photo_urls=fotos,
+                priority_score=prioridade,
+                notified_channels=canais_notificados,
+            )
             if isinstance(result, dict):
                 alerta_raw = result.get("alerta", result)
                 return {"ok": True, "alerta": map_alerta_to_business(alerta_raw) if isinstance(alerta_raw, dict) else alerta_raw}
@@ -823,10 +658,11 @@ def get_gateway_tools(
             resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
             if not resolved.get("ok"):
                 return resolved
-            result = _invoke_internal("marcar_alerta_como_lido", {
-                "alert_id": resolved.get("alert_id"),
-                "alert_code": resolved.get("alert_code"),
-            })
+            result = _alerta_svc.marcar_alerta_lido(
+                tenant_id, actor_user_id, actor_level,
+                alert_id=resolved.get("alert_id"),
+                alert_code=resolved.get("alert_code"),
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("marcar_alerta_como_lido_operacional", intent, handler)
@@ -837,17 +673,18 @@ def get_gateway_tools(
         alert_id: str | None = None,
         intencao: str | None = "registrar_alerta",
     ) -> dict:
-        """Marca um alerta operacional como não lido por codigo de negocio ou UUID."""
+        """Marca um alerta operacional como nao lido por codigo de negocio ou UUID."""
         intent = GatewayPolicyService.normalize_intent(intencao, default="registrar_alerta")
 
         def handler() -> dict:
             resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
             if not resolved.get("ok"):
                 return resolved
-            result = _invoke_internal("marcar_alerta_como_nao_lido", {
-                "alert_id": resolved.get("alert_id"),
-                "alert_code": resolved.get("alert_code"),
-            })
+            result = _alerta_svc.marcar_alerta_nao_lido(
+                tenant_id, actor_user_id, actor_level,
+                alert_id=resolved.get("alert_id"),
+                alert_code=resolved.get("alert_code"),
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("marcar_alerta_como_nao_lido_operacional", intent, handler)
@@ -866,10 +703,11 @@ def get_gateway_tools(
             resolved = _resolve_alert_identifier(codigo_alerta=codigo_alerta, alert_id=alert_id)
             if not resolved.get("ok"):
                 return resolved
-            result = _invoke_internal("deletar_alerta", {
-                "alert_id": resolved.get("alert_id"),
-                "alert_code": resolved.get("alert_code"),
-            })
+            result = _alerta_svc.deletar_alerta(
+                tenant_id, actor_user_id, actor_level,
+                alert_id=resolved.get("alert_id"),
+                alert_code=resolved.get("alert_code"),
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": bool(result)}
 
         return _execucao("deletar_alerta_operacional", intent, handler)
@@ -881,14 +719,13 @@ def get_gateway_tools(
         confirmado: bool = False,
         intencao: str | None = "atualizar_registro",
     ) -> dict:
-        """Atualiza status do registro sem exigir confirmação explícita no gateway."""
+        """Atualiza status do registro sem exigir confirmacao explicita no gateway."""
         intent = GatewayPolicyService.normalize_intent(intencao, default="atualizar_registro")
 
         def handler() -> dict:
-            result = _invoke_internal("atualizar_status_registro", {
-                "registro_id": int(registro_id),
-                "status": status,
-            })
+            result = _registro_svc.atualizar_status_registro(
+                tenant_id, actor_user_id, actor_level, int(registro_id), status
+            )
             if isinstance(result, dict):
                 return strip_technical_keys({"registro": result.get("registro", result)})
             return strip_technical_keys({"registro": {"resultado": result}})
@@ -902,14 +739,13 @@ def get_gateway_tools(
         confirmado: bool = False,
         intencao: str | None = "atualizar_registro",
     ) -> dict:
-        """Anexa imagem (URL externa) a um registro operacional, incluindo registros aprovados, sem confirmacao explicita."""
+        """Anexa imagem (URL externa) a um registro operacional, incluindo registros aprovados."""
         intent = GatewayPolicyService.normalize_intent(intencao, default="atualizar_registro")
 
         def handler() -> dict:
-            result = _invoke_internal("anexar_imagem_registro", {
-                "registro_id": int(registro_id),
-                "imagem_url": imagem_url,
-            })
+            result = _registro_svc.anexar_imagem_registro(
+                tenant_id, actor_user_id, actor_level, int(registro_id), imagem_url
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("anexar_imagem_registro_operacional", intent, handler)
@@ -918,17 +754,13 @@ def get_gateway_tools(
     def gerar_diario_obra(
         obra_id: int | None = None,
         obra_nome: str | None = None,
-        tipo_periodo: str = "diario",  # "diario" | "semanal" | "mensal"
+        tipo_periodo: str = "diario",
         data_inicio: str | None = None,
         data_fim: str | None = None,
         motivo_regeracao: str | None = None,
         intencao: str | None = "gerar_diario",
     ) -> dict:
-        """Gera ou regera o diario de obra para um periodo. Use quando o engenheiro solicitar o diario via chat.
-        Passe obra_nome com o nome ou codigo da obra informado pelo usuario — o gateway resolve o ID automaticamente.
-        Pergunte a data se nao for informada.
-        tipo_periodo define o PERIODO coberto: 'diario' (1 dia), 'semanal' (7 dias), 'mensal' (mes inteiro).
-        Para enviar o arquivo gerado como PDF/Word/Excel use enviar_diario_telegram logo apos."""
+        """Gera ou regera o diario de obra para um periodo. Use quando o engenheiro solicitar o diario via chat."""
         from datetime import date as _date
         import unicodedata
 
@@ -937,30 +769,18 @@ def get_gateway_tools(
 
         obra_id_resolvido = obra_id or obra_id_ativa
 
-        # Resolução por nome/código quando obra_id não está disponível
         if obra_id_resolvido is None and obra_nome:
             obras = _list_obras()
             query = _norm(obra_nome)
-            candidatos = [
-                o for o in obras
-                if query in _norm(str(o.get("nome") or ""))
-            ]
+            candidatos = [o for o in obras if query in _norm(str(o.get("nome") or ""))]
             if len(candidatos) == 1:
                 obra_id_resolvido = candidatos[0]["id"]
             elif len(candidatos) > 1:
                 nomes = [o.get("nome") for o in candidatos]
-                return {
-                    "ok": False,
-                    "message": f"Encontrei {len(candidatos)} obras com '{obra_nome}': {nomes}. Qual delas o usuário deseja?",
-                    "next_steps": ["pedir ao usuario para escolher a obra pelo nome exato"],
-                }
+                return {"ok": False, "message": f"Encontrei {len(candidatos)} obras com '{obra_nome}': {nomes}. Qual delas?", "next_steps": ["pedir escolha pelo nome exato"]}
             else:
                 obras_disponiveis = [o.get("nome") for o in obras]
-                return {
-                    "ok": False,
-                    "message": f"Obra '{obra_nome}' não encontrada. Obras disponíveis: {obras_disponiveis}.",
-                    "next_steps": ["apresentar lista ao usuario e pedir escolha"],
-                }
+                return {"ok": False, "message": f"Obra '{obra_nome}' não encontrada. Disponíveis: {obras_disponiveis}.", "next_steps": ["apresentar lista e pedir escolha"]}
 
         if obra_id_resolvido is None:
             obras = _list_obras()
@@ -970,12 +790,7 @@ def get_gateway_tools(
                 obra_id_resolvido = obras[0]["id"]
             else:
                 nomes = [o.get("nome") for o in obras]
-                return {
-                    "ok": False,
-                    "message": "Nenhuma obra ativa no contexto. Qual obra você deseja?",
-                    "obras_disponiveis": nomes,
-                    "next_steps": ["apresentar lista ao usuario via listar_obras_operacional e pedir escolha pelo nome"],
-                }
+                return {"ok": False, "message": "Nenhuma obra ativa no contexto. Qual obra você deseja?", "obras_disponiveis": nomes, "next_steps": ["apresentar lista e pedir escolha"]}
 
         today = _date.today().isoformat()
         data_inicio_norm = parse_iso_date(data_inicio or today, "data_inicio").isoformat()
@@ -1038,16 +853,17 @@ def get_gateway_tools(
         confirmado: bool = False,
         intencao: str | None = "gerenciar_tipo_alerta",
     ) -> dict:
-        """Cria alias de tipo de alerta para mapear linguagem de negócio para tipo canônico."""
+        """Cria alias de tipo de alerta para mapear linguagem de negocio para tipo canonico."""
         intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_tipo_alerta")
 
         def handler() -> dict:
-            result = _invoke_internal("criar_tipo_alerta", {
-                "alias": alias,
-                "tipo_canonico": tipo_canonico,
-                "descricao": descricao,
-                "ativo": bool(ativo),
-            })
+            result = _alert_type_svc.criar_tipo_alerta(
+                tenant_id, actor_user_id, actor_level,
+                alias=alias,
+                tipo_canonico=tipo_canonico,
+                descricao=descricao,
+                ativo=bool(ativo),
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("criar_tipo_alerta_operacional", intent, handler)
@@ -1063,18 +879,19 @@ def get_gateway_tools(
         confirmado: bool = False,
         intencao: str | None = "gerenciar_tipo_alerta",
     ) -> dict:
-        """Atualiza alias, tipo canônico, descrição ou status de um tipo de alerta."""
+        """Atualiza alias, tipo canonico, descricao ou status de um tipo de alerta."""
         intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_tipo_alerta")
 
         def handler() -> dict:
-            result = _invoke_internal("atualizar_tipo_alerta", {
-                "tipo_id": tipo_id,
-                "alias": alias,
-                "novo_alias": novo_alias,
-                "tipo_canonico": tipo_canonico,
-                "descricao": descricao,
-                "ativo": ativo,
-            })
+            result = _alert_type_svc.atualizar_tipo_alerta(
+                tenant_id, actor_user_id, actor_level,
+                tipo_id=tipo_id,
+                alias=alias,
+                novo_alias=novo_alias,
+                tipo_canonico=tipo_canonico,
+                descricao=descricao,
+                ativo=ativo,
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("atualizar_tipo_alerta_operacional", intent, handler)
@@ -1090,77 +907,12 @@ def get_gateway_tools(
         intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_tipo_alerta")
 
         def handler() -> dict:
-            result = _invoke_internal("deletar_tipo_alerta", {"tipo_id": tipo_id, "alias": alias})
+            result = _alert_type_svc.deletar_tipo_alerta(
+                tenant_id, actor_level, tipo_id=tipo_id, alias=alias
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": bool(result)}
 
         return _execucao("deletar_tipo_alerta_operacional", intent, handler)
-
-    @tool
-    def criar_frente_servico_operacional(
-        nome: str,
-        encarregado_responsavel: int | None = None,
-        observacao: str | None = None,
-        obra_id: int | None = None,
-        registro_schema_id: int | None = None,
-        intencao: str | None = "gerenciar_frente_servico",
-    ) -> dict:
-        """Cria frente de servico no gateway (administrador e gerente)."""
-        intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_frente_servico")
-
-        def handler() -> dict:
-            result = _invoke_internal("criar_frente_servico", {
-                "nome": nome,
-                "encarregado_responsavel": encarregado_responsavel,
-                "observacao": observacao,
-                "obra_id": obra_id,
-                "registro_schema_id": registro_schema_id,
-            })
-            if isinstance(result, dict):
-                frente = result.get("frente_servico", result)
-                return {"ok": True, "frente_servico": strip_technical_keys(frente)}
-            return {"ok": True, "resultado": result}
-
-        return _execucao("criar_frente_servico_operacional", intent, handler)
-
-    @tool
-    def atualizar_frente_servico_operacional(
-        frente_id: int,
-        nome: str | None = None,
-        encarregado_responsavel: int | None = None,
-        observacao: str | None = None,
-        obra_id: int | None = None,
-        registro_schema_id: int | None = None,
-        intencao: str | None = "gerenciar_frente_servico",
-    ) -> dict:
-        """Atualiza frente de servico no gateway (administrador e gerente)."""
-        intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_frente_servico")
-
-        def handler() -> dict:
-            result = _invoke_internal("atualizar_frente_servico", {
-                "frente_id": int(frente_id),
-                "nome": nome,
-                "encarregado_responsavel": encarregado_responsavel,
-                "observacao": observacao,
-                "obra_id": obra_id,
-                "registro_schema_id": registro_schema_id,
-            })
-            return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
-
-        return _execucao("atualizar_frente_servico_operacional", intent, handler)
-
-    @tool
-    def deletar_frente_servico_operacional(
-        frente_id: int,
-        intencao: str | None = "gerenciar_frente_servico",
-    ) -> dict:
-        """Remove frente de servico no gateway (administrador e gerente)."""
-        intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_frente_servico")
-
-        def handler() -> dict:
-            result = _invoke_internal("deletar_frente_servico", {"frente_id": int(frente_id)})
-            return strip_technical_keys(result) if isinstance(result, dict) else {"ok": bool(result)}
-
-        return _execucao("deletar_frente_servico_operacional", intent, handler)
 
     @tool
     def criar_obra_operacional(
@@ -1176,15 +928,12 @@ def get_gateway_tools(
         intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_frente_servico")
 
         def handler() -> dict:
-            result = _invoke_internal("criar_obra", {
-                "nome": nome,
-                "codigo": codigo,
-                "descricao": descricao,
-                "ativo": bool(ativo),
-                "tipo_obra": tipo_obra,
-                "tipo_obra_id": tipo_obra_id,
-            })
-            return {"ok": True, "obra": strip_technical_keys(result)} if isinstance(result, dict) else {"ok": True, "resultado": result}
+            result = _obra_svc.criar_obra(
+                tenant_id, actor_level,
+                nome=nome, codigo=codigo, descricao=descricao,
+                ativo=bool(ativo), tipo_obra=tipo_obra, tipo_obra_id=tipo_obra_id,
+            )
+            return {"ok": True, "obra": strip_technical_keys(result.get("obra", result))} if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("criar_obra_operacional", intent, handler)
 
@@ -1201,13 +950,10 @@ def get_gateway_tools(
         intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_frente_servico")
 
         def handler() -> dict:
-            result = _invoke_internal("atualizar_obra", {
-                "obra_id": int(obra_id),
-                "nome": nome,
-                "codigo": codigo,
-                "descricao": descricao,
-                "ativo": ativo,
-            })
+            result = _obra_svc.atualizar_obra(
+                tenant_id, actor_level, int(obra_id),
+                nome=nome, codigo=codigo, descricao=descricao, ativo=ativo,
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("atualizar_obra_operacional", intent, handler)
@@ -1221,7 +967,7 @@ def get_gateway_tools(
         intent = GatewayPolicyService.normalize_intent(intencao, default="gerenciar_frente_servico")
 
         def handler() -> dict:
-            result = _invoke_internal("deletar_obra", {"obra_id": int(obra_id)})
+            result = _obra_svc.deletar_obra(tenant_id, actor_level, int(obra_id))
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": bool(result)}
 
         return _execucao("deletar_obra_operacional", intent, handler)
@@ -1257,29 +1003,27 @@ def get_gateway_tools(
                 if not resolved.get("ok"):
                     return resolved
                 frente_id = resolved.get("frente_servico_id")
-
             resolved_obra = _resolve_obra_selection(obra_id=obra_id, obra=obra)
             if not resolved_obra.get("ok"):
                 return resolved_obra
-
-            result = _invoke_internal("atualizar_registro", {
-                "registro_id": int(registro_id),
-                "data": data,
-                "frente_servico_id": frente_id,
-                "obra_id": resolved_obra.get("obra_id"),
-                "estaca_inicial": estaca_inicial,
-                "estaca_final": estaca_final,
-                "km_inicial": km_inicial,
-                "km_final": km_final,
-                "local_descritivo": local_descritivo,
-                "localizacao": localizacao,
-                "tempo_manha": tempo_manha,
-                "tempo_tarde": tempo_tarde,
-                "observacao": observacao,
-                "lado_pista": lado_pista,
-                "status": status,
-                "campos_extras_valores": campos_extras_valores,
-            })
+            result = _registro_svc.atualizar_registro(
+                tenant_id, actor_user_id, actor_level, int(registro_id),
+                data=data,
+                frente_servico_id=frente_id,
+                obra_id=resolved_obra.get("obra_id"),
+                estaca_inicial=estaca_inicial,
+                estaca_final=estaca_final,
+                km_inicial=km_inicial,
+                km_final=km_final,
+                local_descritivo=local_descritivo,
+                localizacao=localizacao,
+                tempo_manha=tempo_manha,
+                tempo_tarde=tempo_tarde,
+                observacao=observacao,
+                lado_pista=lado_pista,
+                status=status,
+                campos_extras_valores=campos_extras_valores,
+            )
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
 
         return _execucao("atualizar_registro_operacional", intent, handler)
@@ -1293,7 +1037,7 @@ def get_gateway_tools(
         intent = GatewayPolicyService.normalize_intent(intencao, default="atualizar_registro")
 
         def handler() -> dict:
-            result = _invoke_internal("deletar_registro", {"registro_id": int(registro_id)})
+            result = _registro_svc.deletar_registro(tenant_id, actor_user_id, actor_level, int(registro_id))
             return strip_technical_keys(result) if isinstance(result, dict) else {"ok": bool(result)}
 
         return _execucao("deletar_registro_operacional", intent, handler)
@@ -1313,25 +1057,22 @@ def get_gateway_tools(
         consultar_padroes_operacionais,
         consultar_schema_frente_servico,
         sugerir_campos_faltantes,
-        criar_frente_servico_operacional,
-        atualizar_frente_servico_operacional,
-        deletar_frente_servico_operacional,
-        criar_obra_operacional,
-        atualizar_obra_operacional,
-        deletar_obra_operacional,
-        atualizar_registro_operacional,
-        deletar_registro_operacional,
+        buscar_contexto_operacional,
         registrar_producao_diaria,
         registrar_alerta_operacional,
         atualizar_alerta_operacional,
         marcar_alerta_como_lido_operacional,
         marcar_alerta_como_nao_lido_operacional,
         deletar_alerta_operacional,
+        atualizar_status_registro_operacional,
+        anexar_imagem_registro_operacional,
+        gerar_diario_obra,
         criar_tipo_alerta_operacional,
         atualizar_tipo_alerta_operacional,
         deletar_tipo_alerta_operacional,
-        atualizar_status_registro_operacional,
-        anexar_imagem_registro_operacional,
-        buscar_contexto_operacional,
-        gerar_diario_obra,
+        criar_obra_operacional,
+        atualizar_obra_operacional,
+        deletar_obra_operacional,
+        atualizar_registro_operacional,
+        deletar_registro_operacional,
     ]
