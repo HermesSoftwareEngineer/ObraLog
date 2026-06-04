@@ -6,12 +6,6 @@ from sqlalchemy import Boolean, Column, Date, DateTime, DECIMAL, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, relationship
 
-try:
-    from pgvector.sqlalchemy import Vector
-    _VECTOR_768 = Vector(768)
-except ImportError:
-    _VECTOR_768 = None  # type: ignore[assignment]
-
 
 class Base(DeclarativeBase):
     pass
@@ -565,7 +559,6 @@ class Conversa(Base):
     encerrada_em  = Column(DateTime(timezone=True), nullable=True)
     ultima_msg_em = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     resumo        = Column(Text, nullable=True)
-    embedding     = Column(_VECTOR_768, nullable=True, server_default=sa_text("NULL::vector")) if _VECTOR_768 is not None else Column(Text, nullable=True)
     ambiente      = Column(String(10), nullable=False, default='prod')
 
     tenant  = relationship("Tenant",  back_populates="conversas")

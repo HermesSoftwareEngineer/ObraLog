@@ -38,7 +38,6 @@ def get_or_create_conversa(
     if conversa:
         return conversa
 
-    # Use raw INSERT to avoid psycopg3 casting embedding=None as ::VARCHAR
     result = db.execute(
         text(
             "INSERT INTO conversas (tenant_id, usuario_id, chat_id, thread_id, ambiente)"

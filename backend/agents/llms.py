@@ -22,10 +22,6 @@ llm_main = ChatGoogleGenerativeAI(
     temperature=0.2,
 )
 
-# Embeddings removidos — busca vetorial não é utilizada no fluxo de produção.
-embeddings_main = None
-
-
 def _extract_text_content(content) -> str:
     if isinstance(content, str):
         return content

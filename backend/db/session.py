@@ -405,8 +405,7 @@ def ensure_runtime_migrations() -> None:
                         iniciada_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
                         encerrada_em  TIMESTAMPTZ,
                         ultima_msg_em TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        resumo        TEXT,
-                        embedding     VECTOR(768)
+                        resumo        TEXT
                     )
                     """
                 )

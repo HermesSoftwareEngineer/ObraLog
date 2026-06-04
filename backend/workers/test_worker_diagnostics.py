@@ -232,8 +232,7 @@ class TestOverheadTiming(unittest.TestCase):
         messages = [HumanMessage(content="Teste de timing sem prebuilt")]
 
         # SessionLocal é importado localmente dentro da função — patch na origem
-        with patch("backend.agents.nodes.response.get_context_for_query", return_value=""), \
-             patch("backend.db.session.SessionLocal"):
+        with patch("backend.db.session.SessionLocal"):
 
             t0 = time.monotonic()
             try:

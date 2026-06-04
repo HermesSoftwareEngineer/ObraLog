@@ -2,12 +2,10 @@
 try:
     from ..state import State
     from ..prompts import build_system_prompt
-    from ..context.vector_context import get_context_for_query
     from ..nodes._tool_utils import resolve_tool_map, last_human_text, _execute_tool
 except ImportError:
     from state import State  # type: ignore
     from prompts import build_system_prompt  # type: ignore
-    from context.vector_context import get_context_for_query  # type: ignore
     from nodes._tool_utils import resolve_tool_map, last_human_text, _execute_tool  # type: ignore
 
 from datetime import datetime
@@ -50,14 +48,7 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
     prebuilt_snapshot   = configurable.get("_prebuilt_snapshot")
     prebuilt_memories   = configurable.get("_prebuilt_memories")
 
-    if prebuilt_vector_ctx is not None:
-        retrieved_context = prebuilt_vector_ctx
-    else:
-        _t = time.monotonic()
-        retrieved_context = get_context_for_query(user_query)
-        _dt = time.monotonic() - _t
-        if _dt > 1.0:
-            logger.warning("[TIMING] get_context_for_query=%.2fs (fallback, sem cache)", _dt)
+    retrieved_context = prebuilt_vector_ctx or ""
 
     context_block = (
         f"\n\nContexto operacional relevante:\n{retrieved_context}" if retrieved_context else ""

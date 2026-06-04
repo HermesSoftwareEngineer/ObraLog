@@ -17,7 +17,6 @@ from langchain_core.tools import tool
 from backend.db.models import AlertTypeAlias
 from backend.db.session import SessionLocal
 
-from backend.agents.context.vector_context import get_context_for_query
 from backend.agents.gateway import (
     GatewayError,
     GatewayValidationError,
@@ -463,16 +462,6 @@ def get_gateway_tools(
             )
 
         return _consulta("sugerir_campos_faltantes", handler)
-
-    @tool
-    def buscar_contexto_operacional(pergunta: str, k: int = 3) -> dict:
-        """RAG complementar: recupera contexto vetorial operacional da base indexada atual."""
-
-        def handler() -> dict:
-            context = get_context_for_query(pergunta, k=max(1, min(int(k), 8)))
-            return {"ok": True, "pergunta": pergunta, "contexto": context, "encontrado": bool(context.strip())}
-
-        return _consulta("buscar_contexto_operacional", handler)
 
     # =========================================================================
     # TOOLS DE EXECUÇÃO
