@@ -253,13 +253,22 @@ class MessageProcessor:
             usuario.id, chat_id, scoped_tid, len(extracted),
         )
 
-        # Resolve ou cria a sessão de conversa e determina a obra ativa do usuário
+        # Resolve conversa, obra ativa e prebuilt context numa única sessão DB.
+        # Evita abrir 2 conexões separadas ao Supabase (cada abertura custa ~2-3s em prod).
         tenant_id = getattr(usuario, "tenant_id", None)
         conversa_id = None
         obra_id_ativa = None
+        actor_level_str = (
+            usuario.nivel_acesso.value
+            if hasattr(usuario.nivel_acesso, "value")
+            else str(usuario.nivel_acesso)
+        )
+
+        cached_ctx = _cache_get(scoped_tid)
+
+        _t_db = time.monotonic()
         try:
             from backend.core.config import get_ambiente
-            _t_conversa = time.monotonic()
             with SessionLocal() as db:
                 tenant_id = _resolver_tenant_ativo(db, usuario)
                 conversa = get_or_create_conversa(
@@ -269,15 +278,18 @@ class MessageProcessor:
                 conversa_id = conversa.id
                 if tenant_id is not None:
                     obra_id_ativa = _resolver_obra_ativa(db, usuario.id, tenant_id)
-            logger.info("[TIMING] get_or_create_conversa=%.2fs - chat_id=%s", time.monotonic() - _t_conversa, chat_id)
-        except Exception as exc:
-            logger.warning("Falha ao obter/criar conversa: %s", exc)
 
-        actor_level_str = (
-            usuario.nivel_acesso.value
-            if hasattr(usuario.nivel_acesso, "value")
-            else str(usuario.nivel_acesso)
-        )
+                if cached_ctx is None and tenant_id is not None:
+                    prebuilt_snapshot = build_tenant_snapshot(
+                        db, tenant_id, obra_id_ativa, actor_level_str
+                    )
+                else:
+                    prebuilt_snapshot = ""
+            logger.info("[TIMING] db_setup=%.2fs - chat_id=%s", time.monotonic() - _t_db, chat_id)
+        except Exception as exc:
+            logger.warning("Falha ao preparar contexto DB: %s", exc)
+            prebuilt_snapshot = ""
+
         config = {
             "configurable": {
                 "thread_id": scoped_tid,
@@ -300,20 +312,12 @@ class MessageProcessor:
         # Prebuilt context: gerado UMA VEZ por thread e cacheado em memória.
         # Nas mensagens seguintes da mesma thread o cache é usado diretamente — zero DB.
         # /reset cria novo thread_id → cache invalidado automaticamente.
-        cached_ctx = _cache_get(scoped_tid)
         if cached_ctx is not None:
             config["configurable"].update(cached_ctx)
             logger.info("Prebuilt context (cache hit) - chat_id=%s thread_id=%s", chat_id, scoped_tid)
         else:
             _t_ctx = time.monotonic()
             try:
-                prebuilt_snapshot = ""
-                if tenant_id is not None:
-                    with SessionLocal() as ctx_db:
-                        prebuilt_snapshot = build_tenant_snapshot(
-                            ctx_db, tenant_id, obra_id_ativa, actor_level_str
-                        )
-
                 built_ctx = {
                     "_prebuilt_vector_ctx": read_agent_instructions(),
                     "_prebuilt_snapshot":   prebuilt_snapshot,
