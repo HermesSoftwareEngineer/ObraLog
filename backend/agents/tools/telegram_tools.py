@@ -1,30 +1,10 @@
 from __future__ import annotations
 
-import json
-import os
-from urllib.request import Request, urlopen
-
 from langchain_core.tools import tool
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
+from backend.services.telegram_client import bot_client
 from backend.services.telegram_interactions import register_poll_context
-
-
-def _telegram_api_call(method: str, params: dict) -> dict:
-    token = os.environ.get("TELEGRAM_TOKEN")
-    if not token:
-        raise RuntimeError("TELEGRAM_TOKEN não configurado.")
-
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    payload = json.dumps(params).encode("utf-8")
-    request = Request(url, data=payload, headers={"Content-Type": "application/json"})
-
-    with urlopen(request, timeout=60) as response:
-        data = json.loads(response.read().decode("utf-8"))
-
-    if not data.get("ok"):
-        description = data.get("description") or "Erro ao chamar API do Telegram."
-        raise RuntimeError(description)
-    return data
 
 
 def _sanitize_options(options: list[str], *, minimum: int = 2, maximum: int = 10) -> list[str]:
@@ -72,43 +52,55 @@ def get_telegram_tools(
             raise ValueError("Campo obrigatório: pergunta.")
 
         options = _sanitize_options(opcoes)
-        keyboard = [[{"text": item}] for item in options]
-        reply_markup = {
-            "keyboard": keyboard,
-            "resize_keyboard": True,
-            "one_time_keyboard": False,
-        }
+        keyboard = [[opt] for opt in options]
+
+        kwargs: dict = {}
+        if telegram_message_thread_id is not None:
+            kwargs["message_thread_id"] = int(telegram_message_thread_id)
         if placeholder:
             value = " ".join(placeholder.strip().split())
             if value:
-                reply_markup["input_field_placeholder"] = value[:64]
-
-        payload = {
-            "chat_id": chat_id,
-            "text": question,
-            "reply_markup": reply_markup,
-        }
-        if telegram_message_thread_id is not None:
-            payload["message_thread_id"] = int(telegram_message_thread_id)
+                kwargs["input_field_placeholder"] = value[:64]
 
         try:
-            result = _telegram_api_call("sendMessage", payload)
-        except Exception as exc:
-            # Fallback para inline keyboard quando o contexto do chat não aceita ReplyKeyboard.
-            inline_markup = {
-                "inline_keyboard": [[{"text": item, "callback_data": f"rk:{idx}"}] for idx, item in enumerate(options)]
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard,
+                resize_keyboard=True,
+                one_time_keyboard=not bool(manter_teclado_visivel),
+            )
+            msg = bot_client.submit(
+                bot_client.bot.send_message(
+                    chat_id=chat_id,
+                    text=question,
+                    reply_markup=reply_markup,
+                    **kwargs,
+                ),
+                timeout=15,
+            )
+            return {
+                "ok": True,
+                "message": "Botões de resposta rápida enviados com sucesso.",
+                "telegram_ui_dispatched": True,
+                "telegram_ui_type": "reply_keyboard",
+                "question": question,
+                "options": options,
+                "telegram_message_id": msg.message_id,
+                "keep_keyboard_visible": bool(manter_teclado_visivel),
             }
-            fallback_payload = {
-                "chat_id": chat_id,
-                "text": question,
-                "reply_markup": inline_markup,
-            }
-            if telegram_message_thread_id is not None:
-                fallback_payload["message_thread_id"] = int(telegram_message_thread_id)
-            result = _telegram_api_call("sendMessage", fallback_payload)
-
-            result_payload = result.get("result") or {}
-            message_id = result_payload.get("message_id")
+        except Exception:
+            inline_keyboard = [
+                [InlineKeyboardButton(text=item, callback_data=f"rk:{idx}")]
+                for idx, item in enumerate(options)
+            ]
+            msg = bot_client.submit(
+                bot_client.bot.send_message(
+                    chat_id=chat_id,
+                    text=question,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard),
+                    **{k: v for k, v in kwargs.items() if k == "message_thread_id"},
+                ),
+                timeout=15,
+            )
             return {
                 "ok": True,
                 "message": "Reply keyboard indisponível neste contexto; inline keyboard enviado como fallback.",
@@ -116,23 +108,9 @@ def get_telegram_tools(
                 "telegram_ui_type": "inline_keyboard_fallback",
                 "question": question,
                 "options": options,
-                "telegram_message_id": message_id,
+                "telegram_message_id": msg.message_id,
                 "keep_keyboard_visible": bool(manter_teclado_visivel),
             }
-
-        result_payload = result.get("result") or {}
-        message_id = result_payload.get("message_id")
-
-        return {
-            "ok": True,
-            "message": "Botões de resposta rápida enviados com sucesso.",
-            "telegram_ui_dispatched": True,
-            "telegram_ui_type": "reply_keyboard",
-            "question": question,
-            "options": options,
-            "telegram_message_id": message_id,
-            "keep_keyboard_visible": bool(manter_teclado_visivel),
-        }
 
     @tool
     def enviar_enquete_checklist(
@@ -147,21 +125,24 @@ def get_telegram_tools(
             raise ValueError("Campo obrigatório: pergunta.")
 
         options = _sanitize_options(itens_checklist)
-        payload = {
-            "chat_id": chat_id,
-            "question": question,
-            "options": options,
-            "is_anonymous": bool(anonima),
-            "allows_multiple_answers": bool(multipla_escolha),
-        }
+
+        kwargs: dict = {}
         if telegram_message_thread_id is not None:
-            payload["message_thread_id"] = int(telegram_message_thread_id)
+            kwargs["message_thread_id"] = int(telegram_message_thread_id)
 
-        result = _telegram_api_call("sendPoll", payload)
+        msg = bot_client.submit(
+            bot_client.bot.send_poll(
+                chat_id=chat_id,
+                question=question,
+                options=options,
+                is_anonymous=bool(anonima),
+                allows_multiple_answers=bool(multipla_escolha),
+                **kwargs,
+            ),
+            timeout=15,
+        )
 
-        result_payload = result.get("result") or {}
-        poll_payload = result_payload.get("poll") or {}
-        poll_id = poll_payload.get("id")
+        poll_id = msg.poll.id if msg.poll else None
         if poll_id and thread_id and actor_user_id is not None and actor_level:
             register_poll_context(
                 poll_id,
@@ -182,7 +163,7 @@ def get_telegram_tools(
             "question": question,
             "options": options,
             "poll_id": poll_id,
-            "telegram_message_id": result_payload.get("message_id"),
+            "telegram_message_id": msg.message_id,
             "multipla_escolha": bool(multipla_escolha),
             "anonima": bool(anonima),
         }
@@ -229,7 +210,6 @@ def get_telegram_tools(
         Prefira passar obra_nome + data em vez de diario_id — a tool busca o diário automaticamente.
         Se diario_id não for informado ou for inválido, busca pelo diário mais recente da obra na data.
         formato aceito: 'pdf', 'word' ou 'excel'."""
-        import os
         import re
         import unicodedata
         import httpx
@@ -246,11 +226,9 @@ def get_telegram_tools(
         def _is_valid_uuid(v: str) -> bool:
             return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", (v or "").strip().lower()))
 
-        # Resolução do diario_id por obra_nome + data quando o ID não for fornecido ou for inválido
         resolved_diario_id = diario_id if _is_valid_uuid(diario_id or "") else None
         if resolved_diario_id is None:
             try:
-                from datetime import date as _date
                 from backend.agents.tools.gateway_tools import parse_iso_date
                 with SessionLocal() as db:
                     query = db.query(Diario)
@@ -276,11 +254,6 @@ def get_telegram_tools(
             except Exception as exc:
                 return {"ok": False, "message": f"Erro ao localizar diário: {exc}"}
 
-        token = os.environ.get("TELEGRAM_TOKEN")
-        if not token:
-            return {"ok": False, "message": "TELEGRAM_TOKEN não configurado."}
-
-        # --- Obter bytes do documento ---
         try:
             if fmt == "pdf":
                 with SessionLocal() as db:
@@ -339,7 +312,6 @@ def get_telegram_tools(
         except Exception as exc:
             return {"ok": False, "message": f"Erro ao gerar documento: {exc}"}
 
-        # --- Montar nome do arquivo ---
         try:
             with SessionLocal() as db:
                 diario_obj = db.query(Diario).filter(Diario.id == resolved_diario_id).first()
@@ -354,27 +326,22 @@ def get_telegram_tools(
         except Exception:
             filename = f"diario_v{versao}.{ext}"
 
-        # --- Enviar via Telegram sendDocument ---
         try:
-            telegram_url = f"https://api.telegram.org/bot{token}/sendDocument"
-            data: dict = {"chat_id": str(chat_id)}
+            kwargs: dict = {}
             if telegram_message_thread_id is not None:
-                data["message_thread_id"] = str(telegram_message_thread_id)
+                kwargs["message_thread_id"] = int(telegram_message_thread_id)
             if legenda:
-                data["caption"] = legenda
+                kwargs["caption"] = legenda
 
-            with httpx.Client(timeout=120) as client:
-                r = client.post(
-                    telegram_url,
-                    data=data,
-                    files={"document": (filename, file_bytes, content_type)},
-                )
-                result = r.json()
-
-            if not result.get("ok"):
-                return {"ok": False, "message": result.get("description") or "Erro ao enviar documento."}
-
-            message_id = (result.get("result") or {}).get("message_id")
+            msg = bot_client.submit(
+                bot_client.bot.send_document(
+                    chat_id=chat_id,
+                    document=(filename, file_bytes, content_type),
+                    **kwargs,
+                ),
+                timeout=60,
+            )
+            message_id = msg.message_id if msg else None
             return {
                 "ok": True,
                 "telegram_ui_dispatched": True,
