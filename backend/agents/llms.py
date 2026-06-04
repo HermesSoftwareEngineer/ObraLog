@@ -20,6 +20,8 @@ llm_main = ChatGoogleGenerativeAI(
     google_api_key=google_api_key,
     thinking_level="medium",
     temperature=0.2,
+    request_timeout=60,
+    max_retries=1,
 )
 
 def _extract_text_content(content) -> str:

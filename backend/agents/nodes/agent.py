@@ -48,6 +48,9 @@ def agent_node(state: State, config: RunnableConfig | None = None) -> dict:
 
     _t = time.monotonic()
     model = llm_main.bind_tools(list(tool_map.values()))
+    logger.info("[GRAPH] agent_node: bind_tools=%.2fs chat_id=%s", time.monotonic() - _t, chat_id)
+
+    _t = time.monotonic()
     response = model.invoke([system] + messages)
     tool_calls = [tc.get("name") for tc in (getattr(response, "tool_calls", None) or [])]
     logger.info("[GRAPH] agent_node: llm_invoke=%.2fs tool_calls=%s chat_id=%s",
