@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import concurrent.futures
+
 from langchain_core.tools import tool
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
@@ -87,6 +89,8 @@ def get_telegram_tools(
                 "telegram_message_id": msg.message_id,
                 "keep_keyboard_visible": bool(manter_teclado_visivel),
             }
+        except (TimeoutError, concurrent.futures.TimeoutError):
+            raise
         except Exception:
             inline_keyboard = [
                 [InlineKeyboardButton(text=item, callback_data=f"rk:{idx}")]
