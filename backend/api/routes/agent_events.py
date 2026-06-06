@@ -1,4 +1,3 @@
-print("[BOOT] agent_events.py: módulo carregando...", flush=True)
 """SSE endpoint: streams new agent messages for a conversation to the frontend.
 
 GET /api/v1/agent/events/<chat_id>?since=<iso_timestamp>
@@ -7,6 +6,7 @@ The frontend connects once after sending a message and receives new MensagemCamp
 entries (direction=agent) as they are persisted by the worker.
 """
 from __future__ import annotations
+print("[BOOT] agent_events.py: módulo carregando...", flush=True)
 
 import json
 import time

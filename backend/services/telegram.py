@@ -6,9 +6,9 @@ functions used by the rest of the application:
   - start_polling            (development / standalone mode)
   - set_webhook              (startup configuration)
 """
-print("[BOOT] telegram.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
+print("[BOOT] telegram.py: módulo carregando...", flush=True)
 
 import logging
 import os

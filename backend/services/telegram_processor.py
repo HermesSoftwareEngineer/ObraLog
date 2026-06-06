@@ -3,9 +3,9 @@
 Single responsibility: given a list of Telegram updates for the same chat,
 extract text, resolve the user, run the agent, and send the reply.
 """
-print("[BOOT] telegram_processor.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
+print("[BOOT] telegram_processor.py: módulo carregando...", flush=True)
 
 import logging
 import os

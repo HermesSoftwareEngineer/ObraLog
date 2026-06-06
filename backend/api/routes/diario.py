@@ -1,5 +1,5 @@
-print("[BOOT] diario.py: módulo carregando...", flush=True)
 from __future__ import annotations
+print("[BOOT] diario.py: módulo carregando...", flush=True)
 
 from datetime import date
 from decimal import Decimal

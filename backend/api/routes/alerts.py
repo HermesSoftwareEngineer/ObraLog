@@ -1,5 +1,5 @@
-print("[BOOT] alerts.py: módulo carregando...", flush=True)
 from __future__ import annotations
+print("[BOOT] alerts.py: módulo carregando...", flush=True)
 
 from datetime import datetime, timezone
 from uuid import UUID

@@ -1,5 +1,5 @@
-print("[BOOT] rag_service.py: módulo carregando...", flush=True)
 from __future__ import annotations
+print("[BOOT] rag_service.py: módulo carregando...", flush=True)
 
 from pathlib import Path
 import re

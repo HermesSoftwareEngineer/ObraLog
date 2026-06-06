@@ -3,9 +3,9 @@
 Single responsibility: receive poll_answer updates, look up poll context,
 and route the response through the agent.
 """
-print("[BOOT] telegram_poll.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
+print("[BOOT] telegram_poll.py: módulo carregando...", flush=True)
 
 import logging
 from datetime import datetime

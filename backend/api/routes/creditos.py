@@ -1,5 +1,5 @@
-print("[BOOT] creditos.py: módulo carregando...", flush=True)
 from __future__ import annotations
+print("[BOOT] creditos.py: módulo carregando...", flush=True)
 
 from datetime import datetime, timedelta, timezone
 

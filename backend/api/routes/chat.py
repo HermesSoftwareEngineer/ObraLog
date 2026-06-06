@@ -1,5 +1,5 @@
-print("[BOOT] chat.py: módulo carregando...", flush=True)
 from __future__ import annotations
+print("[BOOT] chat.py: módulo carregando...", flush=True)
 
 from datetime import datetime
 from uuid import UUID

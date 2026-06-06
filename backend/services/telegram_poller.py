@@ -6,9 +6,9 @@ background event loop — so typing actions use await directly, avoiding the
 sync-wrapper deadlock that would occur if run_coroutine_threadsafe were called
 from within the same loop.
 """
-print("[BOOT] telegram_poller.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
+print("[BOOT] telegram_poller.py: módulo carregando...", flush=True)
 
 import asyncio
 import logging
