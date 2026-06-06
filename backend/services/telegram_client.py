@@ -7,9 +7,9 @@ event loop. All Telegram HTTP I/O happens on that loop.
 - Sync methods: use from any other thread (Flask, timer callbacks, etc.).
   They submit work via run_coroutine_threadsafe and block until done.
 """
-print("[BOOT] telegram_client.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
+print("[BOOT] telegram_client.py: módulo carregando...", flush=True)
 
 import asyncio
 import logging

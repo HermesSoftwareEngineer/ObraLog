@@ -1,4 +1,3 @@
-print("[BOOT] gateway_tools.py: módulo carregando...", flush=True)
 """
 Tools LangChain do agente — cada tool captura contexto via closure e delega
 para o service correspondente em backend/services/.
@@ -10,6 +9,7 @@ Padrão:
     return _execucao("nome", intent, handler)  # escrita
 """
 from __future__ import annotations
+print("[BOOT] gateway_tools.py: módulo carregando...", flush=True)
 
 import difflib
 import logging
