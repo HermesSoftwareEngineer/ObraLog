@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -22,9 +23,13 @@ def get_or_create_conversa(
     ambiente: str = "prod",
 ) -> Conversa:
     """Return the open Conversa for this user or create a new one."""
+    _t0 = time.monotonic()
+    logger.info("[SESSION_SVC] get_or_create_conversa: início usuario_id=%s tenant_id=%s chat_id=%s", usuario_id, tenant_id, chat_id)
+
     if tenant_id is None:
         raise ValueError("tenant_id é obrigatório para criar uma conversa.")
 
+    _t = time.monotonic()
     conversa = (
         db.query(Conversa)
         .filter(
@@ -35,9 +40,13 @@ def get_or_create_conversa(
         .order_by(Conversa.iniciada_em.desc())
         .first()
     )
+    logger.info("[SESSION_SVC] get_or_create_conversa: query=%.3fs conversa_existente=%s", time.monotonic() - _t, conversa is not None)
+
     if conversa:
+        logger.info("[SESSION_SVC] get_or_create_conversa: retornando existente id=%s total=%.3fs", conversa.id, time.monotonic() - _t0)
         return conversa
 
+    _t = time.monotonic()
     result = db.execute(
         text(
             "INSERT INTO conversas (tenant_id, usuario_id, chat_id, thread_id, ambiente)"
@@ -54,6 +63,7 @@ def get_or_create_conversa(
     )
     db.commit()
     new_id = result.scalar()
+    logger.info("[SESSION_SVC] get_or_create_conversa: INSERT+commit=%.3fs novo_id=%s total=%.3fs", time.monotonic() - _t, new_id, time.monotonic() - _t0)
     return db.query(Conversa).filter(Conversa.id == new_id).first()
 
 

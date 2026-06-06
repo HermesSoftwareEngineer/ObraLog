@@ -1,4 +1,9 @@
+import logging
+import time
+
 from langgraph.graph import StateGraph, START, END
+
+_logger = logging.getLogger("obralog.graph")
 
 try:
     from .state import State
@@ -10,6 +15,9 @@ except ImportError:
     from chat_db import checkpointer  # type: ignore
     from nodes.response import tools_step  # type: ignore
     from nodes.agent import agent_node, route_after_agent  # type: ignore
+
+_logger.info("[GRAPH] compilando StateGraph")
+_t = time.monotonic()
 
 graph_builder = StateGraph(State)
 
@@ -25,3 +33,4 @@ graph_builder.add_conditional_edges(
 graph_builder.add_edge("tools", "agent")
 
 graph = graph_builder.compile(checkpointer=checkpointer)
+_logger.info("[GRAPH] StateGraph compilado em %.2fs checkpointer=%s", time.monotonic() - _t, type(checkpointer).__name__)

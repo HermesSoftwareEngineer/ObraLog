@@ -49,6 +49,22 @@ try:
 except Exception:
     pass
 
+
+@event.listens_for(engine, "checkout")
+def _on_checkout(dbapi_conn, connection_record, connection_proxy):
+    logger.debug("[SESSION] conexão obtida do pool pid=%s", id(dbapi_conn))
+
+
+@event.listens_for(engine, "checkin")
+def _on_checkin(dbapi_conn, connection_record):
+    logger.debug("[SESSION] conexão devolvida ao pool pid=%s", id(dbapi_conn))
+
+
+@event.listens_for(engine, "connect")
+def _on_new_connect(dbapi_conn, connection_record):
+    logger.info("[SESSION] nova conexão TCP estabelecida com o banco pid=%s", id(dbapi_conn))
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

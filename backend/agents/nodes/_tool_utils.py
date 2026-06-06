@@ -1,5 +1,6 @@
 """Shared utilities for agent nodes: tool resolution, context extraction, output normalization."""
 import os
+import time
 import unicodedata
 import logging
 
@@ -71,8 +72,15 @@ def get_business_tools(
 
 
 def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
+    _t0 = time.monotonic()
     actor_user_id, actor_level, tenant_id, obra_id_ativa = resolve_actor_context(config)
+    logger.info(
+        "[TOOL_UTILS] resolve_tool_map: início actor_user_id=%s actor_level=%s tenant_id=%s obra_id_ativa=%s",
+        actor_user_id, actor_level, tenant_id, obra_id_ativa,
+    )
+
     if actor_user_id is None or actor_level is None:
+        logger.info("[TOOL_UTILS] resolve_tool_map: abortando — sem actor context (actor_user_id=%s actor_level=%s)", actor_user_id, actor_level)
         return {}
 
     configurable = (config or {}).get("configurable", {})
@@ -82,13 +90,17 @@ def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
     conversa_id = configurable.get("conversa_id")
 
     logger.info("[TOOL_UTILS] resolve_tool_map: chamando get_business_tools")
+    _t = time.monotonic()
     tools = get_business_tools(
         actor_user_id=int(actor_user_id),
         actor_level=str(actor_level),
         tenant_id=int(tenant_id) if tenant_id is not None else None,
         obra_id_ativa=int(obra_id_ativa) if obra_id_ativa is not None else None,
     )
-    logger.info("[TOOL_UTILS] resolve_tool_map: get_business_tools ok (%d tools), chamando get_telegram_tools", len(tools))
+    logger.info("[TOOL_UTILS] resolve_tool_map: get_business_tools ok em %.2fs (%d tools)", time.monotonic() - _t, len(tools))
+
+    logger.info("[TOOL_UTILS] resolve_tool_map: chamando get_telegram_tools")
+    _t = time.monotonic()
     tools.extend(
         get_telegram_tools(
             chat_id=str(telegram_chat_id) if telegram_chat_id is not None else None,
@@ -99,8 +111,11 @@ def resolve_tool_map(config: RunnableConfig | None = None) -> dict:
             conversa_id=int(conversa_id) if conversa_id is not None else None,
         )
     )
-    logger.info("[TOOL_UTILS] resolve_tool_map: get_telegram_tools ok, total=%d tools", len(tools))
-    return {tool.name: tool for tool in tools}
+    logger.info("[TOOL_UTILS] resolve_tool_map: get_telegram_tools ok em %.2fs, total=%d tools", time.monotonic() - _t, len(tools))
+
+    result = {tool.name: tool for tool in tools}
+    logger.info("[TOOL_UTILS] resolve_tool_map: concluído total=%.2fs", time.monotonic() - _t0)
+    return result
 
 
 def ensure_required_fields(tool_name: str, tool_args: dict, config: RunnableConfig | None = None) -> str | None:
