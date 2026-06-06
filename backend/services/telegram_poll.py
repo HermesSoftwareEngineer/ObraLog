@@ -3,19 +3,30 @@
 Single responsibility: receive poll_answer updates, look up poll context,
 and route the response through the agent.
 """
+print("[BOOT] telegram_poll.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
 
+print("[BOOT] telegram_poll.py: importando langchain_core...", flush=True)
 from langchain_core.messages import HumanMessage
+print("[BOOT] telegram_poll.py: langchain_core OK", flush=True)
 
+print("[BOOT] telegram_poll.py: importando db.repository...", flush=True)
 from backend.db.repository import Repository
+print("[BOOT] telegram_poll.py: db.repository OK", flush=True)
+
+print("[BOOT] telegram_poll.py: importando db.session...", flush=True)
 from backend.db.session import SessionLocal
+print("[BOOT] telegram_poll.py: db.session OK", flush=True)
+
+print("[BOOT] telegram_poll.py: importando telegram_client/extractor/interactions...", flush=True)
 from backend.services.telegram_client import BotClient
 from backend.services.telegram_extractor import extract_text_content, response_used_telegram_ui
 from backend.services.telegram_interactions import get_poll_context
+print("[BOOT] telegram_poll.py: telegram_client/extractor/interactions OK", flush=True)
 
 logger = logging.getLogger(__name__)
 

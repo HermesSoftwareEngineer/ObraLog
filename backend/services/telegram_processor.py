@@ -3,6 +3,7 @@
 Single responsibility: given a list of Telegram updates for the same chat,
 extract text, resolve the user, run the agent, and send the reply.
 """
+print("[BOOT] telegram_processor.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
 
@@ -14,13 +15,18 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime
 
+print("[BOOT] telegram_processor.py: importando langchain_core...", flush=True)
 from langchain_core.messages import HumanMessage
+print("[BOOT] telegram_processor.py: langchain_core OK", flush=True)
 
+print("[BOOT] telegram_processor.py: importando agents.graph (PESADO — inicia checkpointer)...", flush=True)
 try:
     from backend.agents.graph import graph
 except ImportError:
     from agents.graph import graph  # type: ignore[no-redef]
+print("[BOOT] telegram_processor.py: agents.graph OK", flush=True)
 
+print("[BOOT] telegram_processor.py: importando db/services...", flush=True)
 from backend.db.models import UsuarioObra
 from backend.db.repository import Repository
 from backend.db.session import SessionLocal

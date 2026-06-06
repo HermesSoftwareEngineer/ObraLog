@@ -1,3 +1,4 @@
+print("[BOOT] reports.py: módulo carregando...", flush=True)
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal

@@ -1,3 +1,4 @@
+print("[BOOT] dashboard.py: módulo carregando...", flush=True)
 """
 Dashboard API — ObraLog
 =======================

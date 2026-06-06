@@ -1,3 +1,4 @@
+print("[BOOT] tenant.py: módulo carregando...", flush=True)
 from flask import Blueprint, jsonify, request, g
 
 from backend.api.routes.auth import require_auth

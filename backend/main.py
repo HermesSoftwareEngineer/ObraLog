@@ -22,37 +22,67 @@ print("[OBRALOG] 4: logger ok", flush=True)
 _startup_logger = logging.getLogger("obralog.startup")
 
 try:
-    print("[OBRALOG] 5: importando blueprints...", flush=True)
+    print("[BOOT] 5.0: importando blueprints — INÍCIO", flush=True)
+
+    print("[BOOT] 5.1a: import webhook START", flush=True)
     from .api.routes.webhook import telegram_blueprint
-    print("[OBRALOG] 5a: webhook blueprint ok", flush=True)
+    print("[BOOT] 5.1b: import webhook OK", flush=True)
+
+    print("[BOOT] 5.2a: import whatsapp_webhook START", flush=True)
     from .api.routes.whatsapp_webhook import whatsapp_blueprint
-    print("[OBRALOG] 5b: whatsapp blueprint ok", flush=True)
+    print("[BOOT] 5.2b: import whatsapp_webhook OK", flush=True)
+
+    print("[BOOT] 5.3a: import crud START", flush=True)
     from .api.routes.crud import api_blueprint
-    print("[OBRALOG] 5c: crud ok", flush=True)
+    print("[BOOT] 5.3b: import crud OK", flush=True)
+
+    print("[BOOT] 5.4a: import diario START", flush=True)
     from .api.routes.diario import router as diario_router, diarios_router, diarios_files_router
-    print("[OBRALOG] 5d: diario ok", flush=True)
+    print("[BOOT] 5.4b: import diario OK", flush=True)
+
+    print("[BOOT] 5.5a: import alerts START", flush=True)
     from .api.routes.alerts import router as alerts_router
-    print("[OBRALOG] 5e: alerts ok", flush=True)
+    print("[BOOT] 5.5b: import alerts OK", flush=True)
+
+    print("[BOOT] 5.6a: import reports START", flush=True)
     from .api.routes.reports import router as reports_blueprint
-    print("[OBRALOG] 5f: reports ok", flush=True)
+    print("[BOOT] 5.6b: import reports OK", flush=True)
+
+    print("[BOOT] 5.7a: import auth START", flush=True)
     from .api.routes.auth import auth_blueprint
-    print("[OBRALOG] 5g: auth ok", flush=True)
+    print("[BOOT] 5.7b: import auth OK", flush=True)
+
+    print("[BOOT] 5.8a: import chat START", flush=True)
     from .api.routes.chat import router as chat_router
-    print("[OBRALOG] 5h: chat ok", flush=True)
+    print("[BOOT] 5.8b: import chat OK", flush=True)
+
+    print("[BOOT] 5.9a: import tenant START", flush=True)
     from .api.routes.tenant import tenant_blueprint
-    print("[OBRALOG] 5i: tenant ok", flush=True)
+    print("[BOOT] 5.9b: import tenant OK", flush=True)
+
+    print("[BOOT] 5.10a: import dashboard START", flush=True)
     from .api.routes.dashboard import dashboard_blueprint
-    print("[OBRALOG] 5j: dashboard ok", flush=True)
+    print("[BOOT] 5.10b: import dashboard OK", flush=True)
+
+    print("[BOOT] 5.11a: import admin START", flush=True)
     from .api.routes.admin import admin_blueprint
-    print("[OBRALOG] 5k: admin ok", flush=True)
+    print("[BOOT] 5.11b: import admin OK", flush=True)
+
+    print("[BOOT] 5.12a: import creditos START", flush=True)
     from .api.routes.creditos import creditos_v1
-    print("[OBRALOG] 5l: creditos ok", flush=True)
+    print("[BOOT] 5.12b: import creditos OK", flush=True)
+
+    print("[BOOT] 5.13a: import agent_events START", flush=True)
     from .api.routes.agent_events import router as agent_events_router
-    print("[OBRALOG] 5m: agent_events ok", flush=True)
+    print("[BOOT] 5.13b: import agent_events OK", flush=True)
+
+    print("[BOOT] 5.14a: import services.telegram START", flush=True)
     from .services.telegram import start_polling, set_webhook
-    print("[OBRALOG] 5n: telegram service ok", flush=True)
+    print("[BOOT] 5.14b: import services.telegram OK", flush=True)
+
+    print("[BOOT] 5.0: todos os blueprints importados OK", flush=True)
 except ImportError:
-    print("[OBRALOG] 5: fallback import (sem pacote relativo)", flush=True)
+    print("[BOOT] 5.0: fallback import (sem pacote relativo)", flush=True)
     from api.routes.webhook import telegram_blueprint
     from api.routes.whatsapp_webhook import whatsapp_blueprint
     from api.routes.crud import api_blueprint
@@ -67,7 +97,7 @@ except ImportError:
     from api.routes.creditos import creditos_v1
     from api.routes.agent_events import router as agent_events_router
     from services.telegram import start_polling, set_webhook
-    print("[OBRALOG] 5: fallback imports ok", flush=True)
+    print("[BOOT] 5.0: fallback imports OK", flush=True)
 
 
 app = Flask(__name__)

@@ -7,6 +7,7 @@ event loop. All Telegram HTTP I/O happens on that loop.
 - Sync methods: use from any other thread (Flask, timer callbacks, etc.).
   They submit work via run_coroutine_threadsafe and block until done.
 """
+print("[BOOT] telegram_client.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
 
@@ -17,9 +18,11 @@ import re
 import threading
 import time
 
+print("[BOOT] telegram_client.py: importando python-telegram-bot...", flush=True)
 from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.request import HTTPXRequest
+print("[BOOT] telegram_client.py: python-telegram-bot OK", flush=True)
 
 try:
     import telegramify_markdown
@@ -244,5 +247,7 @@ class BotClient:
         return file_obj.file_path
 
 
+print("[BOOT] telegram_client.py: criando bot_client singleton...", flush=True)
 # Singleton used by all service modules.
 bot_client = BotClient()
+print("[BOOT] telegram_client.py: bot_client criado OK (lazy — sem conexão TCP ainda)", flush=True)

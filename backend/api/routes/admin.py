@@ -1,3 +1,4 @@
+print("[BOOT] admin.py: módulo carregando...", flush=True)
 import re
 
 from flask import Blueprint, g, jsonify, request

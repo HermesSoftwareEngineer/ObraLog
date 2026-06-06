@@ -1,3 +1,4 @@
+print("[BOOT] auth.py: módulo carregando...", flush=True)
 import os
 import secrets
 import string

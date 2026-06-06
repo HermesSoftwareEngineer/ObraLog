@@ -1,3 +1,4 @@
+print("[BOOT] rag_service.py: módulo carregando...", flush=True)
 from __future__ import annotations
 
 from pathlib import Path

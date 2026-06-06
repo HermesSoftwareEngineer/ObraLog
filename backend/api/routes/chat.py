@@ -1,3 +1,4 @@
+print("[BOOT] chat.py: módulo carregando...", flush=True)
 from __future__ import annotations
 
 from datetime import datetime

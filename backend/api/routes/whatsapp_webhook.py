@@ -1,3 +1,4 @@
+print("[BOOT] whatsapp_webhook.py: módulo carregando...", flush=True)
 """WhatsApp Cloud API webhook routes.
 
 GET  /whatsapp/webhook   — Meta hub verification challenge (required for setup)

@@ -1,3 +1,4 @@
+print("[BOOT] db/session.py: módulo carregando...", flush=True)
 import logging
 import os
 
@@ -15,6 +16,7 @@ def _normalize_database_url(database_url: str) -> str:
     return database_url
 
 
+print("[BOOT] db/session.py: criando engine SQLAlchemy...", flush=True)
 engine = create_engine(
     _normalize_database_url(settings.database_url),
     pool_pre_ping=True,
@@ -65,7 +67,9 @@ def _on_new_connect(dbapi_conn, connection_record):
     logger.info("[SESSION] nova conexão TCP estabelecida com o banco pid=%s", id(dbapi_conn))
 
 
+print("[BOOT] db/session.py: engine criado, criando SessionLocal...", flush=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+print("[BOOT] db/session.py: SessionLocal OK", flush=True)
 
 
 def ensure_runtime_migrations() -> None:
@@ -588,8 +592,12 @@ def ensure_runtime_migrations() -> None:
         )
 
 
-if os.environ.get("RUN_RUNTIME_MIGRATIONS", "false").lower() == "true":
+_run_migrations = os.environ.get("RUN_RUNTIME_MIGRATIONS", "false").lower() == "true"
+print(f"[BOOT] db/session.py: RUN_RUNTIME_MIGRATIONS={_run_migrations}", flush=True)
+if _run_migrations:
+    print("[BOOT] db/session.py: ensure_runtime_migrations() INICIANDO...", flush=True)
     ensure_runtime_migrations()
+    print("[BOOT] db/session.py: ensure_runtime_migrations() CONCLUÍDO", flush=True)
 
 
 def get_db_session():

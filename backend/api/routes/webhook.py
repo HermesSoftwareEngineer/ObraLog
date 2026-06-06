@@ -1,13 +1,16 @@
+print("[BOOT] webhook.py: módulo carregando...", flush=True)
 import hmac
 import os
 import logging
 
 from flask import Blueprint, jsonify, request
 
+print("[BOOT] webhook.py: importando backend.services.telegram...", flush=True)
 try:
 	from backend.services.telegram import handle_telegram_update
 except ImportError:
 	from services.telegram import handle_telegram_update
+print("[BOOT] webhook.py: backend.services.telegram OK", flush=True)
 
 
 telegram_blueprint = Blueprint("telegram", __name__)

@@ -1,19 +1,25 @@
+print("[BOOT] llms.py: módulo carregando...", flush=True)
 from pathlib import Path
 import os
 import base64
 import logging
 
 from dotenv import load_dotenv
+
+print("[BOOT] llms.py: importando langchain_google_genai...", flush=True)
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
+print("[BOOT] llms.py: langchain_google_genai OK", flush=True)
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 google_api_key = os.environ.get("GOOGLE_API_KEY")
+print(f"[BOOT] llms.py: GOOGLE_API_KEY presente={bool(google_api_key)}", flush=True)
 
 if not google_api_key:
     raise RuntimeError("GOOGLE_API_KEY não configurada.")
 
+print("[BOOT] llms.py: instanciando ChatGoogleGenerativeAI...", flush=True)
 # Agente principal — thinking moderado, temperatura baixa para respostas consistentes
 llm_main = ChatGoogleGenerativeAI(
     model="gemini-3.5-flash",
@@ -23,6 +29,7 @@ llm_main = ChatGoogleGenerativeAI(
     request_timeout=60,
     max_retries=1,
 )
+print("[BOOT] llms.py: ChatGoogleGenerativeAI instanciado OK", flush=True)
 
 def _extract_text_content(content) -> str:
     if isinstance(content, str):

@@ -1,3 +1,4 @@
+print("[BOOT] agent_events.py: módulo carregando...", flush=True)
 """SSE endpoint: streams new agent messages for a conversation to the frontend.
 
 GET /api/v1/agent/events/<chat_id>?since=<iso_timestamp>

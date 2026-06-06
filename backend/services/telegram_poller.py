@@ -6,6 +6,7 @@ background event loop — so typing actions use await directly, avoiding the
 sync-wrapper deadlock that would occur if run_coroutine_threadsafe were called
 from within the same loop.
 """
+print("[BOOT] telegram_poller.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
 
@@ -14,7 +15,9 @@ import logging
 import threading
 from typing import Callable
 
+print("[BOOT] telegram_poller.py: importando telegram_client...", flush=True)
 from backend.services.telegram_client import BotClient
+print("[BOOT] telegram_poller.py: telegram_client OK", flush=True)
 
 logger = logging.getLogger(__name__)
 

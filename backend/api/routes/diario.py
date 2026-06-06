@@ -1,3 +1,4 @@
+print("[BOOT] diario.py: módulo carregando...", flush=True)
 from __future__ import annotations
 
 from datetime import date

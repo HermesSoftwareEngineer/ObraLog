@@ -6,6 +6,7 @@ functions used by the rest of the application:
   - start_polling            (development / standalone mode)
   - set_webhook              (startup configuration)
 """
+print("[BOOT] telegram.py: módulo carregando...", flush=True)
 
 from __future__ import annotations
 
@@ -13,9 +14,17 @@ import logging
 import os
 import threading
 
+print("[BOOT] telegram.py: importando telegram_client...", flush=True)
 from backend.services.telegram_client import bot_client
+print("[BOOT] telegram.py: telegram_client OK", flush=True)
+
+print("[BOOT] telegram.py: importando telegram_poll...", flush=True)
 from backend.services.telegram_poll import PollAnswerHandler
+print("[BOOT] telegram.py: telegram_poll OK", flush=True)
+
+print("[BOOT] telegram.py: importando telegram_poller...", flush=True)
 from backend.services.telegram_poller import Poller
+print("[BOOT] telegram.py: telegram_poller OK", flush=True)
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +32,9 @@ logger = logging.getLogger(__name__)
 # Component wiring
 # ---------------------------------------------------------------------------
 
+print("[BOOT] telegram.py: criando _poll_handler...", flush=True)
 _poll_handler = PollAnswerHandler(bot_client)
+print("[BOOT] telegram.py: _poll_handler criado OK", flush=True)
 
 
 def _dispatch_direct(updates: list[dict]) -> None:
