@@ -13,7 +13,6 @@ def _parse_level(value: str | None, default: int = logging.INFO) -> int:
 
 ROOT_LEVEL = _parse_level(os.environ.get("OBRALOG_LOG_LEVEL"), logging.INFO)
 
-# Configura logging para aparecer no console com flush
 logging.basicConfig(
     level=ROOT_LEVEL,
     format="[%(asctime)s] %(levelname)s in %(name)s: %(message)s",
@@ -22,8 +21,21 @@ logging.basicConfig(
     ]
 )
 
-# Desabilita buffer para garantir que logs apareçam
-logging.getLogger().handlers[0].flush = sys.stdout.flush
+# Cloud Run console: somente WARNING+ para reduzir ruído
+_stream_handler = logging.getLogger().handlers[0]
+_stream_handler.setLevel(logging.WARNING)
+_stream_handler.flush = sys.stdout.flush
+
+# Persistência estruturada no Firestore (ROOT_LEVEL+, CRITICAL dispara e-mail)
+if os.getenv("GCP_PROJECT_ID"):
+    from backend.logging.firestore_handler import FirestoreHandler, LogContextFilter
+    _fs_handler = FirestoreHandler(
+        collection=os.getenv("FIRESTORE_COLLECTION", "logs"),
+        ttl_days=90,
+    )
+    _fs_handler.setLevel(ROOT_LEVEL)
+    logging.getLogger().addHandler(_fs_handler)
+    logging.getLogger().addFilter(LogContextFilter())
 
 # Keep third-party network/tracing noise out of the console by default.
 for noisy_name in (
