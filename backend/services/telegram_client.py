@@ -18,11 +18,7 @@ import re
 import threading
 import time
 
-print("[BOOT] telegram_client.py: importando python-telegram-bot...", flush=True)
-from telegram import Bot
-from telegram.constants import ParseMode
-from telegram.request import HTTPXRequest
-print("[BOOT] telegram_client.py: python-telegram-bot OK", flush=True)
+print("[BOOT] telegram_client.py: python-telegram-bot será importado lazy (primeiro uso)", flush=True)
 
 try:
     import telegramify_markdown
@@ -79,6 +75,8 @@ def _convert_markdown_with_library(text: str) -> str | None:
 
 
 def _build_markdown_candidates(text: str) -> list[tuple[str, str, str]]:
+    from telegram.constants import ParseMode  # noqa: PLC0415 — lazy import intencional
+
     candidates: list[tuple[str, str, str]] = []
 
     converted = _convert_markdown_with_library(text)
@@ -122,6 +120,9 @@ class BotClient:
         token = os.environ.get("TELEGRAM_TOKEN")
         if not token:
             raise RuntimeError("TELEGRAM_TOKEN não configurado.")
+
+        from telegram import Bot  # noqa: PLC0415 — lazy import intencional
+        from telegram.request import HTTPXRequest  # noqa: PLC0415
 
         _t = time.monotonic()
         bot = Bot(
@@ -251,3 +252,20 @@ print("[BOOT] telegram_client.py: criando bot_client singleton...", flush=True)
 # Singleton used by all service modules.
 bot_client = BotClient()
 print("[BOOT] telegram_client.py: bot_client criado OK (lazy — sem conexão TCP ainda)", flush=True)
+
+
+def _warmup_bot() -> None:
+    """Faz o import pesado do python-telegram-bot em background após o startup.
+
+    Evita que a primeira request real enfrente o atraso de ~90s do import.
+    """
+    try:
+        logger.info("[BOT_CLIENT] warm-up: iniciando import em background...")
+        _t = time.monotonic()
+        bot_client.get_loop()
+        logger.info("[BOT_CLIENT] warm-up: concluído em %.1fs", time.monotonic() - _t)
+    except Exception as exc:
+        logger.warning("[BOT_CLIENT] warm-up: falhou (%s) — será retentado no primeiro uso", exc)
+
+
+threading.Thread(target=_warmup_bot, daemon=True, name="telegram-warmup").start()
