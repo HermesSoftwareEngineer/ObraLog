@@ -21,7 +21,7 @@ def enqueue_job(canal: str, chat_id: str, payload: dict, env: str) -> int:
         row = db.execute(
             text(
                 "INSERT INTO agent_jobs (canal, chat_id, payload, status, env, created_at) "
-                "VALUES (:canal, :chat_id, CAST(:payload AS jsonb), 'pending', :env, now()) "
+                "VALUES (:canal, :chat_id, :payload, 'pending', :env, now()) "
                 "RETURNING id"
             ),
             {
@@ -46,7 +46,7 @@ def _process_one_job(job_id: int, job_payload: dict) -> None:
     print(f"[WORKER] iniciando job id={job_id}", flush=True)
 
     try:
-        updates = job_payload.get("updates", [])
+        updates = job_payload if isinstance(job_payload, list) else job_payload.get("updates", [])
         MessageProcessor(bot_client).process(updates)
 
         with SessionLocal() as db:
