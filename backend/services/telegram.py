@@ -131,7 +131,7 @@ _image_batcher = _ImageBatchDebouncer(wait_seconds=_image_batch_wait_seconds())
 # Public API
 # ---------------------------------------------------------------------------
 
-def handle_telegram_update(update: dict, *, typing_already_sent: bool = False) -> dict:
+def handle_telegram_update(update: dict) -> dict:
     if poll_answer := update.get("poll_answer"):
         return _poll_handler.handle(poll_answer)
     if update.get("edited_message") and not update.get("message"):
@@ -150,14 +150,6 @@ def handle_telegram_update(update: dict, *, typing_already_sent: bool = False) -
             "reason": "image_batch_queued",
             "pending_images": pending,
         }
-
-    # Envia typing imediato para feedback visual enquanto o worker processa
-    if not typing_already_sent:
-        if cid := chat.get("id"):
-            try:
-                bot_client.send_typing(cid, message.get("message_thread_id"))
-            except Exception:
-                pass
 
     from backend.jobs.agent_worker import enqueue_job
     chat_id = str(chat.get("id", ""))

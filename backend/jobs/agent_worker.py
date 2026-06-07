@@ -47,6 +47,16 @@ def _process_one_job(job_id: int, job_payload: dict) -> None:
 
     try:
         updates = job_payload if isinstance(job_payload, list) else job_payload.get("updates", [])
+
+        first = updates[0] if updates else {}
+        msg = first.get("message") or {}
+        cid = (msg.get("chat") or {}).get("id")
+        if cid:
+            try:
+                bot_client.send_typing(cid, msg.get("message_thread_id"))
+            except Exception:
+                pass
+
         MessageProcessor(bot_client).process(updates)
 
         with SessionLocal() as db:
