@@ -14,6 +14,8 @@ import logging
 import os
 import threading
 
+_OBRALOG_ENV = os.environ.get("OBRALOG_ENV", "prod")
+
 print("[BOOT] telegram.py: importando telegram_client...", flush=True)
 from backend.services.telegram_client import bot_client
 print("[BOOT] telegram.py: telegram_client OK", flush=True)
@@ -115,15 +117,11 @@ class _ImageBatchDebouncer:
             return
 
         try:
+            from backend.jobs.agent_worker import enqueue_job
             chat_id = str(key[0])
-            threading.Thread(
-                target=_dispatch_direct,
-                args=(updates,),
-                daemon=True,
-                name=f"agent-telegram-batch-{chat_id}",
-            ).start()
+            enqueue_job(canal="telegram", chat_id=chat_id, payload={"updates": updates}, env=_OBRALOG_ENV)
         except Exception as exc:
-            logger.error("Erro ao despachar lote de imagens do Telegram: %s", exc, exc_info=True)
+            logger.error("Erro ao enfileirar lote de imagens do Telegram: %s", exc, exc_info=True)
 
 
 _image_batcher = _ImageBatchDebouncer(wait_seconds=_image_batch_wait_seconds())
@@ -161,13 +159,9 @@ def handle_telegram_update(update: dict, *, typing_already_sent: bool = False) -
             except Exception:
                 pass
 
+    from backend.jobs.agent_worker import enqueue_job
     chat_id = str(chat.get("id", ""))
-    threading.Thread(
-        target=_dispatch_direct,
-        args=([update],),
-        daemon=True,
-        name=f"agent-telegram-{chat_id}",
-    ).start()
+    enqueue_job(canal="telegram", chat_id=chat_id, payload={"updates": [update]}, env=_OBRALOG_ENV)
     return {"ok": True, "dispatched": True}
 
 

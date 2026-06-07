@@ -102,6 +102,9 @@ except ImportError:
 
 app = Flask(__name__)
 
+from backend.api.middleware.log_context import set_request_id
+app.before_request(set_request_id)
+
 _BACKEND_DIR = Path(__file__).resolve().parent  # ObraLog/backend/
 UPLOAD_DIR = Path(os.environ.get("REGISTRO_IMAGENS_DIR", str(_BACKEND_DIR / "uploads" / "registros")))
 
@@ -271,6 +274,11 @@ def _warmup_agent_tools() -> None:
 
 
 _warmup_agent_tools()
+
+if not _is_werkzeug_reloader_parent():
+    print("[BOOT] iniciando agent worker thread", flush=True)
+    from backend.jobs.agent_worker import start_worker_thread
+    start_worker_thread()
 
 
 @app.get("/health")
