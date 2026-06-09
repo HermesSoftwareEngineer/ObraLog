@@ -41,6 +41,7 @@ def get_telegram_tools(
     actor_user_id: int | None,
     actor_level: str | None,
     conversa_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> list:
     logger.info("[TELEGRAM_TOOLS] get_telegram_tools: iniciando chat_id=%s", chat_id)
     if not chat_id:
@@ -180,15 +181,21 @@ def get_telegram_tools(
 
     @tool
     def encerrar_conversa_operacional() -> dict:
-        """Encerra a conversa atual a pedido do usuário. Use quando o usuário pedir explicitamente para encerrar, finalizar ou fechar a conversa."""
+        """Encerra a conversa atual. Use esta tool de forma espontânea, sem necessidade de pedido explícito, quando:
+        - O usuário se despedir (ex: "tchau", "até mais", "valeu", "até amanhã", "obrigado, é isso")
+        - A tarefa principal foi concluída com sucesso e o usuário confirmou satisfação ou não demonstra intenção de continuar
+        - O fluxo chegou a um encerramento natural e não há pendências abertas
+        Não peça confirmação ao usuário — encerre diretamente e envie uma mensagem curta de despedida antes de chamar esta tool."""
         if actor_user_id is None:
             return {"ok": False, "message": "Contexto de usuário não identificado para encerrar a conversa."}
         try:
             from backend.db.session import SessionLocal
             from backend.agents.session_service import encerrar_conversa
+            from backend.agents.compactacao import compactar_conversa
             from backend.db.models import Conversa
             with SessionLocal() as db:
                 target_id = conversa_id
+                messages_state = None
                 if target_id is None:
                     conv = (
                         db.query(Conversa)
@@ -202,6 +209,21 @@ def get_telegram_tools(
                     if not conv:
                         return {"ok": False, "message": "Nenhuma conversa ativa encontrada para encerrar."}
                     target_id = conv.id
+
+                # Recupera mensagens do state para compactação
+                try:
+                    from backend.agents.chat_db import checkpointer
+                    conv_obj = db.query(Conversa).filter(Conversa.id == target_id).first()
+                    if conv_obj and conv_obj.thread_id:
+                        from backend.services.telegram_processor import _scoped_thread_id
+                        cfg = {"configurable": {"thread_id": _scoped_thread_id(conv_obj.thread_id)}}
+                        checkpoint = checkpointer.get(cfg)
+                        if checkpoint:
+                            messages_state = checkpoint.get("channel_values", {}).get("messages", [])
+                except Exception as _exc:
+                    logger.debug("[ENCERRAR] Falha ao recuperar state para compactação: %s", _exc)
+
+                compactar_conversa(db, target_id, messages_state, compress_state=False)
                 encerrar_conversa(db, target_id)
             return {"ok": True, "message": "Conversa encerrada com sucesso. Até logo!"}
         except Exception as exc:
@@ -362,5 +384,154 @@ def get_telegram_tools(
         except Exception as exc:
             return {"ok": False, "message": f"Erro ao enviar pelo Telegram: {exc}"}
 
-    logger.info("[TELEGRAM_TOOLS] get_telegram_tools: ok, retornando 4 tools chat_id=%s", chat_id)
-    return [enviar_botoes_resposta_rapida, enviar_enquete_checklist, encerrar_conversa_operacional, enviar_diario_telegram]
+    # -----------------------------------------------------------------------
+    # Tool: notificar_progresso_usuario
+    # -----------------------------------------------------------------------
+
+    @tool
+    def notificar_progresso_usuario(mensagem: str) -> dict:
+        """Envia uma mensagem imediata ao usuário antes de executar uma tarefa demorada.
+        Use quando a operação envolver múltiplas etapas, consultas ao banco, processamento de imagens ou
+        geração de documentos. Exemplos: 'Analisando os registros, um instante...',
+        'Gerando o diário, aguarde...', 'Processando as imagens enviadas...'"""
+        try:
+            bot_client.send_message(chat_id, str(mensagem))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "message": f"Falha ao notificar: {exc}"}
+
+    # -----------------------------------------------------------------------
+    # Tool: consultar_historico_conversas
+    # -----------------------------------------------------------------------
+
+    @tool
+    def consultar_historico_conversas(query: str, limit: int = 3) -> dict:
+        """Busca semânticamente em conversas anteriores deste usuário no mesmo tenant.
+        Use quando o usuário perguntar sobre interações passadas, decisões anteriores,
+        registros feitos em outras sessões ou qualquer histórico de conversa.
+        Parâmetros:
+          query: descrição do que você quer encontrar (ex: 'diário da obra X em maio')
+          limit: número máximo de resultados (1-5, padrão 3)"""
+        if actor_user_id is None or tenant_id is None:
+            return {"ok": False, "message": "Contexto de usuário não disponível."}
+        try:
+            from backend.agents.llms import embeddings_model
+            from backend.db.session import SessionLocal
+            from sqlalchemy import text as sqlt
+
+            k = max(1, min(int(limit), 5))
+            query_embedding = embeddings_model.embed_query(str(query))
+            emb_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+
+            with SessionLocal() as db:
+                rows = db.execute(
+                    sqlt(
+                        """
+                        SELECT cr.resumo, c.iniciada_em, c.encerrada_em
+                        FROM conversa_resumos cr
+                        JOIN conversas c ON c.id = cr.conversa_id
+                        WHERE c.usuario_id = :uid
+                          AND c.tenant_id  = :tid
+                          AND cr.embedding IS NOT NULL
+                        ORDER BY cr.embedding <=> :emb::vector
+                        LIMIT :k
+                        """
+                    ),
+                    {"uid": actor_user_id, "tid": tenant_id, "emb": emb_str, "k": k},
+                ).fetchall()
+
+            if not rows:
+                return {"ok": True, "encontrado": False, "resultados": [], "message": "Nenhum histórico encontrado."}
+
+            resultados = []
+            for row in rows:
+                resumo, iniciada, encerrada = row
+                periodo = f"{iniciada.strftime('%d/%m/%Y %H:%M') if iniciada else '?'}"
+                if encerrada:
+                    periodo += f" → {encerrada.strftime('%d/%m/%Y %H:%M')}"
+                resultados.append({"periodo": periodo, "resumo": resumo})
+
+            return {"ok": True, "encontrado": True, "resultados": resultados}
+        except Exception as exc:
+            return {"ok": False, "message": f"Erro ao consultar histórico: {exc}"}
+
+    # -----------------------------------------------------------------------
+    # Tool: conferir_contexto_tenant
+    # -----------------------------------------------------------------------
+
+    @tool
+    def conferir_contexto_tenant(tenant_id_alvo: int) -> dict:
+        """Carrega o contexto completo (obras, frentes de serviço, obra padrão) de um tenant
+        ao qual o usuário tem acesso. Use quando o usuário quiser operar em um tenant diferente do ativo.
+        Após a confirmação do usuário, este tenant passa a ser o contexto da conversa atual.
+        Parâmetros:
+          tenant_id_alvo: ID do tenant a consultar (deve constar na lista de tenants acessíveis)"""
+        if actor_user_id is None:
+            return {"ok": False, "message": "Contexto de usuário não disponível."}
+        try:
+            from backend.db.session import SessionLocal
+            from backend.db.repository import Repository
+            from backend.agents.context.tenant_snapshot import build_tenant_snapshot
+            from backend.services.telegram_processor import _cache_set, _scoped_thread_id
+
+            with SessionLocal() as db:
+                # Verificar acesso
+                if not Repository.usuario_tenants.tem_acesso(db, actor_user_id, tenant_id_alvo):
+                    return {"ok": False, "message": f"Você não tem acesso ao tenant ID {tenant_id_alvo}."}
+
+                # Resolver obra padrão do tenant para este usuário
+                from backend.db.models import UsuarioObra
+                obras = (
+                    db.query(UsuarioObra)
+                    .filter(
+                        UsuarioObra.usuario_id == actor_user_id,
+                        UsuarioObra.tenant_id == tenant_id_alvo,
+                        UsuarioObra.ativo.is_(True),
+                    )
+                    .all()
+                )
+                obra_padrao_id = None
+                if len(obras) == 1:
+                    obra_padrao_id = obras[0].obra_id
+                else:
+                    padrao = next((o for o in obras if o.eh_padrao), None)
+                    if padrao:
+                        obra_padrao_id = padrao.obra_id
+
+                snapshot = build_tenant_snapshot(db, tenant_id_alvo, obra_padrao_id, actor_level)
+
+            # Invalidar cache da thread para forçar rebuild com novo tenant na próxima mensagem
+            if thread_id:
+                novo_ctx = {
+                    "_prebuilt_snapshot": snapshot,
+                    "_prebuilt_vector_ctx": "",
+                    "_prebuilt_memories": "",
+                    "tenant_id": tenant_id_alvo,
+                    "obra_id_ativa": obra_padrao_id,
+                }
+                _cache_set(_scoped_thread_id(thread_id), novo_ctx)
+
+            return {
+                "ok": True,
+                "tenant_id": tenant_id_alvo,
+                "obra_id_ativa": obra_padrao_id,
+                "snapshot": snapshot,
+                "message": (
+                    f"Contexto do tenant ID {tenant_id_alvo} carregado. "
+                    f"Obra ativa: ID {obra_padrao_id}." if obra_padrao_id
+                    else f"Contexto do tenant ID {tenant_id_alvo} carregado. Nenhuma obra padrão definida — pergunte ao usuário qual obra usar."
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "message": f"Erro ao conferir contexto do tenant: {exc}"}
+
+    logger.info("[TELEGRAM_TOOLS] get_telegram_tools: ok, retornando 7 tools chat_id=%s", chat_id)
+    return [
+        enviar_botoes_resposta_rapida,
+        enviar_enquete_checklist,
+        encerrar_conversa_operacional,
+        enviar_diario_telegram,
+        notificar_progresso_usuario,
+        consultar_historico_conversas,
+        conferir_contexto_tenant,
+    ]

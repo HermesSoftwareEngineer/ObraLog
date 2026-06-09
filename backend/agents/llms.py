@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 print("[BOOT] llms.py: importando langchain_google_genai...", flush=True)
 from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 print("[BOOT] llms.py: langchain_google_genai OK", flush=True)
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -30,6 +30,13 @@ llm_main = ChatGoogleGenerativeAI(
     max_retries=1,
 )
 print("[BOOT] llms.py: ChatGoogleGenerativeAI instanciado OK", flush=True)
+
+print("[BOOT] llms.py: instanciando GoogleGenerativeAIEmbeddings...", flush=True)
+embeddings_model = GoogleGenerativeAIEmbeddings(
+    model="models/text-embedding-004",
+    google_api_key=google_api_key,
+)
+print("[BOOT] llms.py: GoogleGenerativeAIEmbeddings instanciado OK", flush=True)
 
 def _extract_text_content(content) -> str:
     if isinstance(content, str):

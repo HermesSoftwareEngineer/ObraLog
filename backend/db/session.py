@@ -441,6 +441,23 @@ def ensure_runtime_migrations() -> None:
                     "CREATE INDEX IF NOT EXISTS idx_conversas_aberta ON conversas(tenant_id, ultima_msg_em) WHERE encerrada_em IS NULL"
                 )
             )
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversa_resumos (
+                        id                    BIGSERIAL PRIMARY KEY,
+                        conversa_id           BIGINT NOT NULL REFERENCES conversas(id) ON DELETE CASCADE,
+                        resumo                TEXT NOT NULL,
+                        documento_enriquecido TEXT NOT NULL,
+                        embedding             VECTOR(768),
+                        created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_conversa_resumos_conversa_id ON conversa_resumos(conversa_id)")
+            )
             connection.execute(text("RELEASE SAVEPOINT pgvector_sp"))
         except Exception as _vec_exc:
             connection.execute(text("ROLLBACK TO SAVEPOINT pgvector_sp"))

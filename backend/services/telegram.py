@@ -63,6 +63,9 @@ def _image_batch_wait_seconds() -> float:
         return 2.5
 
 
+_IMAGE_BATCH_MAX = 10
+
+
 class _ImageBatchDebouncer:
     def __init__(self, wait_seconds: float) -> None:
         self._wait_seconds = wait_seconds
@@ -79,6 +82,7 @@ class _ImageBatchDebouncer:
         thread_id = message.get("message_thread_id")
         key = (int(chat_id), int(thread_id) if thread_id is not None else None)
 
+        flush_now = False
         with self._lock:
             bucket = self._batches.get(key)
             if not bucket:
@@ -86,22 +90,48 @@ class _ImageBatchDebouncer:
                 self._batches[key] = bucket
 
             bucket["updates"].append(update)
-            bucket["generation"] += 1
-            generation = int(bucket["generation"])
+            pending = len(bucket["updates"])
 
-            existing_timer = bucket.get("timer")
-            if existing_timer:
-                existing_timer.cancel()
+            if pending >= _IMAGE_BATCH_MAX:
+                # Limite atingido — cancela o timer e flush imediato
+                existing_timer = bucket.get("timer")
+                if existing_timer:
+                    existing_timer.cancel()
+                self._batches.pop(key, None)
+                flush_now = True
+                updates_to_flush = list(bucket["updates"])
+            else:
+                bucket["generation"] += 1
+                generation = int(bucket["generation"])
 
-            timer = threading.Timer(
-                self._wait_seconds,
-                self._flush_if_current,
-                args=(key, generation),
-            )
-            timer.daemon = True
-            bucket["timer"] = timer
-            timer.start()
-            return len(bucket["updates"])
+                existing_timer = bucket.get("timer")
+                if existing_timer:
+                    existing_timer.cancel()
+
+                timer = threading.Timer(
+                    self._wait_seconds,
+                    self._flush_if_current,
+                    args=(key, generation),
+                )
+                timer.daemon = True
+                bucket["timer"] = timer
+                timer.start()
+
+        if flush_now:
+            self._dispatch(str(key[0]), updates_to_flush)
+            return len(updates_to_flush)
+
+        with self._lock:
+            return len(self._batches.get(key, {}).get("updates", []))
+
+    def _dispatch(self, chat_id: str, updates: list[dict]) -> None:
+        if not updates:
+            return
+        try:
+            from backend.jobs.agent_worker import enqueue_job
+            enqueue_job(canal="telegram", chat_id=chat_id, payload={"updates": updates}, env=_OBRALOG_ENV)
+        except Exception as exc:
+            logger.error("Erro ao enfileirar lote de imagens do Telegram: %s", exc, exc_info=True)
 
     def _flush_if_current(self, key: tuple[int, int | None], generation: int) -> None:
         with self._lock:
@@ -113,15 +143,7 @@ class _ImageBatchDebouncer:
             updates = list(bucket.get("updates") or [])
             self._batches.pop(key, None)
 
-        if not updates:
-            return
-
-        try:
-            from backend.jobs.agent_worker import enqueue_job
-            chat_id = str(key[0])
-            enqueue_job(canal="telegram", chat_id=chat_id, payload={"updates": updates}, env=_OBRALOG_ENV)
-        except Exception as exc:
-            logger.error("Erro ao enfileirar lote de imagens do Telegram: %s", exc, exc_info=True)
+        self._dispatch(str(key[0]), updates)
 
 
 _image_batcher = _ImageBatchDebouncer(wait_seconds=_image_batch_wait_seconds())
@@ -131,7 +153,7 @@ _image_batcher = _ImageBatchDebouncer(wait_seconds=_image_batch_wait_seconds())
 # Public API
 # ---------------------------------------------------------------------------
 
-def handle_telegram_update(update: dict) -> dict:
+def handle_telegram_update(update: dict, typing_already_sent: bool = False) -> dict:
     if poll_answer := update.get("poll_answer"):
         return _poll_handler.handle(poll_answer)
     if update.get("edited_message") and not update.get("message"):

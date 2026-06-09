@@ -136,6 +136,41 @@ def _resolver_obra_ativa(db, usuario_id: int, tenant_id: int) -> int | None:
     return None
 
 
+_MULTI_TENANT_DISPLAY_LIMIT = 5
+
+
+def _build_multi_tenant_block(db, usuario_id: int, tenant_id_ativo: int | None) -> str:
+    """Retorna bloco de texto com a lista de tenants do usuário para o system prompt.
+    Só emitido quando o usuário tem acesso a 2+ tenants.
+    """
+    try:
+        tenants = Repository.usuario_tenants.listar_tenants_do_usuario(db, usuario_id)
+    except Exception:
+        return ""
+
+    if len(tenants) < 2:
+        return ""
+
+    total = len(tenants)
+    exibidos = tenants[:_MULTI_TENANT_DISPLAY_LIMIT]
+    restantes = total - len(exibidos)
+
+    lines = ["=== Tenants acessíveis para este usuário ==="]
+    for t in exibidos:
+        marcador = " ← ativo" if t["id"] == tenant_id_ativo else ""
+        lines.append(f"  - ID {t['id']}: {t['nome']}{marcador}")
+
+    if restantes > 0:
+        lines.append(f"  (e mais {restantes} tenant(s) disponível/disponíveis)")
+
+    lines.append(
+        "IMPORTANTE: Confirme sempre com o usuário sobre qual tenant estamos falando "
+        "antes de realizar operações. Use a tool conferir_contexto_tenant para carregar "
+        "o contexto completo de outro tenant."
+    )
+    return "\n".join(lines)
+
+
 def _new_thread_id(chat_id) -> str:
     return f"{chat_id}:{uuid.uuid4().hex}"
 
@@ -210,6 +245,15 @@ class MessageProcessor:
             first_chat.get("first_name") or first_chat.get("username") or str(chat_id)
         )
         thread_hint = first_msg.get("message_thread_id")
+
+        # Feedback de processamento de mídia — enviado antes da extração
+        _n_images = sum(
+            1 for u in updates
+            if (u.get("message") or {}).get("photo")
+        )
+        if _n_images > 0:
+            _img_label = "imagem" if _n_images == 1 else "imagens"
+            self._client.send_message(chat_id, f"Analisando {_n_images} {_img_label}...")
 
         # Extract text from each update
         extracted: list[str] = []
@@ -286,8 +330,12 @@ class MessageProcessor:
                     obra_id_ativa = _resolver_obra_ativa(db, usuario.id, tenant_id)
 
                 if cached_ctx is None and tenant_id is not None:
-                    prebuilt_snapshot = build_tenant_snapshot(
+                    tenant_snapshot = build_tenant_snapshot(
                         db, tenant_id, obra_id_ativa, actor_level_str
+                    )
+                    multi_tenant_block = _build_multi_tenant_block(db, usuario.id, tenant_id)
+                    prebuilt_snapshot = "\n\n".join(
+                        p for p in [multi_tenant_block, tenant_snapshot] if p
                     )
                 else:
                     prebuilt_snapshot = ""
