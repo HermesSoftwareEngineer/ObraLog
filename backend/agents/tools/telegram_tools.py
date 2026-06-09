@@ -225,6 +225,24 @@ def get_telegram_tools(
 
                 compactar_conversa(db, target_id, messages_state, compress_state=False)
                 encerrar_conversa(db, target_id)
+
+                # Reset completo da thread LangGraph: gera novo thread_id e persiste no usuário
+                import uuid as _uuid
+                novo_thread_id = f"{chat_id}:{_uuid.uuid4().hex}"
+                from backend.db.repository import Repository
+                Repository.usuarios.atualizar(db, actor_user_id, telegram_thread_id=novo_thread_id)
+
+            # Invalida cache do thread antigo para liberar memória e forçar rebuild
+            try:
+                from backend.services.telegram_processor import _scoped_thread_id, _cache_get
+                from backend.services.telegram_processor import _ctx_cache, _ctx_cache_lock
+                old_scoped = _scoped_thread_id(thread_id) if thread_id else None
+                if old_scoped:
+                    with _ctx_cache_lock:
+                        _ctx_cache.pop(old_scoped, None)
+            except Exception:
+                pass
+
             return {"ok": True, "message": "Conversa encerrada com sucesso. Até logo!"}
         except Exception as exc:
             return {"ok": False, "message": f"Erro ao encerrar conversa: {exc}"}

@@ -210,6 +210,28 @@ class MessageProcessor:
         self._typing = TypingIndicator(client)
         self._linker = UserLinker(client)
 
+    def _extract_partial_reply(self, invoke_config: dict, chat_id) -> str | None:
+        """Tenta recuperar a última resposta do agente do state do checkpointer após recursion_limit."""
+        try:
+            from backend.agents.chat_db import checkpointer
+            thread_id = invoke_config.get("configurable", {}).get("thread_id")
+            if not thread_id:
+                return None
+            checkpoint = checkpointer.get({"configurable": {"thread_id": thread_id}})
+            if not checkpoint:
+                return None
+            msgs = checkpoint.get("channel_values", {}).get("messages", [])
+            for msg in reversed(msgs):
+                from langchain_core.messages import AIMessage
+                if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+                    text = extract_text_content(msg.content)
+                    if text and text.strip():
+                        logger.info("[PASSO] Resposta parcial recuperada do state chat_id=%s", chat_id)
+                        return text.strip()
+        except Exception as exc:
+            logger.debug("[PASSO] Falha ao recuperar resposta parcial: %s", exc)
+        return None
+
     def _send_reply(self, chat_id, reply: str) -> None:
         """Send and persist an agent response message."""
         if not reply:
@@ -529,19 +551,31 @@ class MessageProcessor:
     def _invoke_agent(
         self, text: str, config: dict, chat_id, raw_messages: list
     ) -> dict:
-        invoke_config = {**config, "recursion_limit": 14}
+        recursion_limit = int(os.environ.get("AGENT_RECURSION_LIMIT", "25"))
+        invoke_config = {**config, "recursion_limit": recursion_limit}
         try:
             response = self._invoke_with_retry(text, invoke_config, chat_id)
         except Exception as exc:
             try:
                 from langgraph.errors import GraphRecursionError
                 if isinstance(exc, GraphRecursionError):
-                    logger.warning("[PASSO] Graph atingiu recursion_limit - chat_id=%s", chat_id)
+                    logger.warning("[PASSO] Graph atingiu recursion_limit=%d - chat_id=%s", recursion_limit, chat_id)
                     persistence.mark_error(raw_messages, "recursion_limit")
-                    self._send_reply(
-                        chat_id,
-                        "⚠️ Sua solicitação ficou complexa demais. Tente dividir em partes menores.",
-                    )
+                    # Tenta recuperar resposta parcial do state antes de desistir
+                    partial_reply = self._extract_partial_reply(invoke_config, chat_id)
+                    if partial_reply:
+                        self._send_reply(chat_id, partial_reply)
+                        self._send_reply(
+                            chat_id,
+                            "_(A operação precisou de muitas etapas internas e foi interrompida. "
+                            "Se precisar continuar, pode me pedir para retomar ou reformular o pedido.)_",
+                        )
+                    else:
+                        self._send_reply(
+                            chat_id,
+                            "Essa operação precisou de muitas etapas internas e não consegui concluir. "
+                            "Pode reformular o pedido de forma mais direta ou pedir para eu tentar de novo?",
+                        )
                     return {"ok": False, "chat_id": chat_id, "reason": "recursion_limit"}
             except ImportError:
                 pass
