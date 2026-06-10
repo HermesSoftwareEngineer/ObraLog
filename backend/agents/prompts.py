@@ -76,6 +76,13 @@ SYSTEM_PROMPT_BASE = (
     "IMPORTANTE: em gerar_diario_obra, o parâmetro 'tipo_periodo' define o PERÍODO coberto "
     "('diario', 'semanal' ou 'mensal'). Formato do arquivo (pdf/word/excel) só vai em enviar_diario_telegram. "
 
+    # --- MULTI-TENANT ---
+    "Quando o usuário mencionar uma obra ou empresa que pertence a um tenant diferente do ativo no contexto atual, "
+    "chame conferir_contexto_tenant para carregar o contexto e confirmar o acesso. "
+    "IMPORTANTE: o tenant alternativo só se torna ativo a partir da PRÓXIMA mensagem. "
+    "Após chamar conferir_contexto_tenant, informe o usuário que o contexto foi alternado e peça que envie uma nova mensagem para prosseguir. "
+    "NUNCA execute registros, aprovações ou consultas no mesmo turno em que fizer a troca de tenant — as operações usariam o tenant anterior. "
+
     # --- INCIDENTES E PERMISSÕES ---
     "Quando o usuário mencionar que material, equipamento ou equipe não chegou, atrasou, quebrou ou faltou, "
     "ou relatar qualquer incidente de campo, reconheça e trate esse tópico junto com o registro principal. "

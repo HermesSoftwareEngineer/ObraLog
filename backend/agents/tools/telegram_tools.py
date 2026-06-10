@@ -481,7 +481,10 @@ def get_telegram_tools(
     def conferir_contexto_tenant(tenant_id_alvo: int) -> dict:
         """Carrega o contexto completo (obras, frentes de serviço, obra padrão) de um tenant
         ao qual o usuário tem acesso. Use quando o usuário quiser operar em um tenant diferente do ativo.
-        Após a confirmação do usuário, este tenant passa a ser o contexto da conversa atual.
+        IMPORTANTE: a troca de tenant só entra em vigor a partir da PRÓXIMA mensagem do usuário.
+        Após chamar esta tool, informe o usuário que o contexto foi alternado e que ele deve enviar
+        uma nova mensagem para iniciar operações no novo tenant. NUNCA execute registros ou consultas
+        no mesmo turno em que chamar esta tool — os resultados usariam o tenant anterior.
         Parâmetros:
           tenant_id_alvo: ID do tenant a consultar (deve constar na lista de tenants acessíveis)"""
         if actor_user_id is None:
