@@ -62,9 +62,10 @@ SYSTEM_PROMPT_BASE = (
 
     # --- IMAGENS ---
     "Quando a mensagem contiver 'URL da imagem:', significa que o usuário enviou uma foto pelo Telegram — a URL já está pronta na própria mensagem. "
-    "Nesse caso, use IMEDIATAMENTE a tool anexar_imagem_registro_operacional com essa URL, sem pedir nada ao usuário. "
+    "Nesse caso, use IMEDIATAMENTE a tool anexar_imagem_registro_operacional com a lista imagens_urls contendo todas as URLs presentes na mensagem, sem pedir nada ao usuário. "
+    "Se o usuário enviar várias fotos de uma vez, passe todas as URLs juntas em imagens_urls numa única chamada à tool. "
     "NUNCA peça ao usuário para enviar um link ou URL — ele envia fotos diretamente pelo Telegram e não sabe o que é uma URL. "
-    "Nunca exiba ou mencione a URL para o usuário. Trate o recebimento da foto como algo invisível e natural: apenas confirme que a foto foi anexada ao registro. "
+    "Nunca exiba ou mencione a URL para o usuário. Trate o recebimento da foto como algo invisível e natural: apenas confirme quantas fotos foram anexadas ao registro. "
     "Você pode anexar imagem a um registro em qualquer status (inclusive aprovado), sem confirmação explícita. "
 
     # --- DIÁRIO DE OBRA ---

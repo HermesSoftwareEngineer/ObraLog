@@ -740,18 +740,33 @@ def get_gateway_tools(
     @tool
     def anexar_imagem_registro_operacional(
         registro_id: int,
-        imagem_url: str,
+        imagens_urls: list[str],
         confirmado: bool = False,
         intencao: str | None = "atualizar_registro",
     ) -> dict:
-        """Anexa imagem (URL externa) a um registro operacional, incluindo registros aprovados."""
+        """Anexa uma ou mais imagens (URLs externas) a um registro operacional, incluindo registros aprovados. Passe todas as URLs de uma vez na lista imagens_urls."""
         intent = GatewayPolicyService.normalize_intent(intencao, default="atualizar_registro")
 
         def handler() -> dict:
-            result = _registro_svc.anexar_imagem_registro(
-                tenant_id, actor_user_id, actor_level, int(registro_id), imagem_url
-            )
-            return strip_technical_keys(result) if isinstance(result, dict) else {"ok": True, "resultado": result}
+            resultados = []
+            erros = []
+            for url in imagens_urls:
+                result = _registro_svc.anexar_imagem_registro(
+                    tenant_id, actor_user_id, actor_level, int(registro_id), url
+                )
+                if isinstance(result, dict) and result.get("ok"):
+                    resultados.append(strip_technical_keys(result.get("imagem", result)))
+                else:
+                    erros.append({
+                        "url": url,
+                        "erro": result.get("message", "erro desconhecido") if isinstance(result, dict) else str(result),
+                    })
+            return {
+                "ok": len(resultados) > 0,
+                "anexadas": len(resultados),
+                "imagens": resultados,
+                **({"erros": erros} if erros else {}),
+            }
 
         return _execucao("anexar_imagem_registro_operacional", intent, handler)
 

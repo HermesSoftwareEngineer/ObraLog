@@ -103,7 +103,7 @@ class GatewayIntentNormalizationTests(unittest.TestCase):
             tools = get_gateway_tools(actor_user_id=1, actor_level="encarregado")
 
         anexar_tool = next(tool for tool in tools if tool.name == "anexar_imagem_registro_operacional")
-        result = anexar_tool.invoke({"registro_id": 10, "imagem_url": "https://img.test/a.jpg", "confirmado": False})
+        result = anexar_tool.invoke({"registro_id": 10, "imagens_urls": ["https://img.test/a.jpg"], "confirmado": False})
 
         self.assertTrue(result.get("ok"))
         self.assertEqual(result.get("operation"), "anexar_imagem_registro_operacional")

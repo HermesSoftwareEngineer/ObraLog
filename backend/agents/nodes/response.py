@@ -10,9 +10,10 @@ except ImportError:
 
 from datetime import datetime
 import logging
+import os
 import time
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger("obralog.agent.response")
@@ -99,6 +100,57 @@ def _build_system_message(state_messages: list, config: RunnableConfig | None = 
 
 
 # ---------------------------------------------------------------------------
+# Status injection — informa o usuário a cada N tools e avisa ao se aproximar do limite
+# ---------------------------------------------------------------------------
+
+_STATUS_INTERVAL = int(os.environ.get("AGENT_STATUS_INTERVAL", "5"))
+_WARN_AT = int(os.environ.get("AGENT_TOOL_WARN_AT", "15"))
+
+_SYNTHETIC_PREFIX = "[INSTRUÇÃO INTERNA]"
+
+
+def _count_tools_this_turn(messages: list, exclude_last: int = 1) -> int:
+    """Conta ToolMessages desde o último HumanMessage real (ignora sintéticos)."""
+    count = 0
+    for msg in reversed(messages[:-exclude_last] if exclude_last else messages):
+        if isinstance(msg, ToolMessage):
+            count += 1
+        elif isinstance(msg, HumanMessage):
+            content = msg.content if isinstance(msg.content, str) else ""
+            if content.startswith(_SYNTHETIC_PREFIX):
+                continue  # pula HumanMessages injetados pelo próprio sistema
+            break
+    return count
+
+
+def _maybe_inject_status(messages: list, batch_size: int, chat_id: str) -> list:
+    """Retorna lista com HumanMessage de instrução, ou lista vazia."""
+    if _STATUS_INTERVAL <= 0:
+        return []
+
+    count_before = _count_tools_this_turn(messages, exclude_last=1)
+    count_after = count_before + batch_size
+
+    if count_before < _WARN_AT <= count_after:
+        logger.info("[GRAPH] tools_step: injetando aviso de limite chat_id=%s count=%d", chat_id, count_after)
+        return [HumanMessage(content=(
+            f"{_SYNTHETIC_PREFIX} Atenção: você já executou {count_after} ferramentas nesta sessão. "
+            f"O limite máximo é {int(os.environ.get('AGENT_RECURSION_LIMIT', '25'))} iterações. "
+            "Encerre o que é possível com os dados já coletados e responda ao usuário agora, mesmo que parcialmente."
+        ))]
+
+    if count_before // _STATUS_INTERVAL < count_after // _STATUS_INTERVAL:
+        logger.info("[GRAPH] tools_step: injetando status periódico chat_id=%s count=%d", chat_id, count_after)
+        return [HumanMessage(content=(
+            f"{_SYNTHETIC_PREFIX} Você executou {count_after} ferramentas até agora. "
+            "Use a tool `notificar_progresso_usuario` para enviar ao usuário uma mensagem breve "
+            "informando o que está sendo feito, depois continue normalmente com as demais ferramentas."
+        ))]
+
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Tools step — executes tool calls from the last AIMessage
 # ---------------------------------------------------------------------------
 
@@ -132,4 +184,6 @@ def tools_step(state: State, config: RunnableConfig | None = None):
 
     logger.info("[GRAPH] tools_step total=%.2fs executadas=%d chat_id=%s",
                 time.monotonic() - _t0, len(tool_messages), chat_id)
-    return {"messages": tool_messages}
+
+    extra = _maybe_inject_status(messages, len(tool_messages), chat_id)
+    return {"messages": tool_messages + extra}

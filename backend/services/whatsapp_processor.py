@@ -8,6 +8,7 @@ and send the reply. Mirrors telegram_processor.py structure.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime
 
@@ -210,7 +211,7 @@ class MessageProcessor:
     def _invoke_agent(
         self, text: str, config: dict, phone: str, raw_messages: list
     ) -> dict:
-        invoke_config = {**config, "recursion_limit": 14}
+        invoke_config = {**config, "recursion_limit": int(os.environ.get("AGENT_RECURSION_LIMIT", "25"))}
         try:
             response = graph.invoke({"messages": [HumanMessage(content=text)]}, invoke_config)
         except Exception as exc:

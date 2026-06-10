@@ -150,91 +150,102 @@ def build_registros_tools(
     @tool
     def anexar_imagem_registro(
         registro_id: int,
-        imagem_url: str,
+        imagens_urls: list[str],
     ) -> dict:
-        """Anexa imagem a um registro por URL externa. Limite: 30 imagens por registro."""
+        """Anexa uma ou mais imagens a um registro por URL externa. Limite: 30 imagens por registro."""
         import logging as _logging
         import urllib.request as _urllib_req
-        import uuid as _uuid
 
         _log = _logging.getLogger("obralog.agent.imagens")
 
         assert_permission(actor_level, "update", "registros")
 
-        imagem_url = (imagem_url or "").strip()
-        if not imagem_url:
-            return {"ok": False, "message": "imagem_url é obrigatória."}
+        def _processar_uma(imagem_url: str) -> dict:
+            imagem_url = (imagem_url or "").strip()
+            if not imagem_url:
+                return {"ok": False, "message": "URL vazia."}
+            if not (imagem_url.startswith("http://") or imagem_url.startswith("https://")):
+                return {"ok": False, "message": "imagens_urls deve conter URLs HTTP/HTTPS válidas."}
 
-        if not (imagem_url.startswith("http://") or imagem_url.startswith("https://")):
-            return {"ok": False, "message": "imagem_url deve ser uma URL HTTP/HTTPS válida."}
-
-        # Download from the temporary Telegram URL and persist to permanent storage
-        # (Supabase or local fallback) so the image remains accessible after the
-        # original URL expires.
-        try:
-            req = _urllib_req.Request(imagem_url, headers={"User-Agent": "ObraLog/1.0"})
-            with _urllib_req.urlopen(req, timeout=15) as resp:
-                img_bytes = resp.read()
-                content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-                mime_type = content_type
-                file_size = len(img_bytes)
-
-            # Detect real mime type from magic bytes — Telegram serves images
-            # as application/octet-stream regardless of actual format.
-            if img_bytes[:3] == b'\xff\xd8\xff':
-                mime_type, suffix = "image/jpeg", ".jpg"
-            elif img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-                mime_type, suffix = "image/png", ".png"
-            elif img_bytes[:4] == b'RIFF' and img_bytes[8:12] == b'WEBP':
-                mime_type, suffix = "image/webp", ".webp"
-            else:
-                ext_map = {"image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/jpeg": "jpg"}
-                suffix = f".{ext_map.get(content_type, 'jpg')}"
-
-            from backend.utils.storage import upload_imagem_registro as _upload_storage
-            storage_path = _upload_storage(
-                tenant_id=tenant_id,
-                registro_id=registro_id,
-                img_bytes=img_bytes,
-                mime_type=mime_type,
-                suffix=suffix,
-            )
-        except Exception as exc:
-            _log.warning("Nao foi possivel armazenar imagem do agente (registro %s): %s", registro_id, exc)
-            return {"ok": False, "message": f"Nao foi possivel baixar ou armazenar a imagem: {exc}"}
-
-        with SessionLocal() as db:
-            registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
-            if not registro:
-                return {"ok": False, "message": "Registro não encontrado."}
-
-            if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
-                raise PermissionError("Encarregado só pode anexar imagem em seus próprios registros.")
-
+            # Download from the temporary Telegram URL and persist to permanent storage
+            # (Supabase or local fallback) so the image remains accessible after the
+            # original URL expires.
             try:
-                imagem = Repository.registro_imagens.criar(
-                    db,
-                    registro_id=registro_id,
-                    external_url=imagem_url,
-                    storage_path=storage_path,
-                    mime_type=mime_type,
-                    file_size=file_size,
-                    origem="agent",
-                    tenant_id=tenant_id,
-                )
-            except ValueError as exc:
-                return {"ok": False, "message": str(exc)}
+                req = _urllib_req.Request(imagem_url, headers={"User-Agent": "ObraLog/1.0"})
+                with _urllib_req.urlopen(req, timeout=15) as resp:
+                    img_bytes = resp.read()
+                    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+                    mime_type = content_type
+                    file_size = len(img_bytes)
 
-            return {
-                "ok": True,
-                "imagem": {
-                    "id": imagem.id,
-                    "registro_id": imagem.registro_id,
-                    "external_url": imagem.external_url,
-                    "storage_path": imagem.storage_path,
-                    "origem": imagem.origem,
-                },
-            }
+                # Detect real mime type from magic bytes — Telegram serves images
+                # as application/octet-stream regardless of actual format.
+                if img_bytes[:3] == b'\xff\xd8\xff':
+                    mime_type, suffix = "image/jpeg", ".jpg"
+                elif img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                    mime_type, suffix = "image/png", ".png"
+                elif img_bytes[:4] == b'RIFF' and img_bytes[8:12] == b'WEBP':
+                    mime_type, suffix = "image/webp", ".webp"
+                else:
+                    ext_map = {"image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/jpeg": "jpg"}
+                    suffix = f".{ext_map.get(content_type, 'jpg')}"
+
+                from backend.utils.storage import upload_imagem_registro as _upload_storage
+                storage_path = _upload_storage(
+                    tenant_id=tenant_id,
+                    registro_id=registro_id,
+                    img_bytes=img_bytes,
+                    mime_type=mime_type,
+                    suffix=suffix,
+                )
+            except Exception as exc:
+                _log.warning("Nao foi possivel armazenar imagem do agente (registro %s): %s", registro_id, exc)
+                return {"ok": False, "message": f"Nao foi possivel baixar ou armazenar a imagem: {exc}"}
+
+            with SessionLocal() as db:
+                registro = Repository.registros.obter_por_id(db, registro_id, tenant_id=tenant_id)
+                if not registro:
+                    return {"ok": False, "message": "Registro não encontrado."}
+                if actor_level == NivelAcesso.ENCARREGADO.value and registro.usuario_registrador_id != actor_user_id:
+                    raise PermissionError("Encarregado só pode anexar imagem em seus próprios registros.")
+                try:
+                    imagem = Repository.registro_imagens.criar(
+                        db,
+                        registro_id=registro_id,
+                        external_url=imagem_url,
+                        storage_path=storage_path,
+                        mime_type=mime_type,
+                        file_size=file_size,
+                        origem="agent",
+                        tenant_id=tenant_id,
+                    )
+                except ValueError as exc:
+                    return {"ok": False, "message": str(exc)}
+                return {
+                    "ok": True,
+                    "imagem": {
+                        "id": imagem.id,
+                        "registro_id": imagem.registro_id,
+                        "external_url": imagem.external_url,
+                        "storage_path": imagem.storage_path,
+                        "origem": imagem.origem,
+                    },
+                }
+
+        resultados = []
+        erros = []
+        for url in imagens_urls:
+            r = _processar_uma(url)
+            if r.get("ok"):
+                resultados.append(r.get("imagem", r))
+            else:
+                erros.append({"url": url, "erro": r.get("message", "erro desconhecido")})
+        return {
+            "ok": len(resultados) > 0,
+            "anexadas": len(resultados),
+            "imagens": resultados,
+            **({"erros": erros} if erros else {}),
+        }
 
     @tool
     def obter_registro(registro_id: int) -> dict:
