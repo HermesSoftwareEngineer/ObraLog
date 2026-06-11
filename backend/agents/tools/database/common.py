@@ -4,10 +4,10 @@ from datetime import date, datetime
 from decimal import Decimal
 import unicodedata
 
-from sqlalchemy import desc, func
+from sqlalchemy import func
 
 from backend.db.diario_repository import agrupar_por_data, get_diario_do_dia, get_registros_por_periodo
-from backend.db.models import Alert, AlertRead, AlertSeverity, AlertStatus, Clima, LadoPista, NivelAcesso
+from backend.db.models import Alert, AlertSeverity, AlertStatus, Clima, LadoPista, NivelAcesso
 from backend.db.repository import Repository
 
 
@@ -215,23 +215,6 @@ def generate_alert_code(db, tenant_id: int | None = None) -> str:
     return f"{prefix}{count + 1:04d}"
 
 
-def sync_alert_read_flags(db, alert) -> None:
-    latest_read = (
-        db.query(AlertRead)
-        .filter(AlertRead.alert_id == alert.id)
-        .order_by(desc(AlertRead.read_at))
-        .first()
-    )
-    if latest_read:
-        alert.is_read = True
-        alert.read_at = latest_read.read_at
-        alert.read_by = latest_read.worker_id
-    else:
-        alert.is_read = False
-        alert.read_at = None
-        alert.read_by = None
-
-
 def registro_to_diario_item(registro) -> dict:
     data = registro_to_dict_with_images(None, registro)
     data["registrador_nome"] = registro.usuario_registrador.nome if getattr(registro, "usuario_registrador", None) else None
@@ -332,6 +315,5 @@ __all__ = [
     "parse_nivel_acesso",
     "registro_to_dict_with_images",
     "resolve_frente_servico_id",
-    "sync_alert_read_flags",
     "to_dict",
 ]

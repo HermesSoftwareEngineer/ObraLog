@@ -31,13 +31,6 @@ def _to_json_value(value):
     return value
 
 
-def _to_dict(model_instance):
-    payload = {}
-    for key in model_instance.__table__.columns.keys():
-        payload[key] = _to_json_value(getattr(model_instance, key))
-    return payload
-
-
 def _build_user_name_map(db, user_ids: set[int | None]) -> dict[int, str]:
     ids = {item for item in user_ids if item is not None}
     if not ids:
@@ -46,7 +39,18 @@ def _build_user_name_map(db, user_ids: set[int | None]) -> dict[int, str]:
     return {user_id: nome for user_id, nome in users}
 
 
-def _serialize_alert_summary(alert: Alert, user_names: dict[int, str]):
+def _build_read_ids(db, user_id: int, tenant_id: int, alert_ids: set | None = None) -> set:
+    """Retorna o conjunto de alert_ids que o usuário já leu."""
+    query = (
+        db.query(AlertRead.alert_id)
+        .filter(AlertRead.worker_id == user_id, AlertRead.tenant_id == tenant_id)
+    )
+    if alert_ids is not None:
+        query = query.filter(AlertRead.alert_id.in_(alert_ids))
+    return {row[0] for row in query.all()}
+
+
+def _serialize_alert_summary(alert: Alert, user_names: dict[int, str], is_read: bool) -> dict:
     return {
         "id": _to_json_value(alert.id),
         "code": alert.code,
@@ -56,7 +60,7 @@ def _serialize_alert_summary(alert: Alert, user_names: dict[int, str]):
         "title": alert.title,
         "description": alert.description,
         "status": _to_json_value(alert.status),
-        "is_read": bool(alert.is_read),
+        "is_read": is_read,
         "reported_at": _to_json_value(alert.created_at),
         "created_at": _to_json_value(alert.created_at),
         "location_detail": alert.location_detail,
@@ -65,28 +69,23 @@ def _serialize_alert_summary(alert: Alert, user_names: dict[int, str]):
     }
 
 
-def _serialize_alert_detail(alert: Alert, user_names: dict[int, str]):
-    payload = _serialize_alert_summary(alert, user_names)
+def _serialize_alert_detail(alert: Alert, user_names: dict[int, str], is_read: bool) -> dict:
+    payload = _serialize_alert_summary(alert, user_names, is_read)
     payload.update(
         {
-            "description": alert.description,
             "equipment_name": alert.equipment_name,
             "photo_urls": alert.photo_urls,
-            "priority_score": alert.priority_score,
             "resolution_notes": alert.resolution_notes,
             "resolved_by": alert.resolved_by,
             "resolved_by_nome": user_names.get(alert.resolved_by),
             "resolved_at": _to_json_value(alert.resolved_at),
-            "read_by": alert.read_by,
-            "read_by_nome": user_names.get(alert.read_by),
-            "read_at": _to_json_value(alert.read_at),
             "updated_at": _to_json_value(alert.updated_at),
         }
     )
     return payload
 
 
-def _serialize_tipo_alerta_simple(item: AlertTypeAlias):
+def _serialize_tipo_alerta_simple(item: AlertTypeAlias) -> dict:
     return {
         "id": _to_json_value(item.id),
         "nome": item.alias,
@@ -107,15 +106,18 @@ def _normalize_alert_type_value(value: str | None, field_name: str = "tipo_canon
     return normalized.replace(" ", "_")
 
 
-def _resolve_alert_type(db, value: str) -> str:
+def _resolve_alert_type(db, value: str, tenant_id: int) -> str:
     normalized = _normalize_text((value or "").replace("_", " "))
     if not normalized:
         raise ValueError("Campo obrigatório: type")
 
     alias = (
         db.query(AlertTypeAlias)
-        .filter(AlertTypeAlias.normalized_alias == normalized)
-        .filter(AlertTypeAlias.ativo.is_(True))
+        .filter(
+            AlertTypeAlias.normalized_alias == normalized,
+            AlertTypeAlias.ativo.is_(True),
+            AlertTypeAlias.tenant_id == tenant_id,
+        )
         .first()
     )
     if alias:
@@ -198,34 +200,26 @@ def _parse_reported_at(value: str) -> datetime:
     return parsed
 
 
-def _generate_alert_code(db) -> str:
-    year = datetime.utcnow().year
+def _generate_alert_code(db, tenant_id: int) -> str:
+    year = datetime.now(timezone.utc).year
     prefix = f"ALT-{year}-"
-    count = db.query(func.count(Alert.id)).filter(Alert.code.like(f"{prefix}%")).scalar() or 0
+    count = (
+        db.query(func.count(Alert.id))
+        .filter(Alert.code.like(f"{prefix}%"), Alert.tenant_id == tenant_id)
+        .scalar()
+    ) or 0
     return f"{prefix}{count + 1:04d}"
 
 
-def _sync_alert_read_flags(db, alert):
-    latest_read = (
-        db.query(AlertRead)
-        .filter(AlertRead.alert_id == alert.id)
-        .order_by(desc(AlertRead.read_at))
-        .first()
-    )
-    if latest_read:
-        alert.is_read = True
-        alert.read_at = latest_read.read_at
-        alert.read_by = latest_read.worker_id
-    else:
-        alert.is_read = False
-        alert.read_at = None
-        alert.read_by = None
-
+# ---------------------------------------------------------------------------
+# Alertas
+# ---------------------------------------------------------------------------
 
 @router.get("")
 @require_auth
 def listar_alertas():
     tenant_id = getattr(g, "tenant_id", None)
+    user_id = g.current_user.id
     with SessionLocal() as db:
         query = db.query(Alert).filter(Alert.tenant_id == tenant_id)
 
@@ -246,19 +240,34 @@ def listar_alertas():
             except ValueError as exc:
                 return _json_error(str(exc), 422)
 
-        if apenas_nao_lidos:
-            query = query.filter(Alert.is_read.is_(False))
-
         if obra_id not in (None, ""):
             try:
                 query = query.filter(Alert.obra_id == int(obra_id))
             except (ValueError, TypeError):
                 return _json_error("obra_id inválido. Use inteiro.", 422)
 
+        if apenas_nao_lidos:
+            read_subq = (
+                db.query(AlertRead.alert_id)
+                .filter(AlertRead.worker_id == user_id, AlertRead.tenant_id == tenant_id)
+            )
+            query = query.filter(Alert.id.notin_(read_subq))
+
         items = query.order_by(Alert.created_at.desc()).limit(200).all()
+
+        read_ids: set = set()
+        if items:
+            item_ids = {item.id for item in items}
+            read_ids = _build_read_ids(db, user_id, tenant_id, alert_ids=item_ids)
+
         user_ids = {item.reported_by for item in items}
         user_names = _build_user_name_map(db, user_ids)
-        return jsonify({"ok": True, "total": len(items), "alertas": [_serialize_alert_summary(item, user_names) for item in items]})
+
+        return jsonify({
+            "ok": True,
+            "total": len(items),
+            "alertas": [_serialize_alert_summary(item, user_names, item.id in read_ids) for item in items],
+        })
 
 
 @router.post("")
@@ -289,7 +298,7 @@ def criar_alerta():
 
     with SessionLocal() as db:
         try:
-            type_value = _resolve_alert_type(db, data["type"])
+            type_value = _resolve_alert_type(db, data["type"], tenant_id)
         except KeyError as exc:
             return _json_error(f"Campo obrigatório ausente: {exc.args[0]}")
         except ValueError as exc:
@@ -309,7 +318,6 @@ def criar_alerta():
                 obra_id = int(obra_id)
             except (ValueError, TypeError):
                 return _json_error("obra_id inválido. Use inteiro.", 422)
-
             obra = db.query(Obra).filter(Obra.id == obra_id, Obra.tenant_id == tenant_id).first()
             if not obra:
                 return _json_error("Obra não encontrada para este tenant.", 404)
@@ -318,7 +326,7 @@ def criar_alerta():
 
         alert = Alert(
             tenant_id=tenant_id,
-            code=_generate_alert_code(db),
+            code=_generate_alert_code(db, tenant_id),
             type=type_value,
             severity=severity_value,
             reported_by=g.current_user.id,
@@ -331,54 +339,101 @@ def criar_alerta():
             equipment_name=data.get("equipment_name"),
             photo_urls=data.get("photo_urls"),
             status=AlertStatus.ABERTO,
-            priority_score=data.get("priority_score"),
             notified_channels=data.get("notified_channels"),
             created_at=reported_at,
         )
         db.add(alert)
         db.commit()
         db.refresh(alert)
-        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
-        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names)}), 201
+        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by})
+        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names, is_read=False)}), 201
 
 
 @router.get("/<uuid:alert_id>")
 @require_auth
 def obter_alerta(alert_id):
     tenant_id = getattr(g, "tenant_id", None)
+    user_id = g.current_user.id
     with SessionLocal() as db:
         alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
-        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
-        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names)})
+        is_read = bool(
+            db.query(AlertRead.id)
+            .filter(AlertRead.alert_id == alert_id, AlertRead.worker_id == user_id)
+            .first()
+        )
+        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by})
+        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names, is_read)})
 
 
-def _atualizar_status_alerta(alert_id):
+@router.get("/codigo/<string:code>")
+@require_auth
+def obter_alerta_por_codigo(code: str):
+    tenant_id = getattr(g, "tenant_id", None)
+    user_id = g.current_user.id
+    with SessionLocal() as db:
+        alert = db.query(Alert).filter(Alert.code == code.upper(), Alert.tenant_id == tenant_id).first()
+        if not alert:
+            return _json_error("Alerta não encontrado.", 404)
+        is_read = bool(
+            db.query(AlertRead.id)
+            .filter(AlertRead.alert_id == alert.id, AlertRead.worker_id == user_id)
+            .first()
+        )
+        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by})
+        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names, is_read)})
+
+
+_UPDATABLE_FIELDS = {"status", "obra_id", "resolution_notes", "title", "type", "severity",
+                     "description", "location_detail", "equipment_name"}
+
+
+@router.patch("/<uuid:alert_id>/status")
+@require_auth
+def atualizar_alerta(alert_id):
     if not _is_admin_or_gerente():
-        return _json_error("Apenas administrador/gerente pode atualizar status do alerta.", 403)
+        return _json_error("Apenas administrador/gerente pode atualizar alertas.", 403)
 
     data = request.get_json(silent=True) or {}
-    status = data.get("status")
-    has_status = status not in (None, "")
-    if not has_status and "obra_id" not in data and "resolution_notes" not in data:
-        return _json_error("Informe ao menos um campo para atualizar: status, obra_id ou resolution_notes.", 422)
-
-    parsed_status = None
-    if has_status:
-        try:
-            parsed_status = _parse_alert_status(status)
-        except ValueError as exc:
-            return _json_error(str(exc), 422)
+    if not any(key in data for key in _UPDATABLE_FIELDS):
+        return _json_error("Informe ao menos um campo para atualizar.", 422)
 
     tenant_id = getattr(g, "tenant_id", None)
+    user_id = g.current_user.id
+
     with SessionLocal() as db:
         alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
             return _json_error("Alerta não encontrado.", 404)
 
-        if parsed_status is not None:
-            alert.status = parsed_status
+        if "title" in data:
+            title = (data["title"] or "").strip()
+            if not title:
+                return _json_error("title não pode ser vazio.", 422)
+            alert.title = title
+
+        if "type" in data:
+            try:
+                alert.type = _resolve_alert_type(db, data["type"], tenant_id)
+            except ValueError as exc:
+                return _json_error(str(exc), 422)
+
+        if "severity" in data:
+            try:
+                alert.severity = _parse_alert_severity(data["severity"])
+            except ValueError as exc:
+                return _json_error(str(exc), 422)
+
+        if "description" in data:
+            alert.description = (data["description"] or "").strip() or alert.description
+
+        if "location_detail" in data:
+            alert.location_detail = data.get("location_detail")
+
+        if "equipment_name" in data:
+            alert.equipment_name = data.get("equipment_name")
+
         if "resolution_notes" in data:
             alert.resolution_notes = data.get("resolution_notes")
 
@@ -396,32 +451,35 @@ def _atualizar_status_alerta(alert_id):
                     return _json_error("Obra não encontrada para este tenant.", 404)
                 alert.obra_id = obra_id
 
-        if parsed_status in {AlertStatus.RESOLVIDO, AlertStatus.CANCELADO}:
-            alert.resolved_by = g.current_user.id
-            alert.resolved_at = datetime.utcnow()
+        if "status" in data:
+            try:
+                new_status = _parse_alert_status(data["status"])
+            except ValueError as exc:
+                return _json_error(str(exc), 422)
+            alert.status = new_status
+            if new_status in {AlertStatus.RESOLVIDO, AlertStatus.CANCELADO}:
+                alert.resolved_by = user_id
+                alert.resolved_at = datetime.now(timezone.utc)
+            else:
+                alert.resolved_by = None
+                alert.resolved_at = None
 
         db.commit()
         db.refresh(alert)
-        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
-        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names)})
-
-
-@router.patch("/<uuid:alert_id>")
-@require_auth
-def atualizar_alerta(alert_id):
-    return _atualizar_status_alerta(alert_id)
-
-
-@router.patch("/<uuid:alert_id>/status")
-@require_auth
-def atualizar_status_alerta(alert_id):
-    return _atualizar_status_alerta(alert_id)
+        is_read = bool(
+            db.query(AlertRead.id)
+            .filter(AlertRead.alert_id == alert.id, AlertRead.worker_id == user_id)
+            .first()
+        )
+        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by})
+        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names, is_read)})
 
 
 @router.post("/<uuid:alert_id>/read")
 @require_auth
 def marcar_como_lido(alert_id):
     tenant_id = getattr(g, "tenant_id", None)
+    user_id = g.current_user.id
     with SessionLocal() as db:
         alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
@@ -429,31 +487,24 @@ def marcar_como_lido(alert_id):
 
         read = (
             db.query(AlertRead)
-            .filter(AlertRead.alert_id == alert_id)
-            .filter(AlertRead.worker_id == g.current_user.id)
+            .filter(AlertRead.alert_id == alert_id, AlertRead.worker_id == user_id)
             .first()
         )
         if not read:
-            read = AlertRead(alert_id=alert_id, worker_id=g.current_user.id)
+            read = AlertRead(alert_id=alert_id, worker_id=user_id, tenant_id=tenant_id)
             db.add(read)
+            db.commit()
+            db.refresh(read)
 
-        alert.is_read = True
-        alert.read_at = datetime.utcnow()
-        alert.read_by = g.current_user.id
-
-        db.commit()
-        db.refresh(alert)
-        db.refresh(read)
-        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by, read.worker_id})
-        leitura_payload = _to_dict(read)
-        leitura_payload["worker_nome"] = user_names.get(read.worker_id)
-        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names), "leitura": leitura_payload})
+        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by})
+        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names, is_read=True)})
 
 
 @router.post("/<uuid:alert_id>/unread")
 @require_auth
 def marcar_como_nao_lido(alert_id):
     tenant_id = getattr(g, "tenant_id", None)
+    user_id = g.current_user.id
     with SessionLocal() as db:
         alert = db.query(Alert).filter(Alert.id == alert_id, Alert.tenant_id == tenant_id).first()
         if not alert:
@@ -461,33 +512,16 @@ def marcar_como_nao_lido(alert_id):
 
         read = (
             db.query(AlertRead)
-            .filter(AlertRead.alert_id == alert_id)
-            .filter(AlertRead.worker_id == g.current_user.id)
+            .filter(AlertRead.alert_id == alert_id, AlertRead.worker_id == user_id)
             .first()
         )
+        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by})
         if not read:
-            user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
-            return jsonify({"ok": True, "message": "Alerta já estava como não lido para este usuário.", "alerta": _serialize_alert_detail(alert, user_names)})
+            return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names, is_read=False)})
 
         db.delete(read)
-        _sync_alert_read_flags(db, alert)
-
         db.commit()
-        db.refresh(alert)
-        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
-        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names)})
-
-
-@router.get("/codigo/<string:code>")
-@require_auth
-def obter_alerta_por_codigo(code: str):
-    tenant_id = getattr(g, "tenant_id", None)
-    with SessionLocal() as db:
-        alert = db.query(Alert).filter(Alert.code == code.upper(), Alert.tenant_id == tenant_id).first()
-        if not alert:
-            return _json_error("Alerta não encontrado.", 404)
-        user_names = _build_user_name_map(db, {alert.reported_by, alert.resolved_by, alert.read_by})
-        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names)})
+        return jsonify({"ok": True, "alerta": _serialize_alert_detail(alert, user_names, is_read=False)})
 
 
 @router.delete("/<uuid:alert_id>")
@@ -507,48 +541,21 @@ def deletar_alerta(alert_id):
         return jsonify({"ok": True, "message": "Alerta removido com sucesso."})
 
 
-@router.get("/tipos")
-@require_auth
-def listar_tipos_alerta():
-    ativos_apenas = request.args.get("ativos_apenas", "false").lower() in {"1", "true", "yes", "on"}
-    with SessionLocal() as db:
-        query = db.query(AlertTypeAlias)
-        if ativos_apenas:
-            query = query.filter(AlertTypeAlias.ativo.is_(True))
-        items = query.order_by(AlertTypeAlias.alias.asc()).limit(500).all()
-        canonical_types = [
-            row[0]
-            for row in db.query(AlertTypeAlias.canonical_type)
-            .distinct()
-            .order_by(AlertTypeAlias.canonical_type.asc())
-            .all()
-        ]
-        return jsonify(
-            {
-                "ok": True,
-                "total": len(items),
-                "tipos_alerta": [_to_dict(item) for item in items],
-                "tipos_canonicos": canonical_types,
-            }
-        )
-
+# ---------------------------------------------------------------------------
+# Tipos de alerta
+# ---------------------------------------------------------------------------
 
 @router.get("/tipos/simples")
 @require_auth
 def listar_tipos_alerta_simples():
+    tenant_id = getattr(g, "tenant_id", None)
     ativos_apenas = request.args.get("ativos_apenas", "true").lower() in {"1", "true", "yes", "on"}
     with SessionLocal() as db:
-        query = db.query(AlertTypeAlias)
+        query = db.query(AlertTypeAlias).filter(AlertTypeAlias.tenant_id == tenant_id)
         if ativos_apenas:
             query = query.filter(AlertTypeAlias.ativo.is_(True))
         items = query.order_by(AlertTypeAlias.alias.asc()).limit(500).all()
-        return jsonify(
-            {
-                "ok": True,
-                "total": len(items),
-                "tipos": [_serialize_tipo_alerta_simple(item) for item in items],
-            }
-        )
+        return jsonify({"ok": True, "total": len(items), "tipos": [_serialize_tipo_alerta_simple(item) for item in items]})
 
 
 @router.post("/tipos/simples")
@@ -557,6 +564,7 @@ def criar_tipo_alerta_simples():
     if not _is_admin_or_gerente():
         return _json_error("Apenas administrador/gerente pode cadastrar tipo de alerta.", 403)
 
+    tenant_id = getattr(g, "tenant_id", None)
     data = request.get_json(silent=True) or {}
     nome = (data.get("nome") or "").strip()
     if not nome:
@@ -573,6 +581,7 @@ def criar_tipo_alerta_simples():
             normalized_alias=_normalize_text(nome),
             canonical_type=canonical_type,
             ativo=bool(data.get("ativo", True)),
+            tenant_id=tenant_id,
             created_by=g.current_user.id,
             updated_by=g.current_user.id,
         )
@@ -593,9 +602,12 @@ def atualizar_tipo_alerta_simples(tipo_id):
     if not _is_admin_or_gerente():
         return _json_error("Apenas administrador/gerente pode atualizar tipo de alerta.", 403)
 
+    tenant_id = getattr(g, "tenant_id", None)
     data = request.get_json(silent=True) or {}
     with SessionLocal() as db:
-        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
+        item = db.query(AlertTypeAlias).filter(
+            AlertTypeAlias.id == tipo_id, AlertTypeAlias.tenant_id == tenant_id
+        ).first()
         if not item:
             return _json_error("Tipo de alerta não encontrado.", 404)
 
@@ -633,113 +645,11 @@ def deletar_tipo_alerta_simples(tipo_id):
     if not _is_admin_or_gerente():
         return _json_error("Apenas administrador/gerente pode remover tipo de alerta.", 403)
 
+    tenant_id = getattr(g, "tenant_id", None)
     with SessionLocal() as db:
-        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
-        if not item:
-            return _json_error("Tipo de alerta não encontrado.", 404)
-
-        db.delete(item)
-        db.commit()
-        return jsonify({"ok": True, "message": "Tipo de alerta removido com sucesso."})
-
-
-@router.get("/tipos/<uuid:tipo_id>")
-@require_auth
-def obter_tipo_alerta(tipo_id):
-    with SessionLocal() as db:
-        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
-        if not item:
-            return _json_error("Tipo de alerta não encontrado.", 404)
-        return jsonify({"ok": True, "tipo_alerta": _to_dict(item)})
-
-
-@router.post("/tipos")
-@require_auth
-def criar_tipo_alerta():
-    if not _is_admin_or_gerente():
-        return _json_error("Apenas administrador/gerente pode cadastrar tipo de alerta.", 403)
-
-    data = request.get_json(silent=True) or {}
-    alias = (data.get("alias") or "").strip()
-    if not alias:
-        return _json_error("Campo obrigatório: alias")
-
-    try:
-        canonical_type = _normalize_alert_type_value((data.get("tipo_canonico") or alias), "tipo_canonico")
-    except ValueError as exc:
-        return _json_error(str(exc), 422)
-
-    with SessionLocal() as db:
-        item = AlertTypeAlias(
-            alias=alias,
-            normalized_alias=_normalize_text(alias),
-            canonical_type=canonical_type,
-            descricao=(data.get("descricao") or "").strip() or None,
-            ativo=bool(data.get("ativo", True)),
-            created_by=g.current_user.id,
-            updated_by=g.current_user.id,
-        )
-        db.add(item)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            return _json_error("Já existe um tipo de alerta com este alias.", 409)
-        db.refresh(item)
-        return jsonify({"ok": True, "tipo_alerta": _to_dict(item)}), 201
-
-
-@router.patch("/tipos/<uuid:tipo_id>")
-@require_auth
-def atualizar_tipo_alerta(tipo_id):
-    if not _is_admin_or_gerente():
-        return _json_error("Apenas administrador/gerente pode atualizar tipo de alerta.", 403)
-
-    data = request.get_json(silent=True) or {}
-    with SessionLocal() as db:
-        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
-        if not item:
-            return _json_error("Tipo de alerta não encontrado.", 404)
-
-        if "alias" in data:
-            alias = (data.get("alias") or "").strip()
-            if not alias:
-                return _json_error("alias não pode ser vazio.", 422)
-            item.alias = alias
-            item.normalized_alias = _normalize_text(alias)
-
-        if "tipo_canonico" in data:
-            try:
-                item.canonical_type = _normalize_alert_type_value(data.get("tipo_canonico"), "tipo_canonico")
-            except ValueError as exc:
-                return _json_error(str(exc), 422)
-
-        if "descricao" in data:
-            item.descricao = (data.get("descricao") or "").strip() or None
-
-        if "ativo" in data:
-            item.ativo = bool(data.get("ativo"))
-
-        item.updated_by = g.current_user.id
-
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            return _json_error("Não foi possível atualizar: alias já existe.", 409)
-
-        db.refresh(item)
-        return jsonify({"ok": True, "tipo_alerta": _to_dict(item)})
-
-
-@router.delete("/tipos/<uuid:tipo_id>")
-@require_auth
-def deletar_tipo_alerta(tipo_id):
-    if not _is_admin_or_gerente():
-        return _json_error("Apenas administrador/gerente pode remover tipo de alerta.", 403)
-
-    with SessionLocal() as db:
-        item = db.query(AlertTypeAlias).filter(AlertTypeAlias.id == tipo_id).first()
+        item = db.query(AlertTypeAlias).filter(
+            AlertTypeAlias.id == tipo_id, AlertTypeAlias.tenant_id == tenant_id
+        ).first()
         if not item:
             return _json_error("Tipo de alerta não encontrado.", 404)
 

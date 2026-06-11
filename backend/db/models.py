@@ -483,15 +483,10 @@ class Alert(Base):
         nullable=False,
         default=AlertStatus.ABERTO,
     )
-    priority_score = Column(SmallInteger, nullable=True)
-    notified_at = Column(DateTime(timezone=True), nullable=True)
     notified_channels = Column(ARRAY(String), nullable=True)
     resolved_by = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     resolution_notes = Column(Text, nullable=True)
-    is_read = Column(Boolean, nullable=False, default=False)
-    read_at = Column(DateTime(timezone=True), nullable=True)
-    read_by = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False, index=True)
@@ -500,7 +495,6 @@ class Alert(Base):
     obra = relationship("Obra", back_populates="alerts")
     reporter = relationship("Usuario", back_populates="alerts_reportados", foreign_keys=[reported_by])
     resolver = relationship("Usuario", back_populates="alerts_resolvidos", foreign_keys=[resolved_by])
-    reader = relationship("Usuario", back_populates="alerts_lidos", foreign_keys=[read_by])
     reads = relationship(
         "AlertRead",
         back_populates="alert",
@@ -536,7 +530,6 @@ class AlertTypeAlias(Base):
     alias = Column(String(120), nullable=False)
     normalized_alias = Column(String(120), nullable=False, index=True)
     canonical_type = Column(String(120), nullable=False, index=True)
-    descricao = Column(Text, nullable=True)
     ativo = Column(Boolean, nullable=False, default=True)
     created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)
     updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True)

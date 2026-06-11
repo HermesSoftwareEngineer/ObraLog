@@ -595,6 +595,24 @@ def ensure_runtime_migrations() -> None:
         )
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_credito_transacoes_tenant ON credito_transacoes(tenant_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_credito_transacoes_criada_em ON credito_transacoes(criada_em)"))
+
+        # Sprint: Alert cleanup — leitura por usuário (Option B) + remoção de campos mortos
+        connection.execute(text("ALTER TABLE alerts DROP COLUMN IF EXISTS notified_at"))
+        connection.execute(text("ALTER TABLE alerts DROP COLUMN IF EXISTS priority_score"))
+        connection.execute(text("ALTER TABLE alerts DROP COLUMN IF EXISTS is_read"))
+        connection.execute(text("ALTER TABLE alerts DROP COLUMN IF EXISTS read_at"))
+        connection.execute(text("ALTER TABLE alerts DROP COLUMN IF EXISTS read_by"))
+        connection.execute(text("ALTER TABLE alert_type_aliases DROP COLUMN IF EXISTS descricao"))
+        # Garante tenant_id em alert_reads (criado sem o campo no schema inicial)
+        connection.execute(text("ALTER TABLE alert_reads ADD COLUMN IF NOT EXISTS tenant_id INT REFERENCES tenants(id) ON DELETE RESTRICT"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_reads_tenant_id ON alert_reads(tenant_id)"))
+        # Garante tenant_id em alert_type_aliases (idem)
+        connection.execute(text("ALTER TABLE alert_type_aliases ADD COLUMN IF NOT EXISTS tenant_id INT REFERENCES tenants(id) ON DELETE RESTRICT"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_alert_type_aliases_tenant_id ON alert_type_aliases(tenant_id)"))
+        # Remove unique global de code (existia no CREATE TABLE inicial); substitui por unique por tenant
+        connection.execute(text("ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_code_key"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_alerts_code_tenant ON alerts(tenant_id, code)"))
+
         connection.execute(
             text(
                 """
