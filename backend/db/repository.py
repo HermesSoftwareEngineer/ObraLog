@@ -1011,8 +1011,13 @@ class MensagemCampoRepository:
         db.add(item)
         try:
             db.commit()
-        except Exception:
+        except IntegrityError:
             db.rollback()
+            existente = db.query(MensagemCampo).filter(
+                MensagemCampo.hash_idempotencia == hash_idem
+            ).first()
+            if existente:
+                return existente
             raise
         db.refresh(item)
         return item
