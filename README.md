@@ -2,6 +2,8 @@
 
 Repositório backend-only com Flask como servidor principal, além de estrutura base para LangGraph, Telegram, PostgreSQL e Redis.
 
+LLM principal: DeepSeek (`deepseek-chat`). Embeddings e transcrição de áudio via Google Gemini.
+
 ## Deploy no Google Cloud Run (Docker)
 
 Pré-requisitos:
