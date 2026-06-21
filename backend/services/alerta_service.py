@@ -16,7 +16,6 @@ from backend.agents.tools.database.common import (
     parse_alert_severity,
     parse_alert_status,
     parse_alert_type,
-    sync_alert_read_flags,
     to_dict,
 )
 from backend.db.models import Alert, AlertRead, AlertStatus, AlertTypeAlias
@@ -70,7 +69,6 @@ def criar_alerta(
     location_detail: str | None = None,
     equipment_name: str | None = None,
     photo_urls: list[str] | None = None,
-    priority_score: int | None = None,
     telegram_message_id: int | None = None,
     notified_channels: list[str] | None = None,
 ) -> dict:
@@ -108,7 +106,6 @@ def criar_alerta(
             equipment_name=equipment_name,
             photo_urls=photo_urls,
             status=AlertStatus.ABERTO,
-            priority_score=priority_score,
             notified_channels=notified_channels,
         )
         db.add(alert)
@@ -158,7 +155,12 @@ def listar_alertas(
         if obra_id is not None:
             query = query.filter(Alert.obra_id == int(obra_id))
         if apenas_nao_lidos:
-            query = query.filter(Alert.is_read.is_(False))
+            read_subq = (
+                db.query(AlertRead.alert_id)
+                .filter(AlertRead.worker_id == actor_user_id, AlertRead.tenant_id == effective_tid)
+                .subquery()
+            )
+            query = query.filter(~Alert.id.in_(read_subq))
         items = query.order_by(Alert.created_at.desc()).limit(max(1, min(limit, 200))).all()
         if not items:
             return {
@@ -186,7 +188,6 @@ def atualizar_alerta(
     location_detail: str | None = None,
     equipment_name: str | None = None,
     photo_urls: list[str] | None = None,
-    priority_score: int | None = None,
     notified_channels: list[str] | None = None,
 ) -> dict:
     assert_permission(actor_level, "update", "alerts")
@@ -222,8 +223,6 @@ def atualizar_alerta(
             alert.equipment_name = equipment_name
         if photo_urls is not None:
             alert.photo_urls = photo_urls
-        if priority_score is not None:
-            alert.priority_score = priority_score
         if notified_channels is not None:
             alert.notified_channels = notified_channels
         if resolution_notes is not None:
@@ -267,9 +266,6 @@ def marcar_alerta_lido(
         if not existing:
             existing = AlertRead(alert_id=alert.id, worker_id=actor_user_id, tenant_id=effective_tid)
             db.add(existing)
-        alert.is_read = True
-        alert.read_at = datetime.utcnow()
-        alert.read_by = actor_user_id
         db.commit()
         db.refresh(alert)
         db.refresh(existing)
@@ -301,7 +297,6 @@ def marcar_alerta_nao_lido(
         if not existing:
             return {"ok": True, "message": "Alerta já estava como não lido.", "alerta": to_dict(alert)}
         db.delete(existing)
-        sync_alert_read_flags(db, alert)
         db.commit()
         db.refresh(alert)
         return {"ok": True, "alerta": to_dict(alert)}

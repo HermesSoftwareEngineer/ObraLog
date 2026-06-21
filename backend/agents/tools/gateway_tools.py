@@ -611,7 +611,6 @@ def get_gateway_tools(
         local: str | None = None,
         equipamento: str | None = None,
         fotos: list[str] | None = None,
-        prioridade: int | None = None,
         canais_notificados: list[str] | None = None,
         confirmado: bool = False,
         intencao: str | None = "registrar_alerta",
@@ -640,7 +639,6 @@ def get_gateway_tools(
                 location_detail=local,
                 equipment_name=equipamento,
                 photo_urls=fotos,
-                priority_score=prioridade,
                 notified_channels=canais_notificados,
             )
             if isinstance(result, dict):

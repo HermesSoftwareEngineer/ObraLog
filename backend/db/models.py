@@ -251,11 +251,6 @@ class Usuario(Base):
         back_populates="resolver",
         foreign_keys="Alert.resolved_by",
     )
-    alerts_lidos = relationship(
-        "Alert",
-        back_populates="reader",
-        foreign_keys="Alert.read_by",
-    )
     alert_reads = relationship(
         "AlertRead",
         back_populates="worker",

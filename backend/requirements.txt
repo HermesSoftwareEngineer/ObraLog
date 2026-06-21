@@ -66,6 +66,7 @@ xxhash==3.6.0
 zstandard==0.25.0
 flask-cors==6.0.2
 langchain-google-genai==4.2.1
+langchain-openai>=0.3.0
 gunicorn==23.0.0
 pgvector>=0.3.0
 reportlab>=4.0.0
